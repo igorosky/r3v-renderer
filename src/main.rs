@@ -20,6 +20,7 @@ fn main() {
     }
     println!("Adding {} voxels to the scene...", voxels.len());
     renderer.add_voxels(&voxels);
+    let mut pixel_buffer = vec![0u8; (width * height * 4) as usize];
     let total_frames = 12;
     for frame in 0..total_frames {
         println!("Rendering frame {}/{}...", frame + 1, total_frames);
@@ -32,23 +33,22 @@ fn main() {
                 camera.pan(0.1, 0.05);
             }
         }
-        let bgra_pixels = renderer.render();
+        renderer.render(&mut pixel_buffer);
         let filename = format!("output_frame_{:02}.png", frame);
-        save_frame(&filename, width, height, bgra_pixels);
+        save_frame(&filename, width, height, &mut pixel_buffer);
     }
     println!("Animation sequence complete!");
 }
 
-fn save_frame(filename: &str, width: u32, height: u32, bgra_pixels: Vec<u8>) {
-    let mut rgba_pixels = bgra_pixels;
+fn save_frame(filename: &str, width: u32, height: u32, bgra_pixels: &mut [u8]) {
+    let rgba_pixels = bgra_pixels;
     for chunk in rgba_pixels.chunks_exact_mut(4) {
         let b = chunk[0];
         let r = chunk[2];
         chunk[0] = r;
         chunk[2] = b;
     }
-    let img: ImageBuffer<Rgba<u8>, Vec<u8>> = 
-        ImageBuffer::from_raw(width, height, rgba_pixels)
+    let img: ImageBuffer<Rgba<u8>, _> = ImageBuffer::from_raw(width, height, rgba_pixels.to_vec())
         .expect("Failed to create image buffer");
     img.save(filename).expect("Failed to save image");
     println!(" -> Saved {}", filename);

@@ -16,6 +16,6 @@ pub trait Renderer {
     
     fn configure(&mut self, configuration: Self::Configuration);
     fn add_voxels(&mut self, voxels: &[PointI]);
-    fn render(&mut self) -> Vec<u8>;
+    fn render(&mut self, output: &mut [u8]);
     fn camera(&mut self) -> &mut Self::Camera;
 }
