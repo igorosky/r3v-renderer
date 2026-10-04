@@ -1,9 +1,7 @@
 use crate::{
-    Renderer,
-    geometry::PointI,
+    Renderer, camera::{self, CameraInternal, OrbitCamera}, geometry::PointI,
 };
 use wgpu::util::DeviceExt;
-use cgmath::prelude::*;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WgpuAcceleratedConfiguration {
@@ -32,22 +30,9 @@ struct RenderTargets {
     unpadded_bytes_per_row: u32,
 }
 
-#[rustfmt::skip]
-pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 0.5, 0.5,
-    0.0, 0.0, 0.0, 1.0,
-);
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct CameraUniform {
-    view_proj: [[f32; 4]; 4],
-}
-
 pub struct WgpuAccelerated {
     state: WgpuAcceleratedState,
+    camera: camera::OrbitCamera,
     active_configuration: Option<WgpuAcceleratedConfiguration>,
     render_targets: Option<RenderTargets>,
     active_voxels: Vec<PointI>,
@@ -76,9 +61,8 @@ impl WgpuAccelerated {
         });
 
         // Camera
-        let camera_uniform = CameraUniform {
-            view_proj: cgmath::Matrix4::identity().into(),
-        };
+        let camera_uniform = camera::CameraUniform::default();
+        let camera = OrbitCamera::default();
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
             contents: bytemuck::cast_slice(&[camera_uniform]),
@@ -161,9 +145,10 @@ impl WgpuAccelerated {
             camera_buffer,
             camera_bind_group,
         };
-         
+
         Some(Self {
             state,
+            camera,
             active_configuration: None,
             render_targets: None,
             active_voxels: vec![],
@@ -204,7 +189,7 @@ impl WgpuAccelerated {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT, // Only used for rendering
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         };
         let depth_texture = self.state.device.create_texture(&depth_texture_descriptor);
@@ -238,6 +223,7 @@ struct Vertex {
 
 impl Renderer for WgpuAccelerated {
     type Configuration = WgpuAcceleratedConfiguration;
+    type Camera = camera::OrbitCamera;
 
     fn add_voxels(&mut self, voxels: &[PointI]) {
         self.active_voxels.extend_from_slice(voxels);
@@ -271,18 +257,11 @@ impl Renderer for WgpuAccelerated {
         });
 
         // Update camera uniform
-        let aspect = config.width as f32 / config.height as f32;
-        let view = cgmath::Matrix4::look_at_rh(
-            cgmath::Point3::new(1.0, 1.0, 1.0),
-            cgmath::Point3::new(0.0, 0.0, 0.0),
-            cgmath::Vector3::unit_y(),
-        );
-        let proj = OPENGL_TO_WGPU_MATRIX * cgmath::perspective(cgmath::Rad(std::f32::consts::FRAC_PI_4), aspect, 0.1, 100.0);
-        let view_proj = proj * view;
-        let camera_uniform = CameraUniform {
-            view_proj: view_proj.into(), // or: *view_proj.as_ref()
-        };
-        self.state.queue.write_buffer(&self.state.camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
+        if self.camera.is_dirty() {
+            let aspect_ratio = config.width as f32 / config.height as f32;
+            let camera_uniform = self.camera.get_uniform(aspect_ratio);
+            self.state.queue.write_buffer(&self.state.camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
+        }
 
         // Command encoder and render pass
         let mut encoder = self.state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -359,5 +338,9 @@ impl Renderer for WgpuAccelerated {
     
     fn configure(&mut self, configuration: Self::Configuration) {
         self.active_configuration = Some(configuration);
+    }
+
+    fn camera(&mut self) -> &mut Self::Camera {
+        &mut self.camera
     }
 }
