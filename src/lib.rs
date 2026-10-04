@@ -1,14 +1,12 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+use crate::geometry::PointI;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod geometry;
+pub mod wgpu;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+pub trait Renderer {
+    type Configuration;
+    
+    fn add_voxels(&mut self, voxels: &[PointI]);
+    fn configure(&mut self, configuration: Self::Configuration);
+    fn render(&mut self) -> Vec<u8>;
 }
