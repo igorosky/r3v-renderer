@@ -2,7 +2,12 @@ use crate::geometry::PointI;
 
 pub mod camera;
 pub mod geometry;
+pub mod stl;
+pub mod urdf;
 pub mod wgpu;
+
+pub use stl::{StlMesh, Triangle};
+pub use urdf::{UrdfJoint, UrdfLink, UrdfMaterial, UrdfOrigin, UrdfRobot, UrdfVisual};
 
 pub trait Camera {
     fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32);
@@ -18,4 +23,8 @@ pub trait Renderer {
     fn add_voxels(&mut self, voxels: &[PointI]);
     fn render(&mut self, output: &mut [u8]);
     fn camera(&mut self) -> &mut Self::Camera;
+    fn load_urdf(&mut self, source: &str) -> Result<urdf::UrdfRobot, String> {
+        let _ = source;
+        Err("URDF loading is not supported by this renderer implementation.".to_string())
+    }
 }

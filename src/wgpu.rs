@@ -1,5 +1,5 @@
 use crate::{
-    Renderer, camera::{self, CameraInternal, OrbitCamera}, geometry::PointI,
+    Renderer, camera::{self, CameraInternal, OrbitCamera}, geometry::PointI, urdf::UrdfRobot,
 };
 use wgpu::util::DeviceExt;
 
@@ -36,6 +36,7 @@ pub struct WgpuAccelerated {
     active_configuration: Option<WgpuAcceleratedConfiguration>,
     render_targets: Option<RenderTargets>,
     active_voxels: Vec<PointI>,
+    active_urdf: Option<UrdfRobot>,
 }
 
 impl WgpuAccelerated {
@@ -152,6 +153,7 @@ impl WgpuAccelerated {
             active_configuration: None,
             render_targets: None,
             active_voxels: vec![],
+            active_urdf: None,
         })
     }
 
@@ -348,5 +350,11 @@ impl Renderer for WgpuAccelerated {
 
     fn camera(&mut self) -> &mut Self::Camera {
         &mut self.camera
+    }
+
+    fn load_urdf(&mut self, source: &str) -> Result<UrdfRobot, String> {
+        let robot = UrdfRobot::from_str(source)?;
+        self.active_urdf = Some(robot.clone());
+        Ok(robot)
     }
 }
