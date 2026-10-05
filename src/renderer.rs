@@ -1,5 +1,7 @@
 use crate::{
-    Renderer, camera::{self, CameraInternal, OrbitCamera}, geometry::PointI,
+    Renderer,
+    camera,
+    geometry,
 };
 use wgpu::util::DeviceExt;
 
@@ -32,10 +34,12 @@ struct RenderTargets {
 
 pub struct WgpuAccelerated {
     state: WgpuAcceleratedState,
-    camera: camera::OrbitCamera,
     active_configuration: Option<WgpuAcceleratedConfiguration>,
     render_targets: Option<RenderTargets>,
-    active_voxels: Vec<PointI>,
+
+    active_vertices: Vec<geometry::Vertex>,
+    vertex_buffer: Option<wgpu::Buffer>,
+    vertex_capacity: usize,
 }
 
 impl WgpuAccelerated {
@@ -61,11 +65,9 @@ impl WgpuAccelerated {
         });
 
         // Camera
-        let camera_uniform = camera::CameraUniform::default();
-        let camera = OrbitCamera::default();
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
-            contents: bytemuck::cast_slice(&[camera_uniform]),
+            contents: &[],
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -106,7 +108,7 @@ impl WgpuAccelerated {
                 entry_point: Some("vs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                    array_stride: std::mem::size_of::<geometry::Vertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![
                         0 => Float32x3, // position
@@ -148,19 +150,30 @@ impl WgpuAccelerated {
 
         Some(Self {
             state,
-            camera,
             active_configuration: None,
             render_targets: None,
-            active_voxels: vec![],
+            active_vertices: vec![],
+            vertex_buffer: None,
+            vertex_capacity: 0,
         })
     }
 
-    fn compute_visible_vertices(&self) -> Vec<Vertex> {
-        vec![
-            Vertex { position: [-0.5, -0.5, 0.0], color: [1.0, 0.0, 0.0] },
-            Vertex { position: [0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0] },
-            Vertex { position: [0.0, 0.5, 0.0], color: [0.0, 0.0, 1.0] },
-        ]
+    fn load_vertices_to_buffer(&mut self) {
+        let vertices = &self.active_vertices;
+        let required_capacity = vertices.len();
+        if required_capacity > self.vertex_capacity || self.vertex_buffer.is_none() {
+            let new_capacity = required_capacity.next_power_of_two();
+            self.vertex_buffer = Some(self.state.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Vertex Buffer"),
+                size: (new_capacity * std::mem::size_of::<geometry::Vertex>()) as wgpu::BufferAddress,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.vertex_capacity = new_capacity;
+        }
+        if let Some(vertex_buffer) = &self.vertex_buffer {
+            self.state.queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(vertices));
+        }
     }
 
     fn rebuild_targets(&mut self) {
@@ -222,22 +235,19 @@ impl WgpuAccelerated {
     }
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 3],
-    color: [f32; 3],
-}
-
 impl Renderer for WgpuAccelerated {
     type Configuration = WgpuAcceleratedConfiguration;
-    type Camera = camera::OrbitCamera;
+    type GeometryDelta = geometry::Triangle;
 
-    fn add_voxels(&mut self, voxels: &[PointI]) {
-        self.active_voxels.extend_from_slice(voxels);
+    fn configure(&mut self, configuration: Self::Configuration) {
+        self.active_configuration = Some(configuration);
     }
-    
-    fn render(&mut self, output: &mut [u8]) {
+
+    fn render(
+        &mut self,
+        camera_uniform: &camera::CameraUniform,
+        output: &mut [u8]
+    ) {
         // Ensure valid configuration
         let config = self.active_configuration.expect("Renderer is not configured. Call configure() before render().");
         assert!(output.len() >= (config.width * config.height * self.state.pixel_size) as usize, "Output buffer is too small for the configured dimensions.");
@@ -250,23 +260,14 @@ impl Renderer for WgpuAccelerated {
         if needs_rebuild {
             self.rebuild_targets();
         }
-        let targets = self.render_targets.as_ref().unwrap();
 
         // Load vertices
-        let vertices = self.compute_visible_vertices();
-        // TODO(@mariusz): Implement a persistent vertex buffer instead of reallocating
-        let vertices_buffer = self.state.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        self.load_vertices_to_buffer();
+
+        let targets = self.render_targets.as_ref().unwrap();
 
         // Update camera uniform
-        if self.camera.is_dirty() {
-            let aspect_ratio = config.width as f32 / config.height as f32;
-            let camera_uniform = self.camera.get_uniform(aspect_ratio);
-            self.state.queue.write_buffer(&self.state.camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
-        }
+        self.state.queue.write_buffer(&self.state.camera_buffer, 0, bytemuck::cast_slice(&[*camera_uniform]));
 
         // Command encoder and render pass
         let mut encoder = self.state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -298,8 +299,9 @@ impl Renderer for WgpuAccelerated {
             });
             render_pass.set_pipeline(&self.state.pipeline);
             render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, vertices_buffer.slice(..));
-            render_pass.draw(0..vertices.len() as u32, 0..1);
+            assert!(self.vertex_buffer.is_some(), "Vertex buffer is not initialized.");
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.as_ref().unwrap().slice(..));
+            render_pass.draw(0..self.active_vertices.len() as u32, 0..1);
         }
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -341,12 +343,19 @@ impl Renderer for WgpuAccelerated {
         }
         targets.output_buffer.unmap();
     }
-    
-    fn configure(&mut self, configuration: Self::Configuration) {
-        self.active_configuration = Some(configuration);
-    }
 
-    fn camera(&mut self) -> &mut Self::Camera {
-        &mut self.camera
+    fn update_geometry(&mut self, geometry_delta: Self::GeometryDelta) {
+        self.active_vertices.push(geometry::Vertex {
+            position: geometry_delta.v0,
+            color: [1.0, 1.0, 1.0],
+        });
+        self.active_vertices.push(geometry::Vertex {
+            position: geometry_delta.v1,
+            color: [1.0, 1.0, 1.0],
+        });
+        self.active_vertices.push(geometry::Vertex {
+            position: geometry_delta.v2,
+            color: [1.0, 1.0, 1.0],
+        });
     }
 }

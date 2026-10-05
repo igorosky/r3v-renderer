@@ -1,21 +1,44 @@
-use crate::geometry::PointI;
-
 pub mod camera;
 pub mod geometry;
-pub mod wgpu;
+pub mod renderer;
+pub mod tesselator;
 
 pub trait Camera {
     fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32);
     fn zoom(&mut self, delta_distance: f32);
     fn pan(&mut self, delta_x: f32, delta_y: f32);
+
+    fn get_uniform(&self, aspect_ratio: f32) -> camera::CameraUniform;
+}
+
+// pub trait Robot {
+//     type RobotDescription;
+//     type SensorInput;
+
+//     fn from_description(description: Self::RobotDescription) -> Self;
+//     fn feed_sensor_input(&mut self, input: &Self::SensorInput);
+// }
+
+pub trait Tesselator {
+    type InputGeometryDelta;
+    type OutputGeometryDelta;
+
+    fn update_input_geometry(
+        &mut self, 
+        geometry_delta: &Self::InputGeometryDelta
+    );
+    fn get_output_geometry_delta(&mut self) -> Option<Self::OutputGeometryDelta>;
 }
 
 pub trait Renderer {
     type Configuration;
-    type Camera: Camera;
-    
+    type GeometryDelta;
+
     fn configure(&mut self, configuration: Self::Configuration);
-    fn add_voxels(&mut self, voxels: &[PointI]);
-    fn render(&mut self, output: &mut [u8]);
-    fn camera(&mut self) -> &mut Self::Camera;
+    fn update_geometry(&mut self, geometry_delta: Self::GeometryDelta);
+    fn render(
+        &mut self,
+        camera_uniform: &camera::CameraUniform,
+        output:         &mut [u8]
+    );
 }

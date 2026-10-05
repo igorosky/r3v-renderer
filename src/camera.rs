@@ -1,23 +1,18 @@
 use crate::Camera;
 use cgmath::prelude::*;
 
-#[rustfmt::skip]
-pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 0.5, 0.5,
-    0.0, 0.0, 0.0, 1.0,
-);
-
-pub trait CameraInternal {
-    fn is_dirty(&self) -> bool;
-    fn get_uniform(&self, aspect_ratio: f32) -> CameraUniform;
-}
-
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
     view_proj: [[f32; 4]; 4],
+}
+
+impl CameraUniform {
+    pub fn from_matrix(matrix: cgmath::Matrix4<f32>) -> Self {
+        Self {
+            view_proj: matrix.into(),
+        }
+    }
 }
 
 impl Default for CameraUniform {
@@ -27,6 +22,14 @@ impl Default for CameraUniform {
         }
     }
 }
+
+#[rustfmt::skip]
+pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.5, 0.5,
+    0.0, 0.0, 0.0, 1.0,
+);
 
 pub struct OrbitCamera {
     pub target: cgmath::Point3<f32>,
@@ -93,20 +96,12 @@ impl Camera for OrbitCamera {
         self.target += up * delta_y;
         self.new_uniform_available = true;
     }
-
-}
-
-impl CameraInternal for OrbitCamera {
-    fn is_dirty(&self) -> bool {
-        self.new_uniform_available
-    }
-
+    
     fn get_uniform(&self, aspect_ratio: f32) -> CameraUniform {
         let view = self.view_matrix();
         let proj = OPENGL_TO_WGPU_MATRIX * cgmath::perspective(cgmath::Rad(std::f32::consts::FRAC_PI_4), aspect_ratio, 0.1, 100.0);
         let view_proj = proj * view;
-        CameraUniform {
-            view_proj: view_proj.into(),
-        }
+        CameraUniform::from_matrix(view_proj)
     }
+
 }

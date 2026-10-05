@@ -1,35 +1,44 @@
 use r3v_renderer::{
-    Camera,
-    Renderer,
+    Camera, Tesselator, Renderer,
     geometry::PointI,
-    wgpu::{self, WgpuAccelerated},
+    renderer::{self, WgpuAccelerated},
 };
 use image::{ImageBuffer, Rgba};
 use std::time::{Duration, Instant};
 
 fn main() {
     let program_start = Instant::now();
+    let width = 800;
+    let height = 600;
+    let aspect_ratio = width as f32 / height as f32;
 
-    println!("Initializing WGPU Renderer...");
+    println!("Initializing Pipeline Components...");
     let init_start = Instant::now();
+    
+    let mut camera = MyCamera::new(); // Implements Camera
+    let mut tesselator = MyTesselator::new(); // Implements Tesselator
     let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
+
+    renderer.configure(renderer::WgpuAcceleratedConfiguration { width, height });
     let init_time = init_start.elapsed();
 
     let setup_start = Instant::now();
-    let width = 800;
-    let height = 600;
-    renderer.configure(wgpu::WgpuAcceleratedConfiguration { width, height });
+    let voxels = vec![
+        PointI { x: 0, y: 0, z: 0, i: 0 },
+        PointI { x: 0, y: 1, z: 0, i: 0 },
+        PointI { x: 0, y: 0, z: 1, i: 0 },
+        PointI { x: 1, y: 0, z: 0, i: 0 },
+        PointI { x: 1, y: 1, z: 0, i: 0 },
+    ];
+
+    println!("Feeding {} voxels to the Tesselator...", voxels.len());
+
+    tesselator.update_input_geometry(&voxels);
     
-    let mut voxels = Vec::new();
-    for i in -2..=2 {
-        voxels.push(PointI { x: i, y: 0, z: 0, i: 0 });
-        voxels.push(PointI { x: 0, y: i, z: 0, i: 0 });
-        voxels.push(PointI { x: 0, y: 0, z: i, i: 0 });
+    if let Some(geometry_delta) = tesselator.get_output_geometry_delta() {
+        renderer.update_geometry(geometry_delta);
     }
-    
-    println!("Adding {} voxels to the scene...", voxels.len());
-    renderer.add_voxels(&voxels);
-    
+
     let mut pixel_buffer = vec![0u8; (width * height * 4) as usize];
     let setup_time = setup_start.elapsed();
 
@@ -42,21 +51,23 @@ fn main() {
         println!("\n--- Frame {}/{} ---", frame + 1, total_frames);
         
         if frame > 0 {
-            let camera = renderer.camera();
-            camera.rotate(0.5, 0.0);
-            if frame < 6 {
-                camera.zoom(-0.5); 
-            } else {
-                camera.pan(0.1, 0.05);
-            }
+            camera.rotate(0.1, 0.05);
         }
 
+        if let Some(delta) = tesselator.take_geometry_delta() {
+            renderer.update_geometry(delta);
+        }
+
+        // 6. Render
         let render_start = Instant::now();
-        renderer.render(&mut pixel_buffer);
+        let camera_uniform = camera.get_uniform(aspect_ratio); // Extract the matrix
+        renderer.render(&camera_uniform, &mut pixel_buffer);   // Pass matrix + output buffer
         let render_time = render_start.elapsed();
+        
         total_render_time += render_time;
         println!("  Render time: {:?}", render_time);
 
+        // 7. Save Output
         let filename = format!("output_frame_{:02}.png", frame);
         let save_start = Instant::now();
         save_frame(&filename, width, height, &mut pixel_buffer);
@@ -64,13 +75,14 @@ fn main() {
         total_save_time += save_time;
         println!("  Save time:   {:?}", save_time);
     }
+    
     let loop_time = loop_start.elapsed();
     let program_time = program_start.elapsed();
 
     println!("\n========================================");
     println!("          BENCHMARK SUMMARY             ");
     println!("========================================");
-    println!("WGPU Initialization: {:?}", init_time);
+    println!("Initialization:      {:?}", init_time);
     println!("Scene Setup:         {:?}", setup_time);
     println!("Total Loop Time:     {:?}", loop_time);
     println!("Total Program Time:  {:?}", program_time);
