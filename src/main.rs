@@ -27,7 +27,7 @@ fn main() {
     let setup_start = Instant::now();
     
     let voxels: Vec<PointI> = vec![
-        PointI { x: 1, y: 1, z: 1, i: 0b000000000000000001111111111111111 },
+        PointI { x: 1, y: 1, z: 1, i: 0b00000000000000000000000000000001 },
     ];
 
     println!("Generated sphere comprised of {} chunks...", voxels.len());
@@ -50,6 +50,7 @@ fn main() {
 
     let render_start = Instant::now();
     let camera_uniform = camera.get_uniform(aspect_ratio);
+    renderer.render(&camera_uniform, &mut pixel_buffer);
     renderer.render(&camera_uniform, &mut pixel_buffer);
     let render_time = render_start.elapsed();
     

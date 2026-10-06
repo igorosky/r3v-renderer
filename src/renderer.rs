@@ -26,7 +26,7 @@ struct RenderTargets {
     render_texture_view: wgpu::TextureView,
     depth_texture: wgpu::Texture,
     depth_texture_view: wgpu::TextureView,
-    output_buffer: wgpu::Buffer,
+    output_buffers: [wgpu::Buffer; 2],
     padded_bytes_per_row: u32,
     unpadded_bytes_per_row: u32,
 }
@@ -36,9 +36,12 @@ pub struct WgpuAccelerated {
     active_configuration: Option<WgpuAcceleratedConfiguration>,
     render_targets: Option<RenderTargets>,
 
+    geometry_dirty: bool,
     active_vertices: Vec<geometry::Vertex>,
     vertex_buffer: Option<wgpu::Buffer>,
     vertex_capacity: usize,
+    
+    frame_index: usize, 
 }
 
 impl WgpuAccelerated {
@@ -152,9 +155,11 @@ impl WgpuAccelerated {
             state,
             active_configuration: None,
             render_targets: None,
+            geometry_dirty: false,
             active_vertices: vec![],
             vertex_buffer: None,
             vertex_capacity: 0,
+            frame_index: 0,
         })
     }
 
@@ -162,7 +167,7 @@ impl WgpuAccelerated {
         let vertices = &self.active_vertices;
         let required_capacity = vertices.len();
         if required_capacity > self.vertex_capacity || self.vertex_buffer.is_none() {
-            let new_capacity = required_capacity.next_power_of_two();
+            let new_capacity = required_capacity.next_power_of_two().max(64);
             self.vertex_buffer = Some(self.state.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Vertex Buffer"),
                 size: (new_capacity * std::mem::size_of::<geometry::Vertex>()) as wgpu::BufferAddress,
@@ -174,6 +179,7 @@ impl WgpuAccelerated {
         if let Some(vertex_buffer) = &self.vertex_buffer {
             self.state.queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(vertices));
         }
+        self.geometry_dirty = false;
     }
 
     fn rebuild_targets(&mut self) {
@@ -215,7 +221,7 @@ impl WgpuAccelerated {
         };
         let depth_texture = self.state.device.create_texture(&depth_texture_descriptor);
         let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let output_buffer = self.state.device.create_buffer(&wgpu::BufferDescriptor {
+        let create_output_buffer = || self.state.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Output Buffer"),
             size: (padded_bytes_per_row * config.height) as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
@@ -228,10 +234,11 @@ impl WgpuAccelerated {
             render_texture_view: texture_view,
             depth_texture: depth_texture,
             depth_texture_view: depth_texture_view,
-            output_buffer,
+            output_buffers: [create_output_buffer(), create_output_buffer()],
             padded_bytes_per_row,
             unpadded_bytes_per_row,
         });
+        self.frame_index = 0; 
     }
 }
 
@@ -248,11 +255,9 @@ impl Renderer for WgpuAccelerated {
         camera_uniform: &camera::CameraUniform,
         output: &mut [u8]
     ) {
-        // Ensure valid configuration
-        let config = self.active_configuration.expect("Renderer is not configured. Call configure() before render().");
-        assert!(output.len() >= (config.width * config.height * self.state.pixel_size) as usize, "Output buffer is too small for the configured dimensions.");
-        
-        // Ensure render targets are built and match the current configuration
+        let config = self.active_configuration.expect("Renderer is not configured.");
+        assert!(output.len() >= (config.width * config.height * self.state.pixel_size) as usize, "Output buffer is too small.");
+
         let needs_rebuild = match &self.render_targets {
             Some(targets) => targets.width != config.width || targets.height != config.height,
             None => true,
@@ -261,15 +266,37 @@ impl Renderer for WgpuAccelerated {
             self.rebuild_targets();
         }
 
-        // Load vertices
-        self.load_vertices_to_buffer();
+        if self.geometry_dirty {
+            self.load_vertices_to_buffer();
+        }
 
         let targets = self.render_targets.as_ref().unwrap();
+        if self.frame_index > 0 {
+            let read_index = (self.frame_index + 1) % 2;
+            let read_buffer = &targets.output_buffers[read_index];
+            let buffer_slice = read_buffer.slice(..);
 
-        // Update camera uniform
+            let (sender, receiver) = std::sync::mpsc::channel();
+            buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+                sender.send(result).unwrap();
+            });
+            let _ = self.state.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+            receiver.recv().unwrap().unwrap();
+            
+            {
+                let padded_data = buffer_slice.get_mapped_range().unwrap();
+                let mut offset = 0;
+                for chunk in padded_data.chunks(targets.padded_bytes_per_row as usize) {
+                    let unpadded_chunk = &chunk[..targets.unpadded_bytes_per_row as usize];
+                    output[offset..offset + unpadded_chunk.len()].copy_from_slice(unpadded_chunk);
+                    offset += unpadded_chunk.len();
+                }
+            }
+            read_buffer.unmap();
+        } else {
+            output.fill(0);
+        }
         self.state.queue.write_buffer(&self.state.camera_buffer, 0, bytemuck::cast_slice(&[*camera_uniform]));
-
-        // Command encoder and render pass
         let mut encoder = self.state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
@@ -297,12 +324,16 @@ impl Renderer for WgpuAccelerated {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            render_pass.set_pipeline(&self.state.pipeline);
-            render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
-            assert!(self.vertex_buffer.is_some(), "Vertex buffer is not initialized.");
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.as_ref().unwrap().slice(..));
-            render_pass.draw(0..self.active_vertices.len() as u32, 0..1);
+            if let Some(vertex_buffer) = &self.vertex_buffer {
+                if !self.active_vertices.is_empty() {
+                    render_pass.set_pipeline(&self.state.pipeline);
+                    render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                    render_pass.draw(0..self.active_vertices.len() as u32, 0..1);
+                }
+            }
         }
+        let write_index = self.frame_index % 2;
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &targets.render_texture,
@@ -311,7 +342,7 @@ impl Renderer for WgpuAccelerated {
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &targets.output_buffer,
+                buffer: &targets.output_buffers[write_index],
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(targets.padded_bytes_per_row),
@@ -325,23 +356,7 @@ impl Renderer for WgpuAccelerated {
             },
         );
         self.state.queue.submit(Some(encoder.finish()));
-        let buffer_slice = targets.output_buffer.slice(..);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            sender.send(result).unwrap();
-        });
-        let _ = self.state.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
-        receiver.recv().unwrap().unwrap();
-        {
-            let padded_data = buffer_slice.get_mapped_range().unwrap();
-            let mut offset = 0;
-            for chunk in padded_data.chunks(targets.padded_bytes_per_row as usize) {
-                let unpadded_chunk = &chunk[..targets.unpadded_bytes_per_row as usize];
-                output[offset..offset + unpadded_chunk.len()].copy_from_slice(unpadded_chunk);
-                offset += unpadded_chunk.len();
-            }
-        }
-        targets.output_buffer.unmap();
+        self.frame_index += 1;
     }
 
     fn update_geometry(&mut self, geometry_delta: Self::GeometryDelta) {
@@ -361,5 +376,6 @@ impl Renderer for WgpuAccelerated {
                 }
             }
         }
+        self.geometry_dirty = true;
     }
 }
