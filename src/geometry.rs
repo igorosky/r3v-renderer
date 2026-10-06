@@ -6,13 +6,28 @@ pub struct PointI {
     pub i: u32,
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Triangle {
-    pub v0: [f32; 3],
-    pub v1: [f32; 3],
-    pub v2: [f32; 3],
+#[derive(Copy, Clone, Debug, bytemuck::Zeroable)]
+pub struct Point<T> {
+    pub x: T,
+    pub y: T,
+    pub z: T,
 }
+
+#[derive(Copy, Clone, Debug)]
+pub struct Triangle<T> {
+    pub v0: [T; 3],
+    pub v1: [T; 3],
+    pub v2: [T; 3],
+}
+
+pub type DiscreteUnit = i32;
+pub type RealUnit = f32;
+
+pub type DiscretePoint = Point<DiscreteUnit>;
+pub type RealPoint = Point<RealUnit>;
+
+pub type DiscreteTriangle = Triangle<DiscreteUnit>;
+pub type RealTriangle = Triangle<RealUnit>;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -30,14 +45,12 @@ impl Vertex {
     }
 }
 
-pub type ChunkIndex = (i32, i32, i32);
-
 pub enum ChunkDelta {
     Add {
-        index: ChunkIndex,
-        triangles: Vec<Triangle>,
+        index: DiscretePoint,
+        triangles: Vec<RealTriangle>,
     },
     Remove {
-        index: ChunkIndex,
+        index: DiscretePoint,
     },
 }

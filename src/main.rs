@@ -16,7 +16,7 @@ fn main() {
 
     println!("Initializing Pipeline Components...");
     let init_start = Instant::now();
-    
+
     let mut camera = OrbitCamera::default();
     let mut tesselator = GreedyMeshTesselator::new();
     let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
@@ -26,17 +26,17 @@ fn main() {
 
     let setup_start = Instant::now();
     let voxels = vec![
-        PointI { x: 0, y: 0, z: 0, i: 0 },
-        PointI { x: 0, y: 1, z: 0, i: 0 },
-        PointI { x: 0, y: 0, z: 1, i: 0 },
-        PointI { x: 1, y: 0, z: 0, i: 0 },
-        PointI { x: 1, y: 1, z: 0, i: 0 },
+        PointI { x: 0, y: 0, z: 0, i: 0x1 },
+        PointI { x: 0, y: 1, z: 0, i: 0x1 },
+        PointI { x: 0, y: 0, z: 1, i: 0x1 },
+        PointI { x: 1, y: 0, z: 0, i: 0x1 },
+        PointI { x: 1, y: 1, z: 0, i: 0x1 },
     ];
 
     println!("Feeding {} voxels to the Tesselator...", voxels.len());
 
-    // tesselator.update_input_geometry(&voxels);
-    
+    tesselator.update_input_geometry(&voxels);
+
     if let Some(geometry_delta) = tesselator.get_output_geometry_delta() {
         renderer.update_geometry(geometry_delta);
     }
@@ -51,19 +51,19 @@ fn main() {
     let loop_start = Instant::now();
     for frame in 0..total_frames {
         println!("\n--- Frame {}/{} ---", frame + 1, total_frames);
-        
+
         if frame > 0 {
             camera.rotate(0.1, 0.05);
         }
 
-        // if let Some(delta) = tesselator.get_output_geometry_delta() {
-        //     renderer.update_geometry(delta);
-        // }
+        if let Some(delta) = tesselator.get_output_geometry_delta() {
+            renderer.update_geometry(delta);
+        }
 
         // 6. Render
         let render_start = Instant::now();
-        let camera_uniform = camera.get_uniform(aspect_ratio); // Extract the matrix
-        renderer.render(&camera_uniform, &mut pixel_buffer);   // Pass matrix + output buffer
+        let camera_uniform = camera.get_uniform(aspect_ratio);
+        renderer.render(&camera_uniform, &mut pixel_buffer);
         let render_time = render_start.elapsed();
         
         total_render_time += render_time;
