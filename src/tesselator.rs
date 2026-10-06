@@ -1,8 +1,15 @@
 use crate::{
     Tesselator, geometry::{
-        ChunkDelta, DiscretePoint, DiscreteTriangle, PointI, RealTriangle,
+        ChunkDelta, DiscretePoint, PointI, RealTriangle,
     },
 };
+
+const FACE_FRONT:   [[i32; 3]; 6] = [[0,0,1], [1,0,1], [1,1,1], [0,0,1], [1,1,1], [0,1,1]]; // +Z
+const FACE_BACK:    [[i32; 3]; 6] = [[1,0,0], [0,0,0], [0,1,0], [1,0,0], [0,1,0], [1,1,0]]; // -Z
+const FACE_TOP:     [[i32; 3]; 6] = [[0,1,1], [1,1,1], [1,1,0], [0,1,1], [1,1,0], [0,1,0]]; // +Y
+const FACE_BOTTOM:  [[i32; 3]; 6] = [[0,0,0], [1,0,0], [1,0,1], [0,0,0], [1,0,1], [0,0,1]]; // -Y
+const FACE_RIGHT:   [[i32; 3]; 6] = [[1,0,1], [1,0,0], [1,1,0], [1,0,1], [1,1,0], [1,1,1]]; // +X
+const FACE_LEFT:    [[i32; 3]; 6] = [[0,0,0], [0,0,1], [0,1,1], [0,0,0], [0,1,1], [0,1,0]]; // -X
 
 pub struct GreedyMeshTesselator {
     is_voxel_data_dirty: bool,
@@ -18,61 +25,51 @@ impl GreedyMeshTesselator {
     }
 
     fn voxel_world_origin(&self, chunk_origin: &DiscretePoint, voxel_index: u32) -> DiscretePoint {
-        return chunk_origin.clone(); // TODO(@mariusz): Actually calculate the world origin of the voxel based on its index within the chunk.
+        let lx = (voxel_index & 0b11) as i32;
+        let ly = ((voxel_index >> 2) & 0b11) as i32;
+        let lz = ((voxel_index >> 4) & 0b1) as i32;
+        DiscretePoint {
+            x: chunk_origin.x + lx,
+            y: chunk_origin.y + ly,
+            z: chunk_origin.z + lz,
+        }
     }
 
-    fn voxel_chunk_index(&self, voxel_origin: &DiscretePoint) -> (DiscretePoint, u32) {
-        return (voxel_origin.clone(), 0); // TODO(@mariusz): Actually calculate the chunk index and voxel index within the chunk based on the voxel's world origin.
-    }
+    fn tesselate_chunk(&self, chunk: &PointI) -> Vec<RealTriangle> {
+        let chunk_origin = DiscretePoint { x: chunk.x, y: chunk.y, z: chunk.z };
+        let chunk_triangles = &mut Vec::new();
 
-    fn tesselate_voxel(&self, voxel_origin: &DiscretePoint) -> Vec<DiscreteTriangle> {
-        // TODO(@mariusz): Actually implement greedy meshing algorithm to generate triangles for the voxel.
-        const CUBE_TESSELATION_OFFSETS: [[i32; 3]; 36] = [
-            // Front face (Z = 1)
-            [0, 0, 1], [1, 0, 1], [1, 1, 1],
-            [0, 0, 1], [1, 1, 1], [0, 1, 1],
+        let mask = chunk.i;
+        let right_faces  = mask & !((mask >> 1)  & 0x77777777);
+        let left_faces   = mask & !((mask << 1)  & 0xEEEEEEEE);
+        let top_faces    = mask & !((mask >> 4)  & 0x0FFF0FFF);
+        let bottom_faces = mask & !((mask << 4)  & 0xFFF0FFF0);
+        let front_faces  = mask & !((mask >> 16) & 0x0000FFFF);
+        let back_faces   = mask & !((mask << 16) & 0xFFFF0000);
 
-            // Back face (Z = 0)
-            [1, 0, 0], [0, 0, 0], [0, 1, 0],
-            [1, 0, 0], [0, 1, 0], [1, 1, 0],
-
-            // Top face (Y = 1)
-            [0, 1, 1], [1, 1, 1], [1, 1, 0],
-            [0, 1, 1], [1, 1, 0], [0, 1, 0],
-
-            // Bottom face (Y = 0)
-            [0, 0, 0], [1, 0, 0], [1, 0, 1],
-            [0, 0, 0], [1, 0, 1], [0, 0, 1],
-
-            // Right face (X = 1)
-            [1, 0, 1], [1, 0, 0], [1, 1, 0],
-            [1, 0, 1], [1, 1, 0], [1, 1, 1],
-
-            // Left face (X = 0)
-            [0, 0, 0], [0, 0, 1], [0, 1, 1],
-            [0, 0, 0], [0, 1, 1], [0, 1, 0],
-        ];
-        CUBE_TESSELATION_OFFSETS
-            .chunks_exact(3)
-            .map(|chunk| {
-                DiscreteTriangle {
-                    v0: [
-                        voxel_origin.x + chunk[0][0],
-                        voxel_origin.y + chunk[0][1],
-                        voxel_origin.z + chunk[0][2],
-                    ],
-                    v1: [
-                        voxel_origin.x + chunk[1][0],
-                        voxel_origin.y + chunk[1][1],
-                        voxel_origin.z + chunk[1][2],
-                    ],
-                    v2: [
-                        voxel_origin.x + chunk[2][0],
-                        voxel_origin.y + chunk[2][1],
-                        voxel_origin.z + chunk[2][2],
-                    ],
+        for bit in 0..32 {
+            let bit_mask = 1 << bit;
+            if (mask & bit_mask) == 0 {
+                continue;
+            }
+            let voxel_origin = self.voxel_world_origin(&chunk_origin, bit);
+            let mut push_face = |face_data: &[[i32; 3]; 6]| {
+                for tri in face_data.chunks_exact(3) {
+                    chunk_triangles.push(RealTriangle {
+                        v0: [(voxel_origin.x + tri[0][0]) as f32, (voxel_origin.y + tri[0][1]) as f32, (chunk_origin.z + tri[0][2]) as f32],
+                        v1: [(voxel_origin.x + tri[1][0]) as f32, (voxel_origin.y + tri[1][1]) as f32, (chunk_origin.z + tri[1][2]) as f32],
+                        v2: [(voxel_origin.x + tri[2][0]) as f32, (voxel_origin.y + tri[2][1]) as f32, (chunk_origin.z + tri[2][2]) as f32],
+                    });
                 }
-        }).collect()
+            };
+            if (right_faces  & bit_mask) != 0 { push_face(&FACE_RIGHT);  }
+            if (left_faces   & bit_mask) != 0 { push_face(&FACE_LEFT);   }
+            if (top_faces    & bit_mask) != 0 { push_face(&FACE_TOP);    }
+            if (bottom_faces & bit_mask) != 0 { push_face(&FACE_BOTTOM); }
+            if (front_faces  & bit_mask) != 0 { push_face(&FACE_FRONT);  }
+            if (back_faces   & bit_mask) != 0 { push_face(&FACE_BACK);   }
+        }
+        chunk_triangles.to_vec()
     }
 }
 
@@ -92,27 +89,17 @@ impl Tesselator for GreedyMeshTesselator {
         if !self.is_voxel_data_dirty {
             return None;
         }
+        self.is_voxel_data_dirty = false;
         Some(self.voxel_chunks.iter().filter_map(|chunk| {
             let chunk_origin = DiscretePoint { x: chunk.x, y: chunk.y, z: chunk.z };
-            let mut chunk_triangles = Vec::new();
-            for bit in 0..32 {
-                let mask = 1 << bit;
-                if chunk.i & mask != 0 {
-                    let voxel_origin = self.voxel_world_origin(&chunk_origin, bit);
-                    let voxel_triangles = self.tesselate_voxel(&voxel_origin);
-                    chunk_triangles.extend(voxel_triangles.iter().map(|dt| RealTriangle {
-                        v0: [dt.v0[0] as f32, dt.v0[1] as f32, dt.v0[2] as f32],
-                        v1: [dt.v1[0] as f32, dt.v1[1] as f32, dt.v1[2] as f32],
-                        v2: [dt.v2[0] as f32, dt.v2[1] as f32, dt.v2[2] as f32],
-                    }));
-                }
-            }
+            let chunk_triangles = self.tesselate_chunk(chunk);
             if chunk_triangles.is_empty() {
                 None
             } else {
-                Some(ChunkDelta::Add {
+                println!("Tesselated chunk at ({}, {}, {}) with {} triangles", chunk_origin.x, chunk_origin.y, chunk_origin.z, chunk_triangles.len());
+                Some(ChunkDelta::Set {
                     index: chunk_origin,
-                    triangles: chunk_triangles,
+                    triangles: chunk_triangles
                 })
             }
         }).collect())

@@ -46,7 +46,7 @@ impl Vertex {
 }
 
 pub enum ChunkDelta {
-    Add {
+    Set {
         index: DiscretePoint,
         triangles: Vec<RealTriangle>,
     },

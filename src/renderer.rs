@@ -3,7 +3,6 @@ use crate::{
     camera,
     geometry,
 };
-use wgpu::util::DeviceExt;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WgpuAcceleratedConfiguration {
@@ -348,7 +347,7 @@ impl Renderer for WgpuAccelerated {
     fn update_geometry(&mut self, geometry_delta: Self::GeometryDelta) {
         for chunk in geometry_delta {
             match chunk {
-                geometry::ChunkDelta::Add{ index, triangles } => {
+                geometry::ChunkDelta::Set{ index, triangles } => {
                     self.active_vertices.extend(triangles.into_iter().flat_map(|triangle| {
                         vec![
                             geometry::Vertex::with_default_color(triangle.v0[0], triangle.v0[1], triangle.v0[2]),

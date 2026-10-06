@@ -2,16 +2,16 @@ use r3v_renderer::{
     Camera, Tesselator, Renderer,
     geometry::PointI,
     renderer::{self, WgpuAccelerated},
-    tesselator::{self, GreedyMeshTesselator},
-    camera::{self, OrbitCamera},
+    tesselator::{GreedyMeshTesselator},
+    camera::{OrbitCamera},
 };
 use image::{ImageBuffer, Rgba};
 use std::time::{Duration, Instant};
 
 fn main() {
     let program_start = Instant::now();
-    let width = 800;
-    let height = 600;
+    let width = 1200;
+    let height = 800;
     let aspect_ratio = width as f32 / height as f32;
 
     println!("Initializing Pipeline Components...");
@@ -25,15 +25,13 @@ fn main() {
     let init_time = init_start.elapsed();
 
     let setup_start = Instant::now();
-    let voxels = vec![
-        PointI { x: 0, y: 0, z: 0, i: 0x1 },
-        PointI { x: 0, y: 1, z: 0, i: 0x1 },
-        PointI { x: 0, y: 0, z: 1, i: 0x1 },
-        PointI { x: 1, y: 0, z: 0, i: 0x1 },
-        PointI { x: 1, y: 1, z: 0, i: 0x1 },
+    
+    let voxels: Vec<PointI> = vec![
+        PointI { x: 1, y: 1, z: 1, i: 0b000000000000000001111111111111111 },
     ];
 
-    println!("Feeding {} voxels to the Tesselator...", voxels.len());
+    println!("Generated sphere comprised of {} chunks...", voxels.len());
+    println!("Feeding chunks to the Tesselator...");
 
     tesselator.update_input_geometry(&voxels);
 
@@ -44,54 +42,39 @@ fn main() {
     let mut pixel_buffer = vec![0u8; (width * height * 4) as usize];
     let setup_time = setup_start.elapsed();
 
-    let total_frames = 12;
+    let total_frames = 1;
+    camera.rotate(0.5, 0.5);
+
     let mut total_render_time = Duration::ZERO;
     let mut total_save_time = Duration::ZERO;
 
-    let loop_start = Instant::now();
-    for frame in 0..total_frames {
-        println!("\n--- Frame {}/{} ---", frame + 1, total_frames);
-
-        if frame > 0 {
-            camera.rotate(0.1, 0.05);
-        }
-
-        if let Some(delta) = tesselator.get_output_geometry_delta() {
-            renderer.update_geometry(delta);
-        }
-
-        // 6. Render
-        let render_start = Instant::now();
-        let camera_uniform = camera.get_uniform(aspect_ratio);
-        renderer.render(&camera_uniform, &mut pixel_buffer);
-        let render_time = render_start.elapsed();
-        
-        total_render_time += render_time;
-        println!("  Render time: {:?}", render_time);
-
-        // 7. Save Output
-        let filename = format!("output_frame_{:02}.png", frame);
-        let save_start = Instant::now();
-        save_frame(&filename, width, height, &mut pixel_buffer);
-        let save_time = save_start.elapsed();
-        total_save_time += save_time;
-        println!("  Save time:   {:?}", save_time);
-    }
+    let render_start = Instant::now();
+    let camera_uniform = camera.get_uniform(aspect_ratio);
+    renderer.render(&camera_uniform, &mut pixel_buffer);
+    let render_time = render_start.elapsed();
     
-    let loop_time = loop_start.elapsed();
+    total_render_time += render_time;
+    println!("  Render time: {:?}", render_time);
+
+    let filename = format!("output_frame_{:02}.png", 0);
+    let save_start = Instant::now();
+    save_frame(&filename, width, height, &mut pixel_buffer);
+    let save_time = save_start.elapsed();
+    total_save_time += save_time;
+    println!("  Save time:   {:?}", save_time);
+    
     let program_time = program_start.elapsed();
 
-    println!("\n========================================");
-    println!("          BENCHMARK SUMMARY             ");
-    println!("========================================");
-    println!("Initialization:      {:?}", init_time);
-    println!("Scene Setup:         {:?}", setup_time);
-    println!("Total Loop Time:     {:?}", loop_time);
-    println!("Total Program Time:  {:?}", program_time);
-    println!("----------------------------------------");
-    println!("Avg Render/Frame:    {:?}", total_render_time / total_frames);
-    println!("Avg Save/Frame:      {:?}", total_save_time / total_frames);
-    println!("========================================");
+    // println!("\n========================================");
+    // println!("          BENCHMARK SUMMARY             ");
+    // println!("========================================");
+    // println!("Initialization:      {:?}", init_time);
+    // println!("Scene Setup:         {:?}", setup_time);
+    // println!("Total Program Time:  {:?}", program_time);
+    // println!("----------------------------------------");
+    // println!("Avg Render/Frame:    {:?}", total_render_time / total_frames);
+    // println!("Avg Save/Frame:      {:?}", total_save_time / total_frames);
+    // println!("========================================");
 }
 
 fn save_frame(filename: &str, width: u32, height: u32, bgra_pixels: &mut [u8]) {
