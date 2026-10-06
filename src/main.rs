@@ -2,6 +2,8 @@ use r3v_renderer::{
     Camera, Tesselator, Renderer,
     geometry::PointI,
     renderer::{self, WgpuAccelerated},
+    tesselator::{self, GreedyMeshTesselator},
+    camera::{self, OrbitCamera},
 };
 use image::{ImageBuffer, Rgba};
 use std::time::{Duration, Instant};
@@ -15,8 +17,8 @@ fn main() {
     println!("Initializing Pipeline Components...");
     let init_start = Instant::now();
     
-    let mut camera = MyCamera::new(); // Implements Camera
-    let mut tesselator = MyTesselator::new(); // Implements Tesselator
+    let mut camera = OrbitCamera::default();
+    let mut tesselator = GreedyMeshTesselator::new();
     let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
 
     renderer.configure(renderer::WgpuAcceleratedConfiguration { width, height });
@@ -33,7 +35,7 @@ fn main() {
 
     println!("Feeding {} voxels to the Tesselator...", voxels.len());
 
-    tesselator.update_input_geometry(&voxels);
+    // tesselator.update_input_geometry(&voxels);
     
     if let Some(geometry_delta) = tesselator.get_output_geometry_delta() {
         renderer.update_geometry(geometry_delta);
@@ -54,9 +56,9 @@ fn main() {
             camera.rotate(0.1, 0.05);
         }
 
-        if let Some(delta) = tesselator.take_geometry_delta() {
-            renderer.update_geometry(delta);
-        }
+        // if let Some(delta) = tesselator.get_output_geometry_delta() {
+        //     renderer.update_geometry(delta);
+        // }
 
         // 6. Render
         let render_start = Instant::now();

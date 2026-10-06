@@ -65,10 +65,11 @@ impl WgpuAccelerated {
         });
 
         // Camera
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Camera Buffer"),
-            contents: &[],
+            size: std::mem::size_of::<camera::CameraUniform>() as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Camera Bind Group Layout"),
@@ -237,7 +238,7 @@ impl WgpuAccelerated {
 
 impl Renderer for WgpuAccelerated {
     type Configuration = WgpuAcceleratedConfiguration;
-    type GeometryDelta = geometry::Triangle;
+    type GeometryDelta = Vec<geometry::ChunkDelta>;
 
     fn configure(&mut self, configuration: Self::Configuration) {
         self.active_configuration = Some(configuration);
@@ -345,17 +346,21 @@ impl Renderer for WgpuAccelerated {
     }
 
     fn update_geometry(&mut self, geometry_delta: Self::GeometryDelta) {
-        self.active_vertices.push(geometry::Vertex {
-            position: geometry_delta.v0,
-            color: [1.0, 1.0, 1.0],
-        });
-        self.active_vertices.push(geometry::Vertex {
-            position: geometry_delta.v1,
-            color: [1.0, 1.0, 1.0],
-        });
-        self.active_vertices.push(geometry::Vertex {
-            position: geometry_delta.v2,
-            color: [1.0, 1.0, 1.0],
-        });
+        for chunk in geometry_delta {
+            match chunk {
+                geometry::ChunkDelta::Add{ index, triangles } => {
+                    self.active_vertices.extend(triangles.into_iter().flat_map(|triangle| {
+                        vec![
+                            geometry::Vertex::with_default_color(triangle.v0[0], triangle.v0[1], triangle.v0[2]),
+                            geometry::Vertex::with_default_color(triangle.v1[0], triangle.v1[1], triangle.v1[2]),
+                            geometry::Vertex::with_default_color(triangle.v2[0], triangle.v2[1], triangle.v2[2]),
+                        ]
+                    }));
+                }
+                geometry::ChunkDelta::Remove { index } => {
+                    todo!()
+                }
+            }
+        }
     }
 }

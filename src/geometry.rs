@@ -29,3 +29,15 @@ impl Vertex {
         }
     }
 }
+
+pub type ChunkIndex = (i32, i32, i32);
+
+pub enum ChunkDelta {
+    Add {
+        index: ChunkIndex,
+        triangles: Vec<Triangle>,
+    },
+    Remove {
+        index: ChunkIndex,
+    },
+}
