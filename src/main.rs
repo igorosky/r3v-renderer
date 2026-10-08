@@ -26,10 +26,10 @@ fn main() {
         voxels.push(PointI { x: 0, y: i, z: 0, i: 0 });
         voxels.push(PointI { x: 0, y: 0, z: i, i: 0 });
     }
-    
+
     println!("Adding {} voxels to the scene...", voxels.len());
     renderer.add_voxels(&voxels);
-    
+
     let mut pixel_buffer = vec![0u8; (width * height * 4) as usize];
     let setup_time = setup_start.elapsed();
 
@@ -40,7 +40,7 @@ fn main() {
     let loop_start = Instant::now();
     for frame in 0..total_frames {
         println!("\n--- Frame {}/{} ---", frame + 1, total_frames);
-        
+    
         if frame > 0 {
             let camera = renderer.camera();
             camera.rotate(0.5, 0.0);

@@ -1,6 +1,12 @@
 use crate::{
-    Renderer, camera::{self, CameraInternal, OrbitCamera}, geometry::PointI, urdf::UrdfRobot,
+    Renderer,
+    camera::{self, CameraInternal, OrbitCamera},
+    geometry::PointI,
+    stl::{NativeStlReader, StlReader, resolve_stl_reference},
+    urdf::{NativeUrdfReader, UrdfGeometry, UrdfReader, UrdfRobot},
 };
+use cgmath::{Matrix4, Point3, Rad, SquareMatrix, Transform};
+use std::{collections::HashMap, path::Path};
 use wgpu::util::DeviceExt;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,6 +43,7 @@ pub struct WgpuAccelerated {
     render_targets: Option<RenderTargets>,
     active_voxels: Vec<PointI>,
     active_urdf: Option<UrdfRobot>,
+    active_vertices: Vec<Vertex>,
 }
 
 impl WgpuAccelerated {
@@ -44,7 +51,7 @@ impl WgpuAccelerated {
         pollster::block_on(Self::new_async())
     }
 
-    pub async fn new_async() -> Option<Self> { 
+    pub async fn new_async() -> Option<Self> {
         let instance = wgpu::Instance::default();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
@@ -69,19 +76,20 @@ impl WgpuAccelerated {
             contents: bytemuck::cast_slice(&[camera_uniform]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Camera Bind Group Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Camera Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Camera Bind Group"),
             layout: &camera_bind_group_layout,
@@ -94,9 +102,7 @@ impl WgpuAccelerated {
         // Pipeline
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Pipeline Layout"),
-            bind_group_layouts: &[
-                Some(&camera_bind_group_layout)
-            ],
+            bind_group_layouts: &[Some(&camera_bind_group_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -154,19 +160,113 @@ impl WgpuAccelerated {
             render_targets: None,
             active_voxels: vec![],
             active_urdf: None,
+            active_vertices: vec![],
         })
+    }
+
+    pub fn load_urdf_file(&mut self, path: impl AsRef<Path>) -> Result<&UrdfRobot, String> {
+        self.load_urdf_file_with_readers(path, &NativeUrdfReader, &NativeStlReader)
+    }
+
+    pub fn load_urdf_file_with_readers<U, S>(
+        &mut self,
+        path: impl AsRef<Path>,
+        urdf_reader: &U,
+        stl_reader: &S,
+    ) -> Result<&UrdfRobot, String>
+    where
+        U: UrdfReader,
+        S: StlReader,
+    {
+        let path = path.as_ref();
+        let robot = urdf_reader.read_file(path)?;
+        let link_transforms = compute_link_transforms(&robot)?;
+        let robot_to_camera = Matrix4::from_angle_x(Rad(-std::f32::consts::FRAC_PI_2));
+        let mut vertices = Vec::new();
+
+        for link in &robot.links {
+            let link_transform = link_transforms
+                .get(&link.name)
+                .copied()
+                .unwrap_or_else(Matrix4::identity);
+
+            for visual in &link.visuals {
+                let Some(UrdfGeometry::Mesh(mesh_reference)) = visual.geometry.as_ref() else {
+                    continue;
+                };
+
+                let mesh_path = resolve_stl_reference(path, &mesh_reference.filename);
+                let mesh = stl_reader.read_file(&mesh_path)?;
+                let visual_origin = visual
+                    .origin
+                    .map(origin_matrix)
+                    .unwrap_or_else(Matrix4::identity);
+                let scale = mesh_reference.scale.unwrap_or(crate::urdf::Vector3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                });
+                let mesh_transform = link_transform
+                    * visual_origin
+                    * Matrix4::from_nonuniform_scale(scale.x, scale.y, scale.z);
+                let color = visual
+                    .material
+                    .as_ref()
+                    .and_then(|material| material.color.as_ref())
+                    .map(|color| [color.rgba[0], color.rgba[1], color.rgba[2]])
+                    .unwrap_or([0.79, 0.82, 0.93]);
+
+                vertices.reserve(mesh.vertex_count());
+                for triangle in mesh.triangles {
+                    for vertex in triangle.vertices {
+                        let position = robot_to_camera.transform_point(
+                            mesh_transform
+                                .transform_point(Point3::new(vertex[0], vertex[1], vertex[2])),
+                        );
+                        vertices.push(Vertex {
+                            position: [position.x, position.y, position.z],
+                            color,
+                        });
+                    }
+                }
+            }
+        }
+
+        if vertices.is_empty() {
+            return Err(format!(
+                "URDF '{}' contains no renderable STL visual meshes.",
+                path.display()
+            ));
+        }
+
+        frame_camera_to_vertices(&mut self.camera, &vertices);
+        self.active_vertices = vertices;
+        self.active_urdf = Some(robot);
+        Ok(self.active_urdf.as_ref().unwrap())
     }
 
     fn compute_visible_vertices(&self) -> Vec<Vertex> {
         vec![
-            Vertex { position: [-0.5, -0.5, 0.0], color: [1.0, 0.0, 0.0] },
-            Vertex { position: [0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0] },
-            Vertex { position: [0.0, 0.5, 0.0], color: [0.0, 0.0, 1.0] },
+            Vertex {
+                position: [-0.5, -0.5, 0.0],
+                color: [1.0, 0.0, 0.0],
+            },
+            Vertex {
+                position: [0.5, -0.5, 0.0],
+                color: [0.0, 1.0, 0.0],
+            },
+            Vertex {
+                position: [0.0, 0.5, 0.0],
+                color: [0.0, 0.0, 1.0],
+            },
         ]
     }
 
     fn rebuild_targets(&mut self) {
-        assert!(self.active_configuration.is_some(), "Renderer is not configured. Call configure() before render().");
+        assert!(
+            self.active_configuration.is_some(),
+            "Renderer is not configured. Call configure() before render()."
+        );
         let config = self.active_configuration.as_ref().unwrap();
         let unpadded_bytes_per_row = config.width * self.state.pixel_size;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -231,6 +331,85 @@ struct Vertex {
     color: [f32; 3],
 }
 
+fn origin_matrix(origin: crate::urdf::UrdfOrigin) -> Matrix4<f32> {
+    Matrix4::from_translation(cgmath::Vector3::new(
+        origin.xyz.x,
+        origin.xyz.y,
+        origin.xyz.z,
+    )) * Matrix4::from_angle_z(Rad(origin.rpy.z))
+        * Matrix4::from_angle_y(Rad(origin.rpy.y))
+        * Matrix4::from_angle_x(Rad(origin.rpy.x))
+}
+
+fn compute_link_transforms(robot: &UrdfRobot) -> Result<HashMap<String, Matrix4<f32>>, String> {
+    let child_links: std::collections::HashSet<&str> = robot
+        .joints
+        .iter()
+        .map(|joint| joint.child.as_str())
+        .collect();
+    let mut transforms = HashMap::new();
+
+    for link in &robot.links {
+        if !child_links.contains(link.name.as_str()) {
+            transforms.insert(link.name.clone(), Matrix4::identity());
+        }
+    }
+
+    let mut remaining: Vec<_> = robot.joints.iter().collect();
+    while !remaining.is_empty() {
+        let previous_count = remaining.len();
+        remaining.retain(|joint| {
+            let Some(parent_transform) = transforms.get(&joint.parent).copied() else {
+                return true;
+            };
+            let joint_origin = joint
+                .origin
+                .map(origin_matrix)
+                .unwrap_or_else(Matrix4::identity);
+            transforms.insert(joint.child.clone(), parent_transform * joint_origin);
+            false
+        });
+        if remaining.len() == previous_count {
+            let unresolved = remaining
+                .iter()
+                .map(|joint| joint.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "Could not resolve URDF link transforms for joints: {unresolved}"
+            ));
+        }
+    }
+
+    Ok(transforms)
+}
+
+fn frame_camera_to_vertices(camera: &mut OrbitCamera, vertices: &[Vertex]) {
+    let mut minimum = [f32::INFINITY; 3];
+    let mut maximum = [f32::NEG_INFINITY; 3];
+    for vertex in vertices {
+        for axis in 0..3 {
+            minimum[axis] = minimum[axis].min(vertex.position[axis]);
+            maximum[axis] = maximum[axis].max(vertex.position[axis]);
+        }
+    }
+
+    let center = [
+        (minimum[0] + maximum[0]) * 0.5,
+        (minimum[1] + maximum[1]) * 0.5,
+        (minimum[2] + maximum[2]) * 0.5,
+    ];
+    let largest_extent = (0..3)
+        .map(|axis| maximum[axis] - minimum[axis])
+        .fold(0.0f32, f32::max);
+
+    camera.target = Point3::new(center[0], center[1], center[2]);
+    camera.distance = (largest_extent * 1.8).max(0.5);
+    camera.yaw = 0.65;
+    camera.pitch = 0.45;
+    camera.new_uniform_available = true;
+}
+
 impl Renderer for WgpuAccelerated {
     type Configuration = WgpuAcceleratedConfiguration;
     type Camera = camera::OrbitCamera;
@@ -238,12 +417,17 @@ impl Renderer for WgpuAccelerated {
     fn add_voxels(&mut self, voxels: &[PointI]) {
         self.active_voxels.extend_from_slice(voxels);
     }
-    
+
     fn render(&mut self, output: &mut [u8]) {
         // Ensure valid configuration
-        let config = self.active_configuration.expect("Renderer is not configured. Call configure() before render().");
-        assert!(output.len() >= (config.width * config.height * self.state.pixel_size) as usize, "Output buffer is too small for the configured dimensions.");
-        
+        let config = self
+            .active_configuration
+            .expect("Renderer is not configured. Call configure() before render().");
+        assert!(
+            output.len() >= (config.width * config.height * self.state.pixel_size) as usize,
+            "Output buffer is too small for the configured dimensions."
+        );
+
         // Ensure render targets are built and match the current configuration
         let needs_rebuild = match &self.render_targets {
             Some(targets) => targets.width != config.width || targets.height != config.height,
@@ -255,25 +439,39 @@ impl Renderer for WgpuAccelerated {
         let targets = self.render_targets.as_ref().unwrap();
 
         // Load vertices
-        let vertices = self.compute_visible_vertices();
+        let vertices = if self.active_vertices.is_empty() {
+            self.compute_visible_vertices()
+        } else {
+            self.active_vertices.clone()
+        };
         // TODO(@mariusz): Implement a persistent vertex buffer instead of reallocating
-        let vertices_buffer = self.state.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let vertices_buffer =
+            self.state
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Vertex Buffer"),
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
 
         // Update camera uniform
         if self.camera.is_dirty() {
             let aspect_ratio = config.width as f32 / config.height as f32;
             let camera_uniform = self.camera.get_uniform(aspect_ratio);
-            self.state.queue.write_buffer(&self.state.camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
+            self.state.queue.write_buffer(
+                &self.state.camera_buffer,
+                0,
+                bytemuck::cast_slice(&[camera_uniform]),
+            );
         }
 
         // Command encoder and render pass
-        let mut encoder = self.state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
+        let mut encoder =
+            self.state
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Render Encoder"),
+                });
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -330,7 +528,10 @@ impl Renderer for WgpuAccelerated {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             sender.send(result).unwrap();
         });
-        let _ = self.state.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+        let _ = self.state.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
         receiver.recv().unwrap().unwrap();
         {
             let padded_data = buffer_slice.get_mapped_range().unwrap();
@@ -343,7 +544,7 @@ impl Renderer for WgpuAccelerated {
         }
         targets.output_buffer.unmap();
     }
-    
+
     fn configure(&mut self, configuration: Self::Configuration) {
         self.active_configuration = Some(configuration);
     }
@@ -353,7 +554,7 @@ impl Renderer for WgpuAccelerated {
     }
 
     fn load_urdf(&mut self, source: &str) -> Result<UrdfRobot, String> {
-        let robot = UrdfRobot::from_str(source)?;
+        let robot = NativeUrdfReader.read_str(source)?;
         self.active_urdf = Some(robot.clone());
         Ok(robot)
     }

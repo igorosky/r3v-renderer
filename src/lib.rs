@@ -6,8 +6,14 @@ pub mod stl;
 pub mod urdf;
 pub mod wgpu;
 
-pub use stl::{StlMesh, Triangle};
-pub use urdf::{UrdfJoint, UrdfLink, UrdfMaterial, UrdfOrigin, UrdfRobot, UrdfVisual};
+#[cfg(test)]
+mod reader_tests;
+
+pub use stl::{NativeStlReader, StlIoReader, StlMesh, StlReader, Triangle};
+pub use urdf::{
+    NativeUrdfReader, UrdfJoint, UrdfLink, UrdfMaterial, UrdfOrigin, UrdfReader, UrdfRobot,
+    UrdfRsReader, UrdfVisual,
+};
 
 pub trait Camera {
     fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32);
