@@ -6,7 +6,7 @@ pub struct PointI {
     pub i: u32,
 }
 
-#[derive(Copy, Clone, Debug, bytemuck::Zeroable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, bytemuck::Zeroable)]
 pub struct Point<T> {
     pub x: T,
     pub y: T,
@@ -45,12 +45,7 @@ impl Vertex {
     }
 }
 
-pub enum ChunkDelta {
-    Set {
-        index: DiscretePoint,
-        triangles: Vec<RealTriangle>,
-    },
-    Remove {
-        index: DiscretePoint,
-    },
+pub struct ChunkDelta {
+    pub index: DiscretePoint,
+    pub triangles: Vec<RealTriangle>,
 }

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     Renderer,
     camera,
@@ -37,6 +39,7 @@ pub struct WgpuAccelerated {
     render_targets: Option<RenderTargets>,
 
     geometry_dirty: bool,
+    chunk_vertices: HashMap<geometry::DiscretePoint, Vec<geometry::Vertex>>,
     active_vertices: Vec<geometry::Vertex>,
     vertex_buffer: Option<wgpu::Buffer>,
     vertex_capacity: usize,
@@ -156,6 +159,7 @@ impl WgpuAccelerated {
             active_configuration: None,
             render_targets: None,
             geometry_dirty: false,
+            chunk_vertices: HashMap::new(),
             active_vertices: vec![],
             vertex_buffer: None,
             vertex_capacity: 0,
@@ -360,22 +364,22 @@ impl Renderer for WgpuAccelerated {
     }
 
     fn update_geometry(&mut self, geometry_delta: Self::GeometryDelta) {
-        for chunk in geometry_delta {
-            match chunk {
-                geometry::ChunkDelta::Set{ index, triangles } => {
-                    self.active_vertices.extend(triangles.into_iter().flat_map(|triangle| {
-                        vec![
-                            geometry::Vertex::with_default_color(triangle.v0[0], triangle.v0[1], triangle.v0[2]),
-                            geometry::Vertex::with_default_color(triangle.v1[0], triangle.v1[1], triangle.v1[2]),
-                            geometry::Vertex::with_default_color(triangle.v2[0], triangle.v2[1], triangle.v2[2]),
-                        ]
-                    }));
-                }
-                geometry::ChunkDelta::Remove { index } => {
-                    todo!()
-                }
+        for geometry::ChunkDelta { index, triangles } in geometry_delta {
+            if triangles.is_empty() {
+                self.chunk_vertices.remove(&index);
+                continue;
             }
+            let vertices = triangles.into_iter().flat_map(|triangle| {
+                [
+                    geometry::Vertex::with_default_color(triangle.v0[0], triangle.v0[1], triangle.v0[2]),
+                    geometry::Vertex::with_default_color(triangle.v1[0], triangle.v1[1], triangle.v1[2]),
+                    geometry::Vertex::with_default_color(triangle.v2[0], triangle.v2[1], triangle.v2[2]),
+                ]
+            }).collect();
+            self.chunk_vertices.insert(index, vertices);
         }
+        self.active_vertices.clear();
+        self.active_vertices.extend(self.chunk_vertices.values().flatten().copied());
         self.geometry_dirty = true;
     }
 }

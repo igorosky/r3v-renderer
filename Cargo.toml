@@ -7,6 +7,17 @@ edition = "2024"
 anyhow = "1.0.104"
 bytemuck = "1.25.2"
 cgmath = "0.18.0"
-image = "0.25.10"
+image = { version = "0.25.10", optional = true }
 pollster = "1.0.1"
+softbuffer = { version = "0.4", optional = true }
 wgpu = "30.0.1"
+winit = { version = "0.30", optional = true }
+
+[features]
+# Dependencies needed only by the demo binary (src/main.rs).
+demo = ["dep:image", "dep:winit", "dep:softbuffer"]
+
+[[bin]]
+name = "r3v-renderer"
+path = "src/main.rs"
+required-features = ["demo"]
