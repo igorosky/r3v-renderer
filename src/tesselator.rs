@@ -54,16 +54,8 @@ pub struct GreedyMeshTesselator {
     in_queue: HashSet<DiscretePoint>,
 }
 
-fn to_array(point: DiscretePoint) -> [i32; 3] {
-    [point.x, point.y, point.z]
-}
-
-fn to_point(coords: [i32; 3]) -> DiscretePoint {
-    DiscretePoint { x: coords[0], y: coords[1], z: coords[2] }
-}
-
 fn region_of(brick: DiscretePoint) -> DiscretePoint {
-    to_point(to_array(brick).map(|c| c.div_euclid(REGION_SIZE) * REGION_SIZE))
+    DiscretePoint::from_array(brick.to_array().map(|c| c.div_euclid(REGION_SIZE) * REGION_SIZE))
 }
 
 impl GreedyMeshTesselator {
@@ -84,17 +76,17 @@ impl GreedyMeshTesselator {
     fn mark_brick_dirty(&mut self, brick: DiscretePoint) {
         let region = region_of(brick);
         self.mark_dirty(region);
-        let (brick, region_coords) = (to_array(brick), to_array(region));
+        let (brick, region_coords) = (brick.to_array(), region.to_array());
         for axis in 0..3 {
             let mut neighbour = region_coords;
             if brick[axis] == region_coords[axis] {
                 neighbour[axis] -= REGION_SIZE;
-                self.mark_dirty(to_point(neighbour));
+                self.mark_dirty(DiscretePoint::from_array(neighbour));
             }
             neighbour = region_coords;
             if brick[axis] + BRICK_SIZE[axis] == region_coords[axis] + REGION_SIZE {
                 neighbour[axis] += REGION_SIZE;
-                self.mark_dirty(to_point(neighbour));
+                self.mark_dirty(DiscretePoint::from_array(neighbour));
             }
         }
     }
@@ -109,7 +101,7 @@ impl GreedyMeshTesselator {
                     for (axis, b) in [bx, by, bz].into_iter().enumerate() {
                         brick[axis] = region[axis] + (b - 1) * BRICK_SIZE[axis];
                     }
-                    let Some(&mask) = self.bricks.get(&to_point(brick)) else {
+                    let Some(&mask) = self.bricks.get(&DiscretePoint::from_array(brick)) else {
                         continue;
                     };
                     let mut bits = mask;
@@ -149,7 +141,7 @@ impl GreedyMeshTesselator {
     }
 
     fn region_quads(&self, region: DiscretePoint) -> Vec<Quad> {
-        let solid = self.solid_columns(to_array(region));
+        let solid = self.solid_columns(region.to_array());
         let mut quads = Vec::new();
         let mut planes = [[0u32; REGION_SIZE as usize]; REGION_SIZE as usize];
         for (direction, &FaceDirection { normal, column, row, .. }) in FACE_DIRECTIONS.iter().enumerate() {
@@ -158,7 +150,6 @@ impl GreedyMeshTesselator {
                 for c in 0..REGION_SIZE as usize {
                     let voxels = solid[normal][r + 1][c + 1];
                     let faces = if positive { voxels & !(voxels >> 1) } else { voxels & !(voxels << 1) };
-                    // Drop the border bits; bit i is now region-local plane i.
                     let mut faces = (faces >> 1) as u32;
                     while faces != 0 {
                         let plane = faces.trailing_zeros() as usize;
@@ -184,7 +175,7 @@ impl GreedyMeshTesselator {
     }
 
     fn tesselate_region(&self, region: DiscretePoint) -> Vec<RealTriangle> {
-        let region_origin = to_array(region);
+        let region_origin = region.to_array();
         let quads = self.region_quads(region);
         let mut triangles = Vec::with_capacity(quads.len() * 2);
         for Quad { direction, origin, size } in quads {
@@ -214,7 +205,7 @@ impl Tesselator for GreedyMeshTesselator {
         for brick in geometry_delta {
             let index = DiscretePoint { x: brick.x, y: brick.y, z: brick.z };
             debug_assert!(
-                (0..3).all(|axis| to_array(index)[axis].rem_euclid(BRICK_SIZE[axis]) == 0),
+                (0..3).all(|axis| index.to_array()[axis].rem_euclid(BRICK_SIZE[axis]) == 0),
                 "Brick origin {:?} is not aligned to {:?}", index, BRICK_SIZE,
             );
             let previous = self.bricks.get(&index).copied().unwrap_or(0);

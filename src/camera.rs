@@ -36,6 +36,8 @@ pub struct OrbitCamera {
     pub distance: f32,
     pub yaw: f32,
     pub pitch: f32,
+    pub near: f32,
+    pub far: f32,
     pub new_uniform_available: bool,
 }
 
@@ -46,6 +48,8 @@ impl OrbitCamera {
             distance,
             yaw: yaw_deg.to_radians(),
             pitch: pitch_deg.to_radians(),
+            near: 0.1,
+            far: 100.0,
             new_uniform_available: true,
         }
     }
@@ -60,6 +64,12 @@ impl OrbitCamera {
         let right = forward.cross(world_up).normalize();
         let up = right.cross(forward).normalize();
         (eye, self.target, right, up)
+    }
+
+    pub fn with_clip_planes(mut self, near: f32, far: f32) -> Self {
+        self.near = near;
+        self.far = far;
+        self
     }
 
     fn view_matrix(&self) -> cgmath::Matrix4<f32> {
@@ -99,7 +109,7 @@ impl Camera for OrbitCamera {
     
     fn get_uniform(&self, aspect_ratio: f32) -> CameraUniform {
         let view = self.view_matrix();
-        let proj = OPENGL_TO_WGPU_MATRIX * cgmath::perspective(cgmath::Rad(std::f32::consts::FRAC_PI_4), aspect_ratio, 0.1, 100.0);
+        let proj = OPENGL_TO_WGPU_MATRIX * cgmath::perspective(cgmath::Rad(std::f32::consts::FRAC_PI_4), aspect_ratio, self.near, self.far);
         let view_proj = proj * view;
         CameraUniform::from_matrix(view_proj)
     }

@@ -13,6 +13,16 @@ pub struct Point<T> {
     pub z: T,
 }
 
+impl<T> Point<T> {
+    pub fn to_array(&self) -> [T; 3] where T: Copy {
+        [self.x, self.y, self.z]
+    }
+
+    pub fn from_array(arr: [T; 3]) -> Self where T: Copy {
+        Self { x: arr[0], y: arr[1], z: arr[2] }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct Triangle<T> {
     pub v0: [T; 3],
