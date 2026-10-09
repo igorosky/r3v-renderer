@@ -12,6 +12,34 @@ const FACE_BOTTOM:  [[i32; 3]; 6] = [[0,0,0], [1,0,0], [1,0,1], [0,0,0], [1,0,1]
 const FACE_RIGHT:   [[i32; 3]; 6] = [[1,0,1], [1,0,0], [1,1,0], [1,0,1], [1,1,0], [1,1,1]]; // +X
 const FACE_LEFT:    [[i32; 3]; 6] = [[0,0,0], [0,0,1], [0,1,1], [0,0,0], [0,1,1], [0,1,0]]; // -X
 
+const AXIS_X: usize = 0;
+const AXIS_Y: usize = 1;
+const AXIS_Z: usize = 2;
+
+struct FaceDirection {
+    vertices: [[i32; 3]; 6],
+    normal: usize,
+    column: usize,
+    row: usize,
+    planes: u32,
+}
+
+const FACE_DIRECTIONS: [FaceDirection; 6] = [
+    FaceDirection { vertices: FACE_RIGHT,  normal: AXIS_X, column: AXIS_Y, row: AXIS_Z, planes: 4 },
+    FaceDirection { vertices: FACE_LEFT,   normal: AXIS_X, column: AXIS_Y, row: AXIS_Z, planes: 4 },
+    FaceDirection { vertices: FACE_TOP,    normal: AXIS_Y, column: AXIS_X, row: AXIS_Z, planes: 4 },
+    FaceDirection { vertices: FACE_BOTTOM, normal: AXIS_Y, column: AXIS_X, row: AXIS_Z, planes: 4 },
+    FaceDirection { vertices: FACE_FRONT,  normal: AXIS_Z, column: AXIS_X, row: AXIS_Y, planes: 2 },
+    FaceDirection { vertices: FACE_BACK,   normal: AXIS_Z, column: AXIS_X, row: AXIS_Y, planes: 2 },
+];
+
+#[derive(Debug, Clone, Copy)]
+struct Quad {
+    direction: usize,
+    origin: [i32; 3],
+    size: [i32; 3],
+}
+
 struct VoxelChunk {
     pub index: DiscretePoint,
     pub mask: u32,
@@ -39,53 +67,93 @@ impl GreedyMeshTesselator {
             self.dirty_queue.push_back(index);
         }
     }
-    
-    fn voxel_world_origin(chunk_origin: &DiscretePoint, voxel_index: u32) -> DiscretePoint {
-        let lx = (voxel_index & 0b11) as i32;
-        let ly = ((voxel_index >> 2) & 0b11) as i32;
-        let lz = ((voxel_index >> 4) & 0b1) as i32;
-        DiscretePoint {
-            x: chunk_origin.x + lx,
-            y: chunk_origin.y + ly,
-            z: chunk_origin.z + lz,
+
+    fn face_masks(mask: u32) -> [u32; 6] {
+        [
+            mask & !((mask >> 1)  & 0x77777777), // +X
+            mask & !((mask << 1)  & 0xEEEEEEEE), // -X
+            mask & !((mask >> 4)  & 0x0FFF0FFF), // +Y
+            mask & !((mask << 4)  & 0xFFF0FFF0), // -Y
+            mask & !((mask >> 16) & 0x0000FFFF), // +Z
+            mask & !((mask << 16) & 0xFFFF0000), // -Z
+        ]
+    }
+
+    fn plane_rows(faces: u32, normal: usize, plane: u32) -> [u8; 4] {
+        let mut rows = [0u8; 4];
+        match normal {
+            AXIS_Z => for y in 0..4 {
+                rows[y as usize] = ((faces >> (16 * plane + 4 * y)) & 0xF) as u8;
+            },
+            AXIS_Y => for z in 0..2 {
+                rows[z as usize] = ((faces >> (16 * z + 4 * plane)) & 0xF) as u8;
+            },
+            _ => for z in 0..2 {
+                let spread = (faces >> (16 * z + plane)) & 0x1111;
+                rows[z as usize] = (((spread * 0x1248) >> 12) & 0xF) as u8;
+            },
+        }
+        rows
+    }
+
+    fn greedy_rectangles(rows: &mut [u8; 4], mut emit: impl FnMut(i32, i32, i32, i32)) {
+        for r in 0..rows.len() {
+            while rows[r] != 0 {
+                let start = rows[r].trailing_zeros();
+                let width = (rows[r] >> start).trailing_ones();
+                let run = (((1u16 << width) - 1) << start) as u8;
+                let mut height = 1;
+                while r + height < rows.len() && rows[r + height] & run == run {
+                    rows[r + height] &= !run;
+                    height += 1;
+                }
+                rows[r] &= !run;
+                emit(start as i32, r as i32, width as i32, height as i32);
+            }
         }
     }
 
-    fn tesselate_chunk(chunk: &VoxelChunk) -> Vec<RealTriangle> {
-        let chunk_origin = chunk.index;
-        let chunk_triangles = &mut Vec::new();
-
-        let mask = chunk.mask;
-        let right_faces  = mask & !((mask >> 1)  & 0x77777777);
-        let left_faces   = mask & !((mask << 1)  & 0xEEEEEEEE);
-        let top_faces    = mask & !((mask >> 4)  & 0x0FFF0FFF);
-        let bottom_faces = mask & !((mask << 4)  & 0xFFF0FFF0);
-        let front_faces  = mask & !((mask >> 16) & 0x0000FFFF);
-        let back_faces   = mask & !((mask << 16) & 0xFFFF0000);
-
-        for bit in 0..32 {
-            let bit_mask = 1 << bit;
-            if (mask & bit_mask) == 0 {
+    fn greedy_quads(mask: u32) -> Vec<Quad> {
+        let mut quads = Vec::new();
+        for (direction, faces) in Self::face_masks(mask).into_iter().enumerate() {
+            if faces == 0 {
                 continue;
             }
-            let voxel_origin = Self::voxel_world_origin(&chunk_origin, bit);
-            let mut push_face = |face_data: &[[i32; 3]; 6]| {
-                for tri in face_data.chunks_exact(3) {
-                    chunk_triangles.push(RealTriangle {
-                        v0: [(voxel_origin.x + tri[0][0]) as f32, (voxel_origin.y + tri[0][1]) as f32, (voxel_origin.z + tri[0][2]) as f32],
-                        v1: [(voxel_origin.x + tri[1][0]) as f32, (voxel_origin.y + tri[1][1]) as f32, (voxel_origin.z + tri[1][2]) as f32],
-                        v2: [(voxel_origin.x + tri[2][0]) as f32, (voxel_origin.y + tri[2][1]) as f32, (voxel_origin.z + tri[2][2]) as f32],
-                    });
-                }
-            };
-            if (right_faces  & bit_mask) != 0 { push_face(&FACE_RIGHT);  }
-            if (left_faces   & bit_mask) != 0 { push_face(&FACE_LEFT);   }
-            if (top_faces    & bit_mask) != 0 { push_face(&FACE_TOP);    }
-            if (bottom_faces & bit_mask) != 0 { push_face(&FACE_BOTTOM); }
-            if (front_faces  & bit_mask) != 0 { push_face(&FACE_FRONT);  }
-            if (back_faces   & bit_mask) != 0 { push_face(&FACE_BACK);   }
+            let FaceDirection { normal, column, row, planes, .. } = FACE_DIRECTIONS[direction];
+            for plane in 0..planes {
+                let mut rows = Self::plane_rows(faces, normal, plane);
+                Self::greedy_rectangles(&mut rows, |c, r, width, height| {
+                    let mut origin = [0; 3];
+                    origin[normal] = plane as i32;
+                    origin[column] = c;
+                    origin[row] = r;
+                    let mut size = [1; 3];
+                    size[column] = width;
+                    size[row] = height;
+                    quads.push(Quad { direction, origin, size });
+                });
+            }
         }
-        chunk_triangles.to_vec()
+        quads
+    }
+
+    fn tesselate_chunk(chunk: &VoxelChunk) -> Vec<RealTriangle> {
+        let chunk_origin = [chunk.index.x, chunk.index.y, chunk.index.z];
+        let quads = Self::greedy_quads(chunk.mask);
+        let mut chunk_triangles = Vec::with_capacity(quads.len() * 2);
+        for Quad { direction, origin, size } in quads {
+            let corner = |v: [i32; 3]| -> [f32; 3] {
+                std::array::from_fn(|axis| (chunk_origin[axis] + origin[axis] + v[axis] * size[axis]) as f32)
+            };
+            for tri in FACE_DIRECTIONS[direction].vertices.chunks_exact(3) {
+                chunk_triangles.push(RealTriangle {
+                    v0: corner(tri[0]),
+                    v1: corner(tri[1]),
+                    v2: corner(tri[2]),
+                });
+            }
+        }
+        chunk_triangles
     }
 }
 
