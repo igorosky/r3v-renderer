@@ -1,9 +1,12 @@
 pub mod camera;
 pub mod geometry;
 pub mod renderer;
+pub mod robot;
 pub mod tesselator;
 
 mod vertex_arena;
+mod stl;
+mod urdf;
 
 pub trait Camera {
     fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32);
@@ -13,13 +16,14 @@ pub trait Camera {
     fn get_uniform(&self, aspect_ratio: f32) -> camera::CameraUniform;
 }
 
-// pub trait Robot {
-//     type RobotDescription;
-//     type SensorInput;
+pub trait Robot {
+    type RobotDescription;
+    type SensorInput;
+    type TransformDescription;
 
-//     fn from_description(description: Self::RobotDescription) -> Self;
-//     fn feed_sensor_input(&mut self, input: &Self::SensorInput);
-// }
+    fn from_description(description: Self::RobotDescription) -> Self;
+    fn feed_sensor_input(&mut self, input: &Self::SensorInput) -> Self::TransformDescription;
+}
 
 pub trait Tesselator {
     type Configuration;

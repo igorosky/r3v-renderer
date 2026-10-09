@@ -30,6 +30,24 @@ pub struct Triangle<T> {
     pub v2: [T; 3],
 }
 
+pub struct Vector3D<T> {
+    pub x: T,
+    pub y: T,
+    pub z: T,
+}
+
+pub struct Quaternion<T> {
+    pub x: T,
+    pub y: T,
+    pub z: T,
+    pub w: T,
+}
+
+pub struct Twist<T> {
+    pub linear: Vector3D<T>,
+    pub rotational: Quaternion<T>,
+}
+
 pub type DiscreteUnit = i32;
 pub type RealUnit = f32;
 
@@ -38,6 +56,8 @@ pub type RealPoint = Point<RealUnit>;
 
 pub type DiscreteTriangle = Triangle<DiscreteUnit>;
 pub type RealTriangle = Triangle<RealUnit>;
+
+pub type RealTwist = Twist<RealUnit>;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
