@@ -249,9 +249,8 @@ fn generate_world(t: f32) -> Vec<PointI> {
                         }
                     }
                 }
-                if mask != 0 {
-                    chunks.push(PointI { x: ox, y: oy, z: oz, i: mask });
-                }
+                // Empty bricks are sent too, so bricks that became empty get cleared.
+                chunks.push(PointI { x: ox, y: oy, z: oz, i: mask });
             }
         }
     }

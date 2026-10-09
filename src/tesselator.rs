@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+
 use crate::{
     Tesselator, geometry::{
         DiscretePoint, PointI, RealTriangle, TriangleChunk,
@@ -16,22 +17,27 @@ const AXIS_X: usize = 0;
 const AXIS_Y: usize = 1;
 const AXIS_Z: usize = 2;
 
+const BRICK_SIZE: [i32; 3] = [4, 4, 2];
+const REGION_SIZE: i32 = 32;
+const PADDED_SIZE: usize = REGION_SIZE as usize + 2;
+
 struct FaceDirection {
     vertices: [[i32; 3]; 6],
     normal: usize,
     column: usize,
     row: usize,
-    planes: u32,
 }
 
 const FACE_DIRECTIONS: [FaceDirection; 6] = [
-    FaceDirection { vertices: FACE_RIGHT,  normal: AXIS_X, column: AXIS_Y, row: AXIS_Z, planes: 4 },
-    FaceDirection { vertices: FACE_LEFT,   normal: AXIS_X, column: AXIS_Y, row: AXIS_Z, planes: 4 },
-    FaceDirection { vertices: FACE_TOP,    normal: AXIS_Y, column: AXIS_X, row: AXIS_Z, planes: 4 },
-    FaceDirection { vertices: FACE_BOTTOM, normal: AXIS_Y, column: AXIS_X, row: AXIS_Z, planes: 4 },
-    FaceDirection { vertices: FACE_FRONT,  normal: AXIS_Z, column: AXIS_X, row: AXIS_Y, planes: 2 },
-    FaceDirection { vertices: FACE_BACK,   normal: AXIS_Z, column: AXIS_X, row: AXIS_Y, planes: 2 },
+    FaceDirection { vertices: FACE_RIGHT,  normal: AXIS_X, column: AXIS_Y, row: AXIS_Z },
+    FaceDirection { vertices: FACE_LEFT,   normal: AXIS_X, column: AXIS_Y, row: AXIS_Z },
+    FaceDirection { vertices: FACE_TOP,    normal: AXIS_Y, column: AXIS_X, row: AXIS_Z },
+    FaceDirection { vertices: FACE_BOTTOM, normal: AXIS_Y, column: AXIS_X, row: AXIS_Z },
+    FaceDirection { vertices: FACE_FRONT,  normal: AXIS_Z, column: AXIS_X, row: AXIS_Y },
+    FaceDirection { vertices: FACE_BACK,   normal: AXIS_Z, column: AXIS_X, row: AXIS_Y },
 ];
+
+const PLANE_AXES: [(usize, usize); 3] = [(AXIS_Y, AXIS_Z), (AXIS_X, AXIS_Z), (AXIS_X, AXIS_Y)];
 
 #[derive(Debug, Clone, Copy)]
 struct Quad {
@@ -40,68 +46,97 @@ struct Quad {
     size: [i32; 3],
 }
 
-struct VoxelChunk {
-    pub index: DiscretePoint,
-    pub mask: u32,
-}
+type SolidColumns = [[[u64; PADDED_SIZE]; PADDED_SIZE]; 3];
 
 pub struct GreedyMeshTesselator {
-    is_voxel_data_dirty: bool,
-    chunks: HashMap<DiscretePoint, VoxelChunk>,
+    bricks: HashMap<DiscretePoint, u32>,
     dirty_queue: VecDeque<DiscretePoint>,
     in_queue: HashSet<DiscretePoint>,
+}
+
+fn to_array(point: DiscretePoint) -> [i32; 3] {
+    [point.x, point.y, point.z]
+}
+
+fn to_point(coords: [i32; 3]) -> DiscretePoint {
+    DiscretePoint { x: coords[0], y: coords[1], z: coords[2] }
+}
+
+fn region_of(brick: DiscretePoint) -> DiscretePoint {
+    to_point(to_array(brick).map(|c| c.div_euclid(REGION_SIZE) * REGION_SIZE))
 }
 
 impl GreedyMeshTesselator {
     pub fn new() -> Self {
         Self {
-            is_voxel_data_dirty: true,
-            chunks: HashMap::new(),
+            bricks: HashMap::new(),
             dirty_queue: VecDeque::new(),
             in_queue: HashSet::new(),
         }
     }
 
-    fn mark_dirty(&mut self, index: DiscretePoint) {
-        if self.in_queue.insert(index) {
-            self.dirty_queue.push_back(index);
+    fn mark_dirty(&mut self, region: DiscretePoint) {
+        if self.in_queue.insert(region) {
+            self.dirty_queue.push_back(region);
         }
     }
 
-    fn face_masks(mask: u32) -> [u32; 6] {
-        [
-            mask & !((mask >> 1)  & 0x77777777), // +X
-            mask & !((mask << 1)  & 0xEEEEEEEE), // -X
-            mask & !((mask >> 4)  & 0x0FFF0FFF), // +Y
-            mask & !((mask << 4)  & 0xFFF0FFF0), // -Y
-            mask & !((mask >> 16) & 0x0000FFFF), // +Z
-            mask & !((mask << 16) & 0xFFFF0000), // -Z
-        ]
-    }
-
-    fn plane_rows(faces: u32, normal: usize, plane: u32) -> [u8; 4] {
-        let mut rows = [0u8; 4];
-        match normal {
-            AXIS_Z => for y in 0..4 {
-                rows[y as usize] = ((faces >> (16 * plane + 4 * y)) & 0xF) as u8;
-            },
-            AXIS_Y => for z in 0..2 {
-                rows[z as usize] = ((faces >> (16 * z + 4 * plane)) & 0xF) as u8;
-            },
-            _ => for z in 0..2 {
-                let spread = (faces >> (16 * z + plane)) & 0x1111;
-                rows[z as usize] = (((spread * 0x1248) >> 12) & 0xF) as u8;
-            },
+    fn mark_brick_dirty(&mut self, brick: DiscretePoint) {
+        let region = region_of(brick);
+        self.mark_dirty(region);
+        let (brick, region_coords) = (to_array(brick), to_array(region));
+        for axis in 0..3 {
+            let mut neighbour = region_coords;
+            if brick[axis] == region_coords[axis] {
+                neighbour[axis] -= REGION_SIZE;
+                self.mark_dirty(to_point(neighbour));
+            }
+            neighbour = region_coords;
+            if brick[axis] + BRICK_SIZE[axis] == region_coords[axis] + REGION_SIZE {
+                neighbour[axis] += REGION_SIZE;
+                self.mark_dirty(to_point(neighbour));
+            }
         }
-        rows
     }
 
-    fn greedy_rectangles(rows: &mut [u8; 4], mut emit: impl FnMut(i32, i32, i32, i32)) {
+    fn solid_columns(&self, region: [i32; 3]) -> Box<SolidColumns> {
+        let mut solid = Box::new([[[0u64; PADDED_SIZE]; PADDED_SIZE]; 3]);
+        let first = region.map(|c| c - 1);
+        let mut brick = [0; 3];
+        for bz in 0..(REGION_SIZE / BRICK_SIZE[2] + 2) {
+            for by in 0..(REGION_SIZE / BRICK_SIZE[1] + 2) {
+                for bx in 0..(REGION_SIZE / BRICK_SIZE[0] + 2) {
+                    for (axis, b) in [bx, by, bz].into_iter().enumerate() {
+                        brick[axis] = region[axis] + (b - 1) * BRICK_SIZE[axis];
+                    }
+                    let Some(&mask) = self.bricks.get(&to_point(brick)) else {
+                        continue;
+                    };
+                    let mut bits = mask;
+                    while bits != 0 {
+                        let bit = bits.trailing_zeros() as i32;
+                        bits &= bits - 1;
+                        let local = [bit & 0b11, (bit >> 2) & 0b11, (bit >> 4) & 0b1];
+                        let padded: [i32; 3] = std::array::from_fn(|axis| brick[axis] + local[axis] - first[axis]);
+                        if padded.iter().any(|&p| p < 0 || p >= PADDED_SIZE as i32) {
+                            continue;
+                        }
+                        for (normal, (column, row)) in PLANE_AXES.into_iter().enumerate() {
+                            solid[normal][padded[row] as usize][padded[column] as usize] |= 1 << padded[normal];
+                        }
+                    }
+                }
+            }
+        }
+        solid
+    }
+
+    fn greedy_rectangles(rows: &mut [u32], mut emit: impl FnMut(i32, i32, i32, i32)) {
         for r in 0..rows.len() {
             while rows[r] != 0 {
                 let start = rows[r].trailing_zeros();
                 let width = (rows[r] >> start).trailing_ones();
-                let run = (((1u16 << width) - 1) << start) as u8;
+                let run = (((1u64 << width) - 1) << start) as u32;
                 let mut height = 1;
                 while r + height < rows.len() && rows[r + height] & run == run {
                     rows[r + height] &= !run;
@@ -113,16 +148,27 @@ impl GreedyMeshTesselator {
         }
     }
 
-    fn greedy_quads(mask: u32) -> Vec<Quad> {
+    fn region_quads(&self, region: DiscretePoint) -> Vec<Quad> {
+        let solid = self.solid_columns(to_array(region));
         let mut quads = Vec::new();
-        for (direction, faces) in Self::face_masks(mask).into_iter().enumerate() {
-            if faces == 0 {
-                continue;
+        let mut planes = [[0u32; REGION_SIZE as usize]; REGION_SIZE as usize];
+        for (direction, &FaceDirection { normal, column, row, .. }) in FACE_DIRECTIONS.iter().enumerate() {
+            let positive = direction % 2 == 0;
+            for r in 0..REGION_SIZE as usize {
+                for c in 0..REGION_SIZE as usize {
+                    let voxels = solid[normal][r + 1][c + 1];
+                    let faces = if positive { voxels & !(voxels >> 1) } else { voxels & !(voxels << 1) };
+                    // Drop the border bits; bit i is now region-local plane i.
+                    let mut faces = (faces >> 1) as u32;
+                    while faces != 0 {
+                        let plane = faces.trailing_zeros() as usize;
+                        faces &= faces - 1;
+                        planes[plane][r] |= 1 << c;
+                    }
+                }
             }
-            let FaceDirection { normal, column, row, planes, .. } = FACE_DIRECTIONS[direction];
-            for plane in 0..planes {
-                let mut rows = Self::plane_rows(faces, normal, plane);
-                Self::greedy_rectangles(&mut rows, |c, r, width, height| {
+            for (plane, rows) in planes.iter_mut().enumerate() {
+                Self::greedy_rectangles(rows, |c, r, width, height| {
                     let mut origin = [0; 3];
                     origin[normal] = plane as i32;
                     origin[column] = c;
@@ -137,23 +183,23 @@ impl GreedyMeshTesselator {
         quads
     }
 
-    fn tesselate_chunk(chunk: &VoxelChunk) -> Vec<RealTriangle> {
-        let chunk_origin = [chunk.index.x, chunk.index.y, chunk.index.z];
-        let quads = Self::greedy_quads(chunk.mask);
-        let mut chunk_triangles = Vec::with_capacity(quads.len() * 2);
+    fn tesselate_region(&self, region: DiscretePoint) -> Vec<RealTriangle> {
+        let region_origin = to_array(region);
+        let quads = self.region_quads(region);
+        let mut triangles = Vec::with_capacity(quads.len() * 2);
         for Quad { direction, origin, size } in quads {
             let corner = |v: [i32; 3]| -> [f32; 3] {
-                std::array::from_fn(|axis| (chunk_origin[axis] + origin[axis] + v[axis] * size[axis]) as f32)
+                std::array::from_fn(|axis| (region_origin[axis] + origin[axis] + v[axis] * size[axis]) as f32)
             };
             for tri in FACE_DIRECTIONS[direction].vertices.chunks_exact(3) {
-                chunk_triangles.push(RealTriangle {
+                triangles.push(RealTriangle {
                     v0: corner(tri[0]),
                     v1: corner(tri[1]),
                     v2: corner(tri[2]),
                 });
             }
         }
-        chunk_triangles
+        triangles
     }
 }
 
@@ -165,40 +211,35 @@ impl Tesselator for GreedyMeshTesselator {
         &mut self, 
         geometry_delta: &Self::InputGeometryDelta
     ) {
-        geometry_delta.iter().for_each(|chunk| {
-            let index = DiscretePoint { x: chunk.x, y: chunk.y, z: chunk.z };
-            match self.chunks.get_mut(&index) {
-                Some(existing_chunk) => {
-                    if existing_chunk.mask != chunk.i {
-                        existing_chunk.mask = chunk.i;
-                        self.mark_dirty(index);
-                    }
-                },
-                None => {
-                    self.chunks.insert(index, VoxelChunk { index, mask: chunk.i });
-                    self.mark_dirty(index);
-                }
+        for brick in geometry_delta {
+            let index = DiscretePoint { x: brick.x, y: brick.y, z: brick.z };
+            debug_assert!(
+                (0..3).all(|axis| to_array(index)[axis].rem_euclid(BRICK_SIZE[axis]) == 0),
+                "Brick origin {:?} is not aligned to {:?}", index, BRICK_SIZE,
+            );
+            let previous = self.bricks.get(&index).copied().unwrap_or(0);
+            if previous == brick.i {
+                continue;
             }
-        });
+            if brick.i == 0 {
+                self.bricks.remove(&index);
+            } else {
+                self.bricks.insert(index, brick.i);
+            }
+            self.mark_brick_dirty(index);
+        }
     }
 
     fn get_output_geometry_delta(&mut self) -> Option<Self::OutputGeometryDelta> {
-        if !self.is_voxel_data_dirty {
+        if self.dirty_queue.is_empty() {
             return None;
         }
-        self.is_voxel_data_dirty = false;
-        let mut output_delta = Vec::new();
-        while let Some(index) = self.dirty_queue.pop_front() {
-            self.in_queue.remove(&index);
-            if let Some(chunk) = self.chunks.get_mut(&index) {
-                let triangles = Self::tesselate_chunk(chunk);
-                output_delta.push(TriangleChunk { index, triangles });
-            }
+        let mut output_delta = Vec::with_capacity(self.dirty_queue.len());
+        while let Some(region) = self.dirty_queue.pop_front() {
+            self.in_queue.remove(&region);
+            let triangles = self.tesselate_region(region);
+            output_delta.push(TriangleChunk { index: region, triangles });
         }
-        if output_delta.is_empty() {
-            None
-        } else {
-            Some(output_delta)
-        }
+        Some(output_delta)
     }
 }
