@@ -1,9 +1,5 @@
 use r3v_renderer::{
-    Camera, Tesselator, Renderer,
-    geometry::PointI,
-    renderer::{self, WgpuAccelerated},
-    tesselator::GreedyMeshTesselator,
-    camera::OrbitCamera,
+    Camera, Renderer, Tesselator, camera::OrbitCamera, geometry::PointI, renderer::{self, WgpuAccelerated}, tesselator::{GreedyMeshTesselator, GreedyMeshTesselatorConfiguration},
 };
 use cgmath::Vector3;
 use image::{ImageBuffer, Rgba};
@@ -159,7 +155,10 @@ impl Demo {
             world.dynamic_shapes(0.0).len(), world.balls.len(), world.snakes.len(), world.windmills.len(),
             world.gyroscopes.len(), world.piston_fields.len(), world.lakes.len(),
         );
-        let tesselator = GreedyMeshTesselator::new(10);
+        let mut tesselator = GreedyMeshTesselator::new();
+        tesselator.configure(GreedyMeshTesselatorConfiguration{
+            voxel_size: 100
+        });
         let renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
         let now = Instant::now();
 

@@ -22,9 +22,11 @@ pub trait Camera {
 // }
 
 pub trait Tesselator {
+    type Configuration;
     type InputGeometryDelta;
     type OutputGeometryDelta;
 
+    fn configure(&mut self, configuration: Self::Configuration);
     fn update_input_geometry(
         &mut self, 
         geometry_delta: &Self::InputGeometryDelta

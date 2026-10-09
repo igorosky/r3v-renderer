@@ -124,11 +124,15 @@ impl Region {
     }
 }
 
+pub struct GreedyMeshTesselatorConfiguration {
+    pub voxel_size: u16,
+}
+
 pub struct GreedyMeshTesselator {
+    config: Option<GreedyMeshTesselatorConfiguration>,
     regions: FxHashMap<DiscretePoint, Box<Region>>,
     dirty_queue: VecDeque<DiscretePoint>,
     in_queue: FxHashSet<DiscretePoint>,
-    voxel_size: u16,
 }
 
 fn region_of(brick: [i32; 3]) -> [i32; 3] {
@@ -136,12 +140,12 @@ fn region_of(brick: [i32; 3]) -> [i32; 3] {
 }
 
 impl GreedyMeshTesselator {
-    pub fn new(voxel_size: u16) -> Self {
+    pub fn new() -> Self {
         Self {
+            config: None,
             regions: FxHashMap::default(),
             dirty_queue: VecDeque::new(),
             in_queue: FxHashSet::default(),
-            voxel_size
         }
     }
 
@@ -247,7 +251,7 @@ impl GreedyMeshTesselator {
         let mut triangles = Vec::with_capacity(quads.len() * 2);
         for Quad { direction, origin, size } in quads {
             let corner = |v: [i32; 3]| -> [f32; 3] {
-                std::array::from_fn(|axis| ((region_origin[axis] + origin[axis] + v[axis] * size[axis]) * self.voxel_size as i32) as f32)
+                std::array::from_fn(|axis| ((region_origin[axis] + origin[axis] + v[axis] * size[axis]) * self.config.as_ref().unwrap().voxel_size as i32) as f32)
             };
             for tri in FACE_DIRECTIONS[direction].vertices.chunks_exact(3) {
                 triangles.push(RealTriangle {
@@ -262,6 +266,7 @@ impl GreedyMeshTesselator {
 }
 
 impl Tesselator for GreedyMeshTesselator {
+    type Configuration = GreedyMeshTesselatorConfiguration;
     type InputGeometryDelta = Vec<PointI>;
     type OutputGeometryDelta = Vec<TriangleChunk>;
 
@@ -269,6 +274,7 @@ impl Tesselator for GreedyMeshTesselator {
         &mut self, 
         geometry_delta: &Self::InputGeometryDelta
     ) {
+        assert!(self.config.is_some(), "Tesselator must be configured before updating input geometry");
         for brick in geometry_delta {
             let origin = [brick.x, brick.y, brick.z];
             debug_assert!(
@@ -292,6 +298,7 @@ impl Tesselator for GreedyMeshTesselator {
     }
 
     fn get_output_geometry_delta(&mut self) -> Option<Self::OutputGeometryDelta> {
+        assert!(self.config.is_some(), "Tesselator must be configured before generating output geometry");
         if self.dirty_queue.is_empty() {
             return None;
         }
@@ -302,5 +309,10 @@ impl Tesselator for GreedyMeshTesselator {
             output_delta.push(TriangleChunk { index: region, triangles });
         }
         Some(output_delta)
+    }
+    
+    
+    fn configure(&mut self, configuration: Self::Configuration) {
+        self.config = Some(configuration);
     }
 }
