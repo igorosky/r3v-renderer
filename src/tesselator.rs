@@ -1,8 +1,7 @@
-use std::collections::HashSet;
-
+use std::collections::{HashMap, HashSet, VecDeque};
 use crate::{
     Tesselator, geometry::{
-        TriangleChunk, DiscretePoint, PointI, RealTriangle,
+        DiscretePoint, PointI, RealTriangle, TriangleChunk,
     },
 };
 
@@ -13,22 +12,35 @@ const FACE_BOTTOM:  [[i32; 3]; 6] = [[0,0,0], [1,0,0], [1,0,1], [0,0,0], [1,0,1]
 const FACE_RIGHT:   [[i32; 3]; 6] = [[1,0,1], [1,0,0], [1,1,0], [1,0,1], [1,1,0], [1,1,1]]; // +X
 const FACE_LEFT:    [[i32; 3]; 6] = [[0,0,0], [0,0,1], [0,1,1], [0,0,0], [0,1,1], [0,1,0]]; // -X
 
+struct VoxelChunk {
+    pub index: DiscretePoint,
+    pub mask: u32,
+}
+
 pub struct GreedyMeshTesselator {
     is_voxel_data_dirty: bool,
-    voxel_chunks: Vec<PointI>,
-    emitted_chunks: HashSet<DiscretePoint>,
+    chunks: HashMap<DiscretePoint, VoxelChunk>,
+    dirty_queue: VecDeque<DiscretePoint>,
+    in_queue: HashSet<DiscretePoint>,
 }
 
 impl GreedyMeshTesselator {
     pub fn new() -> Self {
         Self {
             is_voxel_data_dirty: true,
-            voxel_chunks: Vec::new(),
-            emitted_chunks: HashSet::new(),
+            chunks: HashMap::new(),
+            dirty_queue: VecDeque::new(),
+            in_queue: HashSet::new(),
         }
     }
 
-    fn voxel_world_origin(&self, chunk_origin: &DiscretePoint, voxel_index: u32) -> DiscretePoint {
+    fn mark_dirty(&mut self, index: DiscretePoint) {
+        if self.in_queue.insert(index) {
+            self.dirty_queue.push_back(index);
+        }
+    }
+    
+    fn voxel_world_origin(chunk_origin: &DiscretePoint, voxel_index: u32) -> DiscretePoint {
         let lx = (voxel_index & 0b11) as i32;
         let ly = ((voxel_index >> 2) & 0b11) as i32;
         let lz = ((voxel_index >> 4) & 0b1) as i32;
@@ -39,11 +51,11 @@ impl GreedyMeshTesselator {
         }
     }
 
-    fn tesselate_chunk(&self, chunk: &PointI) -> Vec<RealTriangle> {
-        let chunk_origin = DiscretePoint { x: chunk.x, y: chunk.y, z: chunk.z };
+    fn tesselate_chunk(chunk: &VoxelChunk) -> Vec<RealTriangle> {
+        let chunk_origin = chunk.index;
         let chunk_triangles = &mut Vec::new();
 
-        let mask = chunk.i;
+        let mask = chunk.mask;
         let right_faces  = mask & !((mask >> 1)  & 0x77777777);
         let left_faces   = mask & !((mask << 1)  & 0xEEEEEEEE);
         let top_faces    = mask & !((mask >> 4)  & 0x0FFF0FFF);
@@ -56,7 +68,7 @@ impl GreedyMeshTesselator {
             if (mask & bit_mask) == 0 {
                 continue;
             }
-            let voxel_origin = self.voxel_world_origin(&chunk_origin, bit);
+            let voxel_origin = Self::voxel_world_origin(&chunk_origin, bit);
             let mut push_face = |face_data: &[[i32; 3]; 6]| {
                 for tri in face_data.chunks_exact(3) {
                     chunk_triangles.push(RealTriangle {
@@ -85,8 +97,21 @@ impl Tesselator for GreedyMeshTesselator {
         &mut self, 
         geometry_delta: &Self::InputGeometryDelta
     ) {
-        self.voxel_chunks = geometry_delta.clone();
-        self.is_voxel_data_dirty = true;
+        geometry_delta.iter().for_each(|chunk| {
+            let index = DiscretePoint { x: chunk.x, y: chunk.y, z: chunk.z };
+            match self.chunks.get_mut(&index) {
+                Some(existing_chunk) => {
+                    if existing_chunk.mask != chunk.i {
+                        existing_chunk.mask = chunk.i;
+                        self.mark_dirty(index);
+                    }
+                },
+                None => {
+                    self.chunks.insert(index, VoxelChunk { index, mask: chunk.i });
+                    self.mark_dirty(index);
+                }
+            }
+        });
     }
 
     fn get_output_geometry_delta(&mut self) -> Option<Self::OutputGeometryDelta> {
@@ -94,27 +119,18 @@ impl Tesselator for GreedyMeshTesselator {
             return None;
         }
         self.is_voxel_data_dirty = false;
-
-        let mut deltas = Vec::new();
-        let mut current_chunks = HashSet::new();
-        for chunk in &self.voxel_chunks {
-            let chunk_origin = DiscretePoint { x: chunk.x, y: chunk.y, z: chunk.z };
-            let chunk_triangles = self.tesselate_chunk(chunk);
-            if chunk_triangles.is_empty() {
-                continue;
+        let mut output_delta = Vec::new();
+        while let Some(index) = self.dirty_queue.pop_front() {
+            self.in_queue.remove(&index);
+            if let Some(chunk) = self.chunks.get_mut(&index) {
+                let triangles = Self::tesselate_chunk(chunk);
+                output_delta.push(TriangleChunk { index, triangles });
             }
-            current_chunks.insert(chunk_origin);
-            deltas.push(TriangleChunk {
-                index: chunk_origin,
-                triangles: chunk_triangles,
-            });
         }
-        deltas.extend(
-            self.emitted_chunks
-                .difference(&current_chunks)
-                .map(|&index| TriangleChunk { index, triangles: Vec::new() }),
-        );
-        self.emitted_chunks = current_chunks;
-        Some(deltas)
-    }   
+        if output_delta.is_empty() {
+            None
+        } else {
+            Some(output_delta)
+        }
+    }
 }
