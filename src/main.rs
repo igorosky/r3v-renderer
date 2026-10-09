@@ -9,7 +9,7 @@ use cgmath::Vector3;
 use image::{ImageBuffer, Rgba};
 use std::{
     array,
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     f32::consts::TAU,
     num::NonZeroU32,
     rc::Rc,
@@ -661,8 +661,8 @@ struct World {
     gyroscopes: Vec<Gyroscope>,
     piston_fields: Vec<PistonField>,
     lakes: Vec<Lake>,
-    /// Bricks touched by dynamic shapes last frame; they must be resent so they get cleared.
-    previous_dynamic_bricks: HashSet<[i32; 3]>,
+    dynamic_bricks: Vec<u32>,
+    dynamic_touched: Vec<usize>,
     initialized: bool,
 }
 
@@ -678,7 +678,8 @@ impl World {
             gyroscopes: Vec::new(),
             piston_fields: Vec::new(),
             lakes: Vec::new(),
-            previous_dynamic_bricks: HashSet::new(),
+            dynamic_bricks: vec![0; (WORLD_BRICKS_X * WORLD_BRICKS_Y * WORLD_BRICKS_Z) as usize],
+            dynamic_touched: Vec::new(),
             initialized: false,
         };
         for z in 0..WORLD_Z {
@@ -908,74 +909,76 @@ impl World {
         shapes
     }
 
-    /// Returns the bricks to send to the tesselator this frame: the whole world on the
-    /// first call, afterwards only the bricks around the dynamic shapes' old and new positions.
+    /// Returns the bricks to send to the tesselator this frame: the whole world on the first
+    /// call, afterwards only the bricks the dynamic shapes fill now or filled last frame.
     fn update(&mut self, t: f32) -> Vec<PointI> {
         let shapes = self.dynamic_shapes(t);
-
-        // Broad phase: which shapes may overlap each brick.
-        let mut shapes_by_brick: HashMap<[i32; 3], Vec<usize>> = HashMap::new();
-        for (index, shape) in shapes.iter().enumerate() {
-            let (min, max) = shape.bounds();
-            let (bmin, bmax) = (brick_of(min.map(|c| c.floor() as i32)), brick_of(max.map(|c| c.ceil() as i32)));
-            for bz in bmin[2]..=bmax[2] {
-                for by in bmin[1]..=bmax[1] {
-                    for bx in bmin[0]..=bmax[0] {
-                        shapes_by_brick.entry([bx, by, bz]).or_default().push(index);
-                    }
-                }
-            }
+        let previous = std::mem::take(&mut self.dynamic_touched);
+        for &index in &previous {
+            self.dynamic_bricks[index] = 0;
         }
-        let brick_mask = |brick: [i32; 3]| {
-            let overlapping = shapes_by_brick.get(&brick).map_or(&[][..], Vec::as_slice);
-            self.brick_mask(brick, overlapping.iter().map(|&index| &shapes[index]))
-        };
+        for shape in &shapes {
+            self.rasterize(shape);
+        }
 
+        let mask = |index: usize| self.static_bricks[index] | self.dynamic_bricks[index];
         let mut delta = Vec::new();
         if !self.initialized {
-            for bz in 0..WORLD_BRICKS_Z {
-                for by in 0..WORLD_BRICKS_Y {
-                    for bx in 0..WORLD_BRICKS_X {
-                        let brick = [bx, by, bz];
-                        let mask = brick_mask(brick);
-                        if mask != 0 {
-                            delta.push(brick_point(brick, mask));
-                        }
-                    }
+            for index in 0..self.static_bricks.len() {
+                if mask(index) != 0 {
+                    delta.push(brick_point(index, mask(index)));
                 }
             }
         } else {
-            let vacated = self.previous_dynamic_bricks.iter().filter(|brick| !shapes_by_brick.contains_key(*brick));
-            for &brick in shapes_by_brick.keys().chain(vacated) {
-                // Unchanged bricks are filtered out by the tesselator.
-                delta.push(brick_point(brick, brick_mask(brick)));
+            // Unchanged bricks are filtered out by the tesselator.
+            let vacated = previous.iter().filter(|&&index| self.dynamic_bricks[index] == 0);
+            for &index in self.dynamic_touched.iter().chain(vacated) {
+                delta.push(brick_point(index, mask(index)));
             }
         }
         self.initialized = true;
-        self.previous_dynamic_bricks = shapes_by_brick.into_keys().collect();
         delta
     }
 
-    fn brick_mask<'a>(&self, [bx, by, bz]: [i32; 3], shapes: impl Iterator<Item = &'a Shape>) -> u32 {
-        let mut mask = self.static_bricks[Self::brick_index(bx, by, bz)];
-        let origin = [bx * BRICK_X, by * BRICK_Y, bz * BRICK_Z];
-        for shape in shapes {
-            for lz in 0..BRICK_Z {
-                for ly in 0..BRICK_Y {
-                    for lx in 0..BRICK_X {
-                        let bit = voxel_bit(lx, ly, lz);
-                        if mask & bit != 0 {
-                            continue;
+    /// Adds the voxels inside `shape` that are not already filled to `dynamic_bricks`.
+    fn rasterize(&mut self, shape: &Shape) {
+        let (min, max) = shape.bounds();
+        let (min, max) = (clamp_voxel(min.map(|c| c.floor() as i32)), clamp_voxel(max.map(|c| c.ceil() as i32)));
+        let (bmin, bmax) = (brick_of(min), brick_of(max));
+        for bz in bmin[2]..=bmax[2] {
+            for by in bmin[1]..=bmax[1] {
+                for bx in bmin[0]..=bmax[0] {
+                    let index = Self::brick_index(bx, by, bz);
+                    let origin = [bx * BRICK_X, by * BRICK_Y, bz * BRICK_Z];
+                    let filled = self.static_bricks[index] | self.dynamic_bricks[index];
+                    let (lo, hi) = (
+                        array::from_fn::<_, 3, _>(|axis| (min[axis] - origin[axis]).max(0)),
+                        array::from_fn::<_, 3, _>(|axis| (max[axis] - origin[axis]).min([BRICK_X, BRICK_Y, BRICK_Z][axis] - 1)),
+                    );
+                    let mut mask = 0;
+                    for lz in lo[2]..=hi[2] {
+                        for ly in lo[1]..=hi[1] {
+                            for lx in lo[0]..=hi[0] {
+                                let bit = voxel_bit(lx, ly, lz);
+                                if filled & bit != 0 {
+                                    continue;
+                                }
+                                let p = [0, 1, 2].map(|axis| (origin[axis] + [lx, ly, lz][axis]) as f32 + 0.5);
+                                if shape.contains(p) {
+                                    mask |= bit;
+                                }
+                            }
                         }
-                        let p = [0, 1, 2].map(|axis| (origin[axis] + [lx, ly, lz][axis]) as f32 + 0.5);
-                        if shape.contains(p) {
-                            mask |= bit;
+                    }
+                    if mask != 0 {
+                        if self.dynamic_bricks[index] == 0 {
+                            self.dynamic_touched.push(index);
                         }
+                        self.dynamic_bricks[index] |= mask;
                     }
                 }
             }
         }
-        mask
     }
 }
 
@@ -991,16 +994,20 @@ fn voxel_bit(lx: i32, ly: i32, lz: i32) -> u32 {
     1 << (lx | ly << 2 | lz << 4)
 }
 
-/// Brick coordinates containing voxel `v`, clamped to the world.
-fn brick_of(v: [i32; 3]) -> [i32; 3] {
-    [
-        v[0].clamp(0, WORLD_X - 1) / BRICK_X,
-        v[1].clamp(0, WORLD_Y - 1) / BRICK_Y,
-        v[2].clamp(0, WORLD_Z - 1) / BRICK_Z,
-    ]
+fn clamp_voxel(v: [i32; 3]) -> [i32; 3] {
+    [v[0].clamp(0, WORLD_X - 1), v[1].clamp(0, WORLD_Y - 1), v[2].clamp(0, WORLD_Z - 1)]
 }
 
-fn brick_point([bx, by, bz]: [i32; 3], mask: u32) -> PointI {
+/// Brick coordinates containing voxel `v`, clamped to the world.
+fn brick_of(v: [i32; 3]) -> [i32; 3] {
+    let [x, y, z] = clamp_voxel(v);
+    [x / BRICK_X, y / BRICK_Y, z / BRICK_Z]
+}
+
+/// Brick at `index` into `World::static_bricks`, as sent to the tesselator.
+fn brick_point(index: usize, mask: u32) -> PointI {
+    let index = index as i32;
+    let (bx, by, bz) = (index % WORLD_BRICKS_X, index / WORLD_BRICKS_X % WORLD_BRICKS_Y, index / (WORLD_BRICKS_X * WORLD_BRICKS_Y));
     PointI { x: bx * BRICK_X, y: by * BRICK_Y, z: bz * BRICK_Z, i: mask }
 }
 

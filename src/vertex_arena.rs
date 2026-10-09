@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use wgpu::util::DrawIndirectArgs;
 
 use crate::geometry::{DiscretePoint, Vertex};
@@ -25,7 +24,7 @@ pub(crate) struct VertexArena {
     free_lists: Vec<Vec<u32>>,
     free_slots: u32,
 
-    chunks: HashMap<DiscretePoint, ChunkAlloc>,
+    chunks: FxHashMap<DiscretePoint, ChunkAlloc>,
 
     draws: Vec<DrawIndirectArgs>,
     draw_owners: Vec<DiscretePoint>,
@@ -68,7 +67,7 @@ impl VertexArena {
             high_water: 0,
             free_lists: Vec::new(),
             free_slots: 0,
-            chunks: HashMap::new(),
+            chunks: FxHashMap::default(),
             draws: Vec::new(),
             draw_owners: Vec::new(),
             draw_buffer: create_draw_buffer(device, INITIAL_DRAW_CAPACITY),
