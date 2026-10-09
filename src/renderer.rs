@@ -1,9 +1,8 @@
-use std::collections::HashMap;
-
 use crate::{
     Renderer,
     camera,
     geometry,
+    vertex_arena::VertexArena,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,13 +36,7 @@ pub struct WgpuAccelerated {
     state: WgpuAcceleratedState,
     active_configuration: Option<WgpuAcceleratedConfiguration>,
     render_targets: Option<RenderTargets>,
-
-    geometry_dirty: bool,
-    chunk_vertices: HashMap<geometry::DiscretePoint, Vec<geometry::Vertex>>,
-    active_vertices: Vec<geometry::Vertex>,
-    vertex_buffer: Option<wgpu::Buffer>,
-    vertex_capacity: usize,
-    
+    vertex_arena: VertexArena,
     frame_index: usize, 
 }
 
@@ -145,6 +138,8 @@ impl WgpuAccelerated {
             cache: None,
         });
 
+        let vertex_arena = VertexArena::new(&device);
+
         let state = WgpuAcceleratedState {
             device,
             queue,
@@ -158,32 +153,9 @@ impl WgpuAccelerated {
             state,
             active_configuration: None,
             render_targets: None,
-            geometry_dirty: false,
-            chunk_vertices: HashMap::new(),
-            active_vertices: vec![],
-            vertex_buffer: None,
-            vertex_capacity: 0,
+            vertex_arena,
             frame_index: 0,
         })
-    }
-
-    fn load_vertices_to_buffer(&mut self) {
-        let vertices = &self.active_vertices;
-        let required_capacity = vertices.len();
-        if required_capacity > self.vertex_capacity || self.vertex_buffer.is_none() {
-            let new_capacity = required_capacity.next_power_of_two().max(64);
-            self.vertex_buffer = Some(self.state.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Vertex Buffer"),
-                size: (new_capacity * std::mem::size_of::<geometry::Vertex>()) as wgpu::BufferAddress,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.vertex_capacity = new_capacity;
-        }
-        if let Some(vertex_buffer) = &self.vertex_buffer {
-            self.state.queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(vertices));
-        }
-        self.geometry_dirty = false;
     }
 
     fn rebuild_targets(&mut self) {
@@ -248,7 +220,7 @@ impl WgpuAccelerated {
 
 impl Renderer for WgpuAccelerated {
     type Configuration = WgpuAcceleratedConfiguration;
-    type GeometryDelta = Vec<geometry::ChunkDelta>;
+    type GeometryDelta = Vec<geometry::TriangleChunk>;
 
     fn configure(&mut self, configuration: Self::Configuration) {
         self.active_configuration = Some(configuration);
@@ -268,10 +240,6 @@ impl Renderer for WgpuAccelerated {
         };
         if needs_rebuild {
             self.rebuild_targets();
-        }
-
-        if self.geometry_dirty {
-            self.load_vertices_to_buffer();
         }
 
         let targets = self.render_targets.as_ref().unwrap();
@@ -328,13 +296,12 @@ impl Renderer for WgpuAccelerated {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if let Some(vertex_buffer) = &self.vertex_buffer {
-                if !self.active_vertices.is_empty() {
-                    render_pass.set_pipeline(&self.state.pipeline);
-                    render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
-                    render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                    render_pass.draw(0..self.active_vertices.len() as u32, 0..1);
-                }
+            let draw_count = self.vertex_arena.draw_count();
+            if draw_count > 0 {
+                render_pass.set_pipeline(&self.state.pipeline);
+                render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.vertex_arena.vertex_buffer().slice(..));
+                render_pass.multi_draw_indirect(self.vertex_arena.draw_buffer(), 0, draw_count);
             }
         }
         let write_index = self.frame_index % 2;
@@ -364,22 +331,20 @@ impl Renderer for WgpuAccelerated {
     }
 
     fn update_geometry(&mut self, geometry_delta: Self::GeometryDelta) {
-        for geometry::ChunkDelta { index, triangles } in geometry_delta {
-            if triangles.is_empty() {
-                self.chunk_vertices.remove(&index);
-                continue;
-            }
-            let vertices = triangles.into_iter().flat_map(|triangle| {
+        let device = &self.state.device;
+        let queue = &self.state.queue;
+        let mut vertices = Vec::new();
+        for geometry::TriangleChunk { index, triangles } in geometry_delta {
+            vertices.clear();
+            vertices.extend(triangles.into_iter().flat_map(|triangle| {
                 [
                     geometry::Vertex::with_default_color(triangle.v0[0], triangle.v0[1], triangle.v0[2]),
                     geometry::Vertex::with_default_color(triangle.v1[0], triangle.v1[1], triangle.v1[2]),
                     geometry::Vertex::with_default_color(triangle.v2[0], triangle.v2[1], triangle.v2[2]),
                 ]
-            }).collect();
-            self.chunk_vertices.insert(index, vertices);
+            }));
+            self.vertex_arena.set_chunk(device, queue, index, &vertices);
         }
-        self.active_vertices.clear();
-        self.active_vertices.extend(self.chunk_vertices.values().flatten().copied());
-        self.geometry_dirty = true;
+        self.vertex_arena.finish_update(device, queue);
     }
 }

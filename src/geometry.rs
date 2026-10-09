@@ -45,7 +45,7 @@ impl Vertex {
     }
 }
 
-pub struct ChunkDelta {
+pub struct TriangleChunk {
     pub index: DiscretePoint,
     pub triangles: Vec<RealTriangle>,
 }

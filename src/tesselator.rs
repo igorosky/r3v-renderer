@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::{
     Tesselator, geometry::{
-        ChunkDelta, DiscretePoint, PointI, RealTriangle,
+        TriangleChunk, DiscretePoint, PointI, RealTriangle,
     },
 };
 
@@ -79,7 +79,7 @@ impl GreedyMeshTesselator {
 
 impl Tesselator for GreedyMeshTesselator {
     type InputGeometryDelta = Vec<PointI>;
-    type OutputGeometryDelta = Vec<ChunkDelta>;
+    type OutputGeometryDelta = Vec<TriangleChunk>;
 
     fn update_input_geometry(
         &mut self, 
@@ -104,7 +104,7 @@ impl Tesselator for GreedyMeshTesselator {
                 continue;
             }
             current_chunks.insert(chunk_origin);
-            deltas.push(ChunkDelta {
+            deltas.push(TriangleChunk {
                 index: chunk_origin,
                 triangles: chunk_triangles,
             });
@@ -112,7 +112,7 @@ impl Tesselator for GreedyMeshTesselator {
         deltas.extend(
             self.emitted_chunks
                 .difference(&current_chunks)
-                .map(|&index| ChunkDelta { index, triangles: Vec::new() }),
+                .map(|&index| TriangleChunk { index, triangles: Vec::new() }),
         );
         self.emitted_chunks = current_chunks;
         Some(deltas)

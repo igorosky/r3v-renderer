@@ -3,6 +3,8 @@ pub mod geometry;
 pub mod renderer;
 pub mod tesselator;
 
+mod vertex_arena;
+
 pub trait Camera {
     fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32);
     fn zoom(&mut self, delta_distance: f32);
