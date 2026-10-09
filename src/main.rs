@@ -159,7 +159,7 @@ impl Demo {
             world.dynamic_shapes(0.0).len(), world.balls.len(), world.snakes.len(), world.windmills.len(),
             world.gyroscopes.len(), world.piston_fields.len(), world.lakes.len(),
         );
-        let tesselator = GreedyMeshTesselator::new();
+        let tesselator = GreedyMeshTesselator::new(10);
         let renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
         let now = Instant::now();
 

@@ -128,6 +128,7 @@ pub struct GreedyMeshTesselator {
     regions: FxHashMap<DiscretePoint, Box<Region>>,
     dirty_queue: VecDeque<DiscretePoint>,
     in_queue: FxHashSet<DiscretePoint>,
+    voxel_size: u16,
 }
 
 fn region_of(brick: [i32; 3]) -> [i32; 3] {
@@ -135,11 +136,12 @@ fn region_of(brick: [i32; 3]) -> [i32; 3] {
 }
 
 impl GreedyMeshTesselator {
-    pub fn new() -> Self {
+    pub fn new(voxel_size: u16) -> Self {
         Self {
             regions: FxHashMap::default(),
             dirty_queue: VecDeque::new(),
             in_queue: FxHashSet::default(),
+            voxel_size
         }
     }
 
@@ -245,7 +247,7 @@ impl GreedyMeshTesselator {
         let mut triangles = Vec::with_capacity(quads.len() * 2);
         for Quad { direction, origin, size } in quads {
             let corner = |v: [i32; 3]| -> [f32; 3] {
-                std::array::from_fn(|axis| (region_origin[axis] + origin[axis] + v[axis] * size[axis]) as f32)
+                std::array::from_fn(|axis| ((region_origin[axis] + origin[axis] + v[axis] * size[axis]) * self.voxel_size as i32) as f32)
             };
             for tri in FACE_DIRECTIONS[direction].vertices.chunks_exact(3) {
                 triangles.push(RealTriangle {
