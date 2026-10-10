@@ -30,12 +30,14 @@ pub struct Triangle<T> {
     pub v2: [T; 3],
 }
 
+#[derive(Copy, Clone, Debug)]
 pub struct Vector3D<T> {
     pub x: T,
     pub y: T,
     pub z: T,
 }
 
+#[derive(Copy, Clone, Debug)]
 pub struct Quaternion<T> {
     pub x: T,
     pub y: T,
@@ -43,6 +45,7 @@ pub struct Quaternion<T> {
     pub w: T,
 }
 
+#[derive(Copy, Clone, Debug)]
 pub struct Twist<T> {
     pub linear: Vector3D<T>,
     pub rotational: Quaternion<T>,

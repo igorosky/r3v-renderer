@@ -85,7 +85,10 @@ pub struct UrdfRobot {
 }
 
 pub fn read_file(path: &Path) -> Result<UrdfRobot, String> {
-    let contents = fs::read_to_string(path)
+    let path = path
+        .canonicalize()
+        .map_err(|err| format!("Failed to resolve URDF path '{}': {err}", path.display()))?;
+    let contents = fs::read_to_string(&path)
         .map_err(|err| format!("Failed to read URDF '{}': {err}", path.display()))?;
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     read_str_with_base_dir(&contents, Some(base_dir))
@@ -195,8 +198,24 @@ fn convert_geometry(geometry: urdf_rs::Geometry, base_dir: Option<&Path>) -> Urd
 }
 
 fn resolve_mesh_path(filename: &str, base_dir: Option<&Path>) -> String {
-    if filename.starts_with("package://")
-        || filename.starts_with("file://")
+    if let Some((package, relative_path)) = filename
+        .strip_prefix("package://")
+        .and_then(|uri| uri.split_once('/'))
+    {
+        if let Some(package_dir) = base_dir.and_then(|base_dir| {
+            base_dir
+                .ancestors()
+                .find(|ancestor| ancestor.file_name().is_some_and(|name| name == package))
+        }) {
+            return package_dir
+                .join(relative_path)
+                .to_string_lossy()
+                .replace('\\', "/");
+        }
+        return filename.to_string();
+    }
+
+    if filename.starts_with("file://")
         || filename.starts_with("http://")
         || filename.starts_with("https://")
         || Path::new(filename).is_absolute()

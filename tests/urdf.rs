@@ -1,4 +1,4 @@
-use r3v_renderer::urdf::{read_file, UrdfGeometry};
+use r3v_renderer::urdf::{UrdfGeometry, read_file};
 
 #[test]
 fn read_file_resolves_relative_mesh_paths() {
@@ -23,6 +23,45 @@ fn read_file_resolves_relative_mesh_paths() {
     match geometry {
         Some(UrdfGeometry::Mesh(mesh)) => {
             assert!(mesh.filename.ends_with("meshes/cube.stl"));
+        }
+        other => panic!("expected mesh geometry, got: {other:?}"),
+    }
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn read_file_resolves_package_mesh_paths() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("r3v-package-{unique}"));
+    let package_dir = root.join("description");
+    let meshes = package_dir.join("meshes");
+    let urdf_dir = package_dir.join("urdf");
+    std::fs::create_dir_all(&meshes).unwrap();
+    std::fs::create_dir_all(&urdf_dir).unwrap();
+    std::fs::write(meshes.join("cube.stl"), b"dummy").unwrap();
+
+    let urdf_path = urdf_dir.join("robot.urdf");
+    std::fs::write(
+        &urdf_path,
+        r#"<robot name="demo"><link name="base"><visual><geometry><mesh filename="package://description/meshes/cube.stl"/></geometry></visual></link></robot>"#,
+    )
+    .unwrap();
+
+    let robot = read_file(&urdf_path).unwrap();
+    let geometry = &robot.links[0].visuals[0].geometry;
+    match geometry {
+        Some(UrdfGeometry::Mesh(mesh)) => {
+            let expected = meshes
+                .join("cube.stl")
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            assert_eq!(mesh.filename, expected);
         }
         other => panic!("expected mesh geometry, got: {other:?}"),
     }
