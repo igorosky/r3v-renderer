@@ -5,8 +5,8 @@ pub mod robot;
 pub mod tesselator;
 
 mod vertex_arena;
-mod stl;
-mod urdf;
+pub mod stl;
+pub mod urdf;
 
 pub trait Camera {
     fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32);

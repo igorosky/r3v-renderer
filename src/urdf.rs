@@ -54,6 +54,17 @@ pub struct UrdfLink {
     pub visuals: Vec<UrdfVisual>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UrdfJointLimit {
+    pub lower: f32,
+    pub upper: f32,
+    pub effort: f32,
+    pub velocity: f32,
+    pub acceleration: f32,
+    pub deceleration: f32,
+    pub jerk: f32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct UrdfJoint {
     pub name: String,
@@ -62,6 +73,7 @@ pub struct UrdfJoint {
     pub child: String,
     pub origin: Option<UrdfOrigin>,
     pub axis: Option<Vector3>,
+    pub limit: Option<UrdfJointLimit>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -75,10 +87,15 @@ pub struct UrdfRobot {
 pub fn read_file(path: &Path) -> Result<UrdfRobot, String> {
     let contents = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read URDF '{}': {err}", path.display()))?;
-    read_str(&contents)
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    read_str_with_base_dir(&contents, Some(base_dir))
 }
 
 pub fn read_str(xml: &str) -> Result<UrdfRobot, String> {
+    read_str_with_base_dir(xml, None)
+}
+
+fn read_str_with_base_dir(xml: &str, base_dir: Option<&Path>) -> Result<UrdfRobot, String> {
     let parsed = urdf_rs::read_from_string(xml)
         .map_err(|err| format!("urdf-rs failed to parse URDF: {err}"))?;
 
@@ -95,7 +112,7 @@ pub fn read_str(xml: &str) -> Result<UrdfRobot, String> {
                     .map(|visual| UrdfVisual {
                         name: visual.name,
                         origin: Some(convert_origin(visual.origin)),
-                        geometry: Some(convert_geometry(visual.geometry)),
+                        geometry: Some(convert_geometry(visual.geometry, base_dir)),
                         material: visual.material.map(convert_material),
                     })
                     .collect(),
@@ -120,6 +137,7 @@ pub fn read_str(xml: &str) -> Result<UrdfRobot, String> {
                 child: joint.child.link,
                 origin: Some(convert_origin(joint.origin)),
                 axis: Some(convert_vector3(joint.axis.xyz.0)),
+                limit: Some(convert_joint_limit(joint.limit)),
             })
             .collect(),
         materials: parsed.materials.into_iter().map(convert_material).collect(),
@@ -141,10 +159,22 @@ fn convert_origin(origin: urdf_rs::Pose) -> UrdfOrigin {
     }
 }
 
-fn convert_geometry(geometry: urdf_rs::Geometry) -> UrdfGeometry {
+fn convert_joint_limit(limit: urdf_rs::JointLimit) -> UrdfJointLimit {
+    UrdfJointLimit {
+        lower: limit.lower as f32,
+        upper: limit.upper as f32,
+        effort: limit.effort as f32,
+        velocity: limit.velocity as f32,
+        acceleration: limit.acceleration as f32,
+        deceleration: limit.deceleration as f32,
+        jerk: limit.jerk as f32,
+    }
+}
+
+fn convert_geometry(geometry: urdf_rs::Geometry, base_dir: Option<&Path>) -> UrdfGeometry {
     match geometry {
         urdf_rs::Geometry::Mesh { filename, scale } => UrdfGeometry::Mesh(UrdfMesh {
-            filename,
+            filename: resolve_mesh_path(&filename, base_dir),
             scale: scale.map(|scale| convert_vector3(scale.0)),
         }),
         urdf_rs::Geometry::Box { size } => UrdfGeometry::Box {
@@ -162,6 +192,27 @@ fn convert_geometry(geometry: urdf_rs::Geometry) -> UrdfGeometry {
             length: length as f32,
         },
     }
+}
+
+fn resolve_mesh_path(filename: &str, base_dir: Option<&Path>) -> String {
+    if filename.starts_with("package://")
+        || filename.starts_with("file://")
+        || filename.starts_with("http://")
+        || filename.starts_with("https://")
+        || Path::new(filename).is_absolute()
+    {
+        return filename.to_string();
+    }
+
+    let Some(base_dir) = base_dir else {
+        return filename.to_string();
+    };
+
+    base_dir
+        .join(filename)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_string()
 }
 
 fn convert_material(material: urdf_rs::Material) -> UrdfMaterial {
