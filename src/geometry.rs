@@ -173,6 +173,7 @@ pub struct Vector3D<T> {
     pub z: T,
 }
 
+#[derive(Copy, Clone, Debug)]
 pub struct Quaternion<T> {
     pub x: T,
     pub y: T,
@@ -180,6 +181,7 @@ pub struct Quaternion<T> {
     pub w: T,
 }
 
+#[derive(Copy, Clone, Debug)]
 pub struct Twist<T> {
     pub linear: Vector3D<T>,
     pub rotational: Quaternion<T>,
