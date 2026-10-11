@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
-
-use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
+
+#[cfg(feature = "multi-threaded")]
+use rayon::prelude::*;
 
 use crate::{
     Tesselator, geometry::{
@@ -262,8 +263,11 @@ impl Tesselator for GreedyMeshTesselator {
         }
         self.in_queue.clear();
         let dirty: Vec<DiscretePoint> = self.dirty_queue.drain(..).collect();
+        #[cfg(feature = "multi-threaded")]
+        let dirty = dirty.into_par_iter();
+        #[cfg(not(feature = "multi-threaded"))]
+        let dirty = dirty.into_iter();
         let output_delta = dirty
-            .into_par_iter()
             .map(|chunk| {
                 TriangleChunk { index: chunk, triangles: self.tesselate_chunk(chunk) }
             })
