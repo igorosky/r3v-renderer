@@ -123,15 +123,17 @@ impl GreedyMeshTesselator {
 
     fn mark_subchunk_dirty(&mut self, chunk: DiscretePoint, subchunk: Point<usize>, changed: u32) {
         self.mark_dirty(chunk);
-        for axis in Axis::ALL {
-            let [low_layer, high_layer] = BOUNDARY_LAYERS[axis as usize];
-            if subchunk[axis] == 0 && changed & low_layer != 0 {
-                self.mark_dirty(Chunk::neighbour_of(chunk, axis, -1));
-            }
-            if subchunk[axis] == CHUNK_SUBCHUNKS[axis] - 1 && changed & high_layer != 0 {
-                self.mark_dirty(Chunk::neighbour_of(chunk, axis, 1));
-            }
-        }
+        Axis::ALL
+            .iter()
+            .map(|axis| (axis, BOUNDARY_LAYERS[*axis as usize]))
+            .for_each(|(axis, [low_layer, high_layer])| {
+                if subchunk[*axis] == 0 && changed & low_layer != 0 {
+                    self.mark_dirty(Chunk::neighbour_of(chunk, *axis, -1));
+                }
+                if subchunk[*axis] == CHUNK_SUBCHUNKS[*axis] - 1 && changed & high_layer != 0 {
+                    self.mark_dirty(Chunk::neighbour_of(chunk, *axis, 1));
+                }
+            });
     }
 
     fn solid_columns(&self, chunk: DiscretePoint) -> Box<SolidColumns> {
@@ -177,6 +179,7 @@ impl GreedyMeshTesselator {
             let axis = normal.axis();
             let (column, row) = axis.plane();
             let mut planes = [[0u32; CHUNK_WIDTH]; CHUNK_WIDTH];
+            let mut occupied_layers = 0u32;
             for (r, columns) in solid[axis as usize].iter().enumerate() {
                 for (c, &voxels) in columns.iter().enumerate() {
                     let exposed = if normal.is_positive() {
@@ -185,14 +188,22 @@ impl GreedyMeshTesselator {
                         voxels & !(voxels << 1)
                     };
                     let mut faces = (exposed >> 1) as u32 & CHUNK_MASK;
+                    occupied_layers |= faces;
                     while faces != 0 {
                         planes[faces.trailing_zeros() as usize][r] |= 1 << c;
                         faces &= faces - 1;
                     }
                 }
             }
-            planes.into_iter().enumerate().flat_map(move |(layer, rows)| {
-                Self::greedy_rectangles(rows).map(move |(start, size)| {
+            std::iter::from_fn(move || {
+                (occupied_layers != 0).then(|| {
+                    let layer = occupied_layers.trailing_zeros() as usize;
+                    occupied_layers &= occupied_layers - 1;
+                    layer
+                })
+            })
+            .flat_map(move |layer| {
+                Self::greedy_rectangles(planes[layer]).map(move |(start, size)| {
                     let mut origin = chunk;
                     origin[axis] += layer as DiscreteUnit;
                     origin[column] += start.x;
