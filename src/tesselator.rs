@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
@@ -259,12 +260,14 @@ impl Tesselator for GreedyMeshTesselator {
         if self.dirty_queue.is_empty() {
             return None;
         }
-        let mut output_delta = Vec::with_capacity(self.dirty_queue.len());
-        while let Some(chunk) = self.dirty_queue.pop_front() {
-            self.in_queue.remove(&chunk);
-            let triangles = self.tesselate_chunk(chunk);
-            output_delta.push(TriangleChunk { index: chunk, triangles });
-        }
+        self.in_queue.clear();
+        let dirty: Vec<DiscretePoint> = self.dirty_queue.drain(..).collect();
+        let output_delta = dirty
+            .into_par_iter()
+            .map(|chunk| {
+                TriangleChunk { index: chunk, triangles: self.tesselate_chunk(chunk) }
+            })
+            .collect();
         Some(output_delta)
     }
     
