@@ -157,7 +157,7 @@ impl Demo {
         );
         let mut tesselator = GreedyMeshTesselator::new();
         tesselator.configure(GreedyMeshTesselatorConfiguration{
-            voxel_size: 100
+            voxel_size: 1
         });
         let renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
         let now = Instant::now();
