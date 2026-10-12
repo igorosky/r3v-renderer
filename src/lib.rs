@@ -3,12 +3,13 @@ pub mod geometry;
 pub mod renderer;
 pub mod robot;
 pub mod tesselator;
-
-mod vertex_arena;
 pub mod stl;
 pub mod urdf;
 
+mod vertex_arena;
+
 pub trait Camera {
+    fn look_at(&mut self, target: geometry::Point<f32>, distance: f32, yaw_deg: f32, pitch_deg: f32);
     fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32);
     fn zoom(&mut self, delta_distance: f32);
     fn pan(&mut self, delta_x: f32, delta_y: f32);
@@ -23,6 +24,7 @@ pub trait Robot {
 
     fn from_description(description: Self::RobotDescription) -> Self;
     fn feed_sensor_input(&mut self, input: &Self::SensorInput) -> Self::TransformDescription;
+    fn last_transform_description(&self) -> Option<&Self::TransformDescription>;
 }
 
 pub trait Tesselator {

@@ -1,13 +1,12 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::{
-    Robot,
-    geometry::{Quaternion, RealTwist, Vector3D},
-    urdf,
+    Robot, geometry::{self, Quaternion, RealTwist, Vector3D}, urdf,
 };
 
 pub struct UrdfRobot {
     description: urdf::UrdfRobot,
+    last_transforms: Option<RobotTransforms>,
 }
 
 impl UrdfRobot {
@@ -16,7 +15,7 @@ impl UrdfRobot {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RobotTransforms {
     pub links: HashMap<String, RealTwist>,
     pub visuals: HashMap<(String, usize), RealTwist>,
@@ -44,6 +43,15 @@ impl RobotTransforms {
             rotated.z + transform.linear.z,
         ])
     }
+
+    pub fn get_link_origin(&self, link: &str) -> Option<geometry::Point<f32>> {
+        let transform = self.links.get(link)?;
+        Some(geometry::Point {
+            x: transform.linear.x,
+            y: transform.linear.y,
+            z: transform.linear.z,
+        })
+    }
 }
 
 impl Robot for UrdfRobot {
@@ -52,7 +60,10 @@ impl Robot for UrdfRobot {
     type TransformDescription = RobotTransforms;
 
     fn from_description(description: Self::RobotDescription) -> Self {
-        Self { description }
+        Self {
+            description,
+            last_transforms: None,
+        }
     }
 
     fn feed_sensor_input(&mut self, input: &Self::SensorInput) -> Self::TransformDescription {
@@ -107,10 +118,16 @@ impl Robot for UrdfRobot {
             }
         }
 
-        RobotTransforms {
+        let transforms = RobotTransforms {
             links: link_world,
             visuals: visual_world,
-        }
+        };
+        self.last_transforms = Some(transforms.clone());
+        transforms
+    }
+    
+    fn last_transform_description(&self) -> Option<&Self::TransformDescription> {
+        self.last_transforms.as_ref()
     }
 }
 

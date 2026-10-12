@@ -113,5 +113,12 @@ impl Camera for OrbitCamera {
         let view_proj = proj * view;
         CameraUniform::from_matrix(view_proj)
     }
-
+    
+    fn look_at(&mut self, target: crate::geometry::Point<f32>, distance: f32, yaw_deg: f32, pitch_deg: f32) {
+        self.target = cgmath::Point3::new(target.x, target.y, target.z);
+        self.distance = distance;
+        self.yaw = yaw_deg.to_radians();
+        self.pitch = pitch_deg.to_radians();
+        self.new_uniform_available = true;   
+    }
 }

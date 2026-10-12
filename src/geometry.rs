@@ -173,6 +173,17 @@ pub struct Vector3D<T> {
     pub z: T,
 }
 
+impl<T, U> Into<Point<U>> for Vector3D<T>
+where T: Into<U> {
+    fn into(self) -> Point<U> {
+        Point {
+            x: self.x.into(),
+            y: self.y.into(),
+            z: self.z.into()
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct Quaternion<T> {
     pub x: T,
