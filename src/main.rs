@@ -1,3 +1,5 @@
+use cgmath::{InnerSpace, Rotation3, Vector3};
+use image::{ImageBuffer, Rgba};
 use r3v_renderer::{
     Camera, Renderer, Robot, Tesselator,
     camera::OrbitCamera,
@@ -8,8 +10,6 @@ use r3v_renderer::{
     tesselator::{GreedyMeshTesselator, GreedyMeshTesselatorConfiguration},
     urdf,
 };
-use cgmath::{InnerSpace, Rotation3, Vector3};
-use image::{ImageBuffer, Rgba};
 use std::{
     array,
     collections::{HashMap, HashSet},
@@ -110,7 +110,9 @@ fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let urdf_path = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_ROBOT_URDF.to_owned());
+    let urdf_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| DEFAULT_ROBOT_URDF.to_owned());
     let mut demo = Demo::new(Path::new(&urdf_path));
     event_loop.run_app(&mut demo)?;
     Ok(())
@@ -159,7 +161,11 @@ struct Demo {
 }
 
 fn initial_camera() -> OrbitCamera {
-    let center = cgmath::Point3::new(WORLD_X as f32 / 2.0, WORLD_Y as f32 / 4.0, WORLD_Z as f32 / 2.0);
+    let center = cgmath::Point3::new(
+        WORLD_X as f32 / 2.0,
+        WORLD_Y as f32 / 4.0,
+        WORLD_Z as f32 / 2.0,
+    );
     OrbitCamera::new(center, CAMERA_DISTANCE, 30.0, 30.0).with_clip_planes(CAMERA_NEAR, CAMERA_FAR)
 }
 
@@ -169,17 +175,23 @@ impl Demo {
         let world = World::new();
         println!(
             "Generated {}x{}x{} voxel world in {:.0} ms",
-            WORLD_X, WORLD_Y, WORLD_Z, world_start.elapsed().as_secs_f32() * 1000.0,
+            WORLD_X,
+            WORLD_Y,
+            WORLD_Z,
+            world_start.elapsed().as_secs_f32() * 1000.0,
         );
         println!(
             "Animating {} dynamic shapes: {} balls, {} snakes, {} windmills, {} gyroscopes, {} piston fields, {} lakes",
-            world.dynamic_shapes(0.0).len(), world.balls.len(), world.snakes.len(), world.windmills.len(),
-            world.gyroscopes.len(), world.piston_fields.len(), world.lakes.len(),
+            world.dynamic_shapes(0.0).len(),
+            world.balls.len(),
+            world.snakes.len(),
+            world.windmills.len(),
+            world.gyroscopes.len(),
+            world.piston_fields.len(),
+            world.lakes.len(),
         );
         let mut tesselator = GreedyMeshTesselator::new();
-        tesselator.configure(GreedyMeshTesselatorConfiguration{
-            voxel_size: 1
-        });
+        tesselator.configure(GreedyMeshTesselatorConfiguration { voxel_size: 1 });
         let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
         let robot = match RobotScene::load(urdf_path, robot_placement(&world), &mut renderer) {
             Ok(robot) => Some(robot),
@@ -215,11 +227,16 @@ impl Demo {
     }
 
     fn resize(&mut self, width: u32, height: u32) {
-        let (Some(surface), Some(w), Some(h)) = (self.surface.as_mut(), NonZeroU32::new(width), NonZeroU32::new(height)) else {
+        let (Some(surface), Some(w), Some(h)) = (
+            self.surface.as_mut(),
+            NonZeroU32::new(width),
+            NonZeroU32::new(height),
+        ) else {
             return;
         };
         surface.resize(w, h).expect("Failed to resize surface");
-        self.renderer.configure(renderer::WgpuAcceleratedConfiguration { width, height });
+        self.renderer
+            .configure(renderer::WgpuAcceleratedConfiguration { width, height });
         self.pixel_buffer.resize((width * height * 4) as usize, 0);
         self.width = width;
         self.height = height;
@@ -254,10 +271,18 @@ impl Demo {
         self.update_camera(dt);
         let aspect_ratio = self.width as f32 / self.height as f32;
         let camera_uniform = self.camera.get_uniform(aspect_ratio);
-        self.renderer.render(&camera_uniform, &mut self.pixel_buffer);
+        self.renderer
+            .render(&camera_uniform, &mut self.pixel_buffer);
 
         self.update_stats(now);
-        draw_text(&mut self.pixel_buffer, self.width as usize, self.height as usize, 12, 12, &self.overlay_text);
+        draw_text(
+            &mut self.pixel_buffer,
+            self.width as usize,
+            self.height as usize,
+            12,
+            12,
+            &self.overlay_text,
+        );
         self.present();
     }
 
@@ -268,11 +293,13 @@ impl Demo {
         let forward = input.axis(KeyCode::KeyS, KeyCode::KeyW);
         let strafe = input.axis(KeyCode::KeyA, KeyCode::KeyD);
         let lift = input.axis(KeyCode::KeyQ, KeyCode::KeyE);
-        let fast = input.keys.contains(&KeyCode::ShiftLeft) || input.keys.contains(&KeyCode::ShiftRight);
+        let fast =
+            input.keys.contains(&KeyCode::ShiftLeft) || input.keys.contains(&KeyCode::ShiftRight);
 
         if yaw != 0.0 || pitch != 0.0 {
             self.auto_orbit = false;
-            self.camera.rotate(yaw * KEY_ROTATE_SPEED * dt, pitch * KEY_ROTATE_SPEED * dt);
+            self.camera
+                .rotate(yaw * KEY_ROTATE_SPEED * dt, pitch * KEY_ROTATE_SPEED * dt);
         } else if self.auto_orbit {
             self.camera.rotate(AUTO_ORBIT_SPEED * dt, 0.0);
         }
@@ -283,7 +310,9 @@ impl Demo {
             let (sin, cos) = self.camera.yaw.sin_cos();
             let ahead = Vector3::new(-sin, 0.0, -cos);
             let right = Vector3::new(cos, 0.0, -sin);
-            let speed = MOVE_SPEED * self.camera.distance.max(20.0) * if fast { FAST_MULTIPLIER } else { 1.0 };
+            let speed = MOVE_SPEED
+                * self.camera.distance.max(20.0)
+                * if fast { FAST_MULTIPLIER } else { 1.0 };
             let target = &mut self.camera.target;
             *target += (ahead * forward + right * strafe + Vector3::unit_y() * lift) * speed * dt;
             target.x = target.x.clamp(-(WORLD_X as f32), 2.0 * WORLD_X as f32);
@@ -295,7 +324,8 @@ impl Demo {
 
     fn zoom(&mut self, steps: f32) {
         let distance = self.camera.distance;
-        let target = (distance * ZOOM_STEP.powf(steps)).clamp(CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
+        let target =
+            (distance * ZOOM_STEP.powf(steps)).clamp(CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
         self.camera.zoom(target - distance);
     }
 
@@ -305,7 +335,8 @@ impl Demo {
             let dy = (position.y - previous.y) as f32;
             if self.input.orbiting {
                 self.auto_orbit = false;
-                self.camera.rotate(-dx * MOUSE_ROTATE_SPEED, dy * MOUSE_ROTATE_SPEED);
+                self.camera
+                    .rotate(-dx * MOUSE_ROTATE_SPEED, dy * MOUSE_ROTATE_SPEED);
             }
             if self.input.panning {
                 self.auto_orbit = false;
@@ -327,8 +358,10 @@ impl Demo {
             }
             KeyCode::KeyF => {
                 if let Some(target) = self.robot.as_ref().and_then(RobotScene::focus_point) {
-                    let (yaw, pitch) = (self.camera.yaw.to_degrees(), self.camera.pitch.to_degrees());
-                    self.camera.look_at(target, ROBOT_FOCUS_DISTANCE, yaw, pitch);
+                    let (yaw, pitch) =
+                        (self.camera.yaw.to_degrees(), self.camera.pitch.to_degrees());
+                    self.camera
+                        .look_at(target, ROBOT_FOCUS_DISTANCE, yaw, pitch);
                 }
             }
             _ => {}
@@ -382,22 +415,40 @@ impl ApplicationHandler for Demo {
         let attributes = Window::default_attributes()
             .with_title("r3v-renderer demo")
             .with_inner_size(PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT));
-        let window = Rc::new(event_loop.create_window(attributes).expect("Failed to create window"));
-        let context = softbuffer::Context::new(window.clone()).expect("Failed to create softbuffer context");
-        self.surface = Some(softbuffer::Surface::new(&context, window.clone()).expect("Failed to create surface"));
+        let window = Rc::new(
+            event_loop
+                .create_window(attributes)
+                .expect("Failed to create window"),
+        );
+        let context =
+            softbuffer::Context::new(window.clone()).expect("Failed to create softbuffer context");
+        self.surface = Some(
+            softbuffer::Surface::new(&context, window.clone()).expect("Failed to create surface"),
+        );
 
         let size = window.inner_size();
         self.window = Some(window);
         self.resize(size.width, size.height);
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => self.resize(size.width, size.height),
             WindowEvent::RedrawRequested => self.redraw(),
             WindowEvent::KeyboardInput {
-                event: KeyEvent { physical_key: PhysicalKey::Code(code), state, repeat, .. },
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(code),
+                        state,
+                        repeat,
+                        ..
+                    },
                 ..
             } => match state {
                 ElementState::Pressed => {
@@ -467,8 +518,17 @@ impl Placement {
         let q = twist.rotational;
         let rotation = (self.rotation * cgmath::Quaternion::new(q.w, q.x, q.y, q.z)).normalize();
         RealTwist {
-            linear: geometry::Vector3D { x: linear.x, y: linear.y, z: linear.z },
-            rotational: geometry::Quaternion { x: rotation.v.x, y: rotation.v.y, z: rotation.v.z, w: rotation.s },
+            linear: geometry::Vector3D {
+                x: linear.x,
+                y: linear.y,
+                z: linear.z,
+            },
+            rotational: geometry::Quaternion {
+                x: rotation.v.x,
+                y: rotation.v.y,
+                z: rotation.v.z,
+                w: rotation.s,
+            },
         }
     }
 }
@@ -478,7 +538,11 @@ enum JointMotion {
     /// Spins forever, like a wheel.
     Spin { phase: f32 },
     /// Sweeps back and forth between its limits.
-    Sweep { phase: f32, center: f32, amplitude: f32 },
+    Sweep {
+        phase: f32,
+        center: f32,
+        amplitude: f32,
+    },
 }
 
 /// A URDF robot whose meshes live on the GPU as asset instances, one per visual.
@@ -493,7 +557,11 @@ struct RobotScene {
 }
 
 impl RobotScene {
-    fn load(urdf_path: &Path, placement: Placement, renderer: &mut WgpuAccelerated) -> Result<Self, String> {
+    fn load(
+        urdf_path: &Path,
+        placement: Placement,
+        renderer: &mut WgpuAccelerated,
+    ) -> Result<Self, String> {
         let load_start = Instant::now();
         let description = urdf::read_file(urdf_path)?;
         let urdf_dir = urdf_path.parent().unwrap_or(Path::new("."));
@@ -507,8 +575,15 @@ impl RobotScene {
                     skipped += 1;
                     continue;
                 };
-                let scale = mesh.scale.unwrap_or(urdf::Vector3 { x: 1.0, y: 1.0, z: 1.0 });
-                let key = (mesh.filename.clone(), [scale.x, scale.y, scale.z].map(f32::to_bits));
+                let scale = mesh.scale.unwrap_or(urdf::Vector3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                });
+                let key = (
+                    mesh.filename.clone(),
+                    [scale.x, scale.y, scale.z].map(f32::to_bits),
+                );
                 let visual_key = (link.name.clone(), visual_index);
                 match groups.iter_mut().find(|(group_key, _)| *group_key == key) {
                     Some((_, visuals)) => visuals.push(visual_key),
@@ -522,13 +597,20 @@ impl RobotScene {
         for ((filename, scale), visuals) in groups {
             let path = resolve_mesh_file(&filename, urdf_dir);
             let mut mesh = stl::read_file(&path)?;
-            scale_mesh(&mut mesh, scale.map(f32::from_bits).map(|axis| axis * placement.scale));
+            scale_mesh(
+                &mut mesh,
+                scale.map(f32::from_bits).map(|axis| axis * placement.scale),
+            );
             triangle_count += mesh.triangles.len();
             let ids = renderer.upload_asset(mesh, visuals.len());
             instances.extend(visuals.into_iter().zip(ids));
         }
 
-        let parent_links = description.joints.iter().map(|joint| joint.parent.as_str()).collect::<HashSet<_>>();
+        let parent_links = description
+            .joints
+            .iter()
+            .map(|joint| joint.parent.as_str())
+            .collect::<HashSet<_>>();
         let joints = description
             .joints
             .iter()
@@ -537,23 +619,40 @@ impl RobotScene {
                 let phase = index as f32 * 0.7;
                 let motion = match (joint.joint_type.as_str(), joint.limit) {
                     // Only leaf links (wheels) spin freely; spinning a rocker would lift its wheels off the ground.
-                    ("continuous", _) if !parent_links.contains(joint.child.as_str()) => JointMotion::Spin { phase },
-                    ("continuous", _) => JointMotion::Sweep { phase, center: 0.0, amplitude: ROBOT_CONTINUOUS_SWEEP },
-                    ("revolute" | "prismatic", Some(limit)) if limit.upper > limit.lower => JointMotion::Sweep {
+                    ("continuous", _) if !parent_links.contains(joint.child.as_str()) => {
+                        JointMotion::Spin { phase }
+                    }
+                    ("continuous", _) => JointMotion::Sweep {
                         phase,
-                        center: (limit.upper + limit.lower) * 0.5,
-                        amplitude: (limit.upper - limit.lower) * 0.5,
+                        center: 0.0,
+                        amplitude: ROBOT_CONTINUOUS_SWEEP,
                     },
+                    ("revolute" | "prismatic", Some(limit)) if limit.upper > limit.lower => {
+                        JointMotion::Sweep {
+                            phase,
+                            center: (limit.upper + limit.lower) * 0.5,
+                            amplitude: (limit.upper - limit.lower) * 0.5,
+                        }
+                    }
                     _ => return None,
                 };
                 Some((joint.name.clone(), motion))
             })
             .collect::<Vec<_>>();
 
-        let focus_link = description.links.iter().find(|link| !link.visuals.is_empty()).map(|link| link.name.clone());
+        let focus_link = description
+            .links
+            .iter()
+            .find(|link| !link.visuals.is_empty())
+            .map(|link| link.name.clone());
         println!(
             "Loaded robot '{}' in {:.0} ms: {} visuals ({} skipped, only meshes are supported), {} triangles, {} animated joints",
-            description.name, load_start.elapsed().as_secs_f32() * 1000.0, instances.len(), skipped, triangle_count, joints.len(),
+            description.name,
+            load_start.elapsed().as_secs_f32() * 1000.0,
+            instances.len(),
+            skipped,
+            triangle_count,
+            joints.len(),
         );
 
         Ok(Self {
@@ -570,7 +669,11 @@ impl RobotScene {
         for (name, motion) in &self.joints {
             let position = match *motion {
                 JointMotion::Spin { phase } => t * ROBOT_JOINT_SPEED * 2.0 + phase,
-                JointMotion::Sweep { phase, center, amplitude } => center + amplitude * (t * ROBOT_JOINT_SPEED + phase).sin(),
+                JointMotion::Sweep {
+                    phase,
+                    center,
+                    amplitude,
+                } => center + amplitude * (t * ROBOT_JOINT_SPEED + phase).sin(),
             };
             self.joint_positions.insert(name.clone(), position);
         }
@@ -583,9 +686,18 @@ impl RobotScene {
     }
 
     fn focus_point(&self) -> Option<geometry::Point<f32>> {
-        let origin = self.robot.last_transform()?.get_link_origin(self.focus_link.as_deref()?)?;
-        let world = self.placement.point(Vector3::new(origin.x, origin.y, origin.z));
-        Some(geometry::Point { x: world.x, y: world.y, z: world.z })
+        let origin = self
+            .robot
+            .last_transform()?
+            .get_link_origin(self.focus_link.as_deref()?)?;
+        let world = self
+            .placement
+            .point(Vector3::new(origin.x, origin.y, origin.z));
+        Some(geometry::Point {
+            x: world.x,
+            y: world.y,
+            z: world.z,
+        })
     }
 }
 
@@ -593,7 +705,10 @@ impl RobotScene {
 /// `<name>`. Otherwise this falls back to the path relative to the URDF file, which is how the
 /// bundled assets are laid out.
 fn resolve_mesh_file(filename: &str, urdf_dir: &Path) -> std::path::PathBuf {
-    match filename.strip_prefix("package://").and_then(|uri| uri.split_once('/')) {
+    match filename
+        .strip_prefix("package://")
+        .and_then(|uri| uri.split_once('/'))
+    {
         Some((_, relative_path)) => urdf_dir.join(relative_path),
         None => Path::new(filename).to_path_buf(),
     }
@@ -623,7 +738,11 @@ struct Rotation {
 }
 
 impl Rotation {
-    const NONE: Self = Self { axis: 0, sin: 0.0, cos: 1.0 };
+    const NONE: Self = Self {
+        axis: 0,
+        sin: 0.0,
+        cos: 1.0,
+    };
 
     fn new(axis: usize, angle: f32) -> Self {
         let (sin, cos) = angle.sin_cos();
@@ -650,52 +769,106 @@ impl Rotation {
 /// A solid volume in voxel space; a voxel is filled when its center lies inside.
 #[derive(Clone, Copy)]
 enum Shape {
-    Sphere { center: [f32; 3], radius: f32 },
+    Sphere {
+        center: [f32; 3],
+        radius: f32,
+    },
     /// Box with half-extents `half`, rotated around its center.
-    Cuboid { center: [f32; 3], half: [f32; 3], rotation: Rotation },
+    Cuboid {
+        center: [f32; 3],
+        half: [f32; 3],
+        rotation: Rotation,
+    },
     /// Ring lying in its local XZ plane, rotated around its center.
-    Torus { center: [f32; 3], major: f32, minor: f32, rotation: Rotation },
+    Torus {
+        center: [f32; 3],
+        major: f32,
+        minor: f32,
+        rotation: Rotation,
+    },
     /// Circular patch of water from `floor` up to an animated wavy surface around `level`.
-    Water { center: [f32; 2], radius: f32, level: f32, floor: f32, t: f32 },
+    Water {
+        center: [f32; 2],
+        radius: f32,
+        level: f32,
+        floor: f32,
+        t: f32,
+    },
 }
 
 impl Shape {
     /// Axis-aligned bounding box as (min, max).
     fn bounds(&self) -> ([f32; 3], [f32; 3]) {
         let around = |center: [f32; 3], extent: [f32; 3]| {
-            (array::from_fn(|a| center[a] - extent[a]), array::from_fn(|a| center[a] + extent[a]))
+            (
+                array::from_fn(|a| center[a] - extent[a]),
+                array::from_fn(|a| center[a] + extent[a]),
+            )
         };
         match *self {
             Shape::Sphere { center, radius } => around(center, [radius; 3]),
-            Shape::Cuboid { center, half, rotation: Rotation { axis, sin, cos } } => {
+            Shape::Cuboid {
+                center,
+                half,
+                rotation: Rotation { axis, sin, cos },
+            } => {
                 let (u, w) = ((axis + 1) % 3, (axis + 2) % 3);
                 let mut extent = half;
                 extent[u] = cos.abs() * half[u] + sin.abs() * half[w];
                 extent[w] = sin.abs() * half[u] + cos.abs() * half[w];
                 around(center, extent)
             }
-            Shape::Torus { center, major, minor, .. } => around(center, [major + minor; 3]),
-            Shape::Water { center: [x, z], radius, level, floor, .. } => {
-                ([x - radius, floor, z - radius], [x + radius, level + WAVE_AMPLITUDE, z + radius])
-            }
+            Shape::Torus {
+                center,
+                major,
+                minor,
+                ..
+            } => around(center, [major + minor; 3]),
+            Shape::Water {
+                center: [x, z],
+                radius,
+                level,
+                floor,
+                ..
+            } => (
+                [x - radius, floor, z - radius],
+                [x + radius, level + WAVE_AMPLITUDE, z + radius],
+            ),
         }
     }
 
     fn contains(&self, p: [f32; 3]) -> bool {
         match *self {
             Shape::Sphere { center, radius } => distance_sq(p, center) < radius * radius,
-            Shape::Cuboid { center, half, rotation } => {
+            Shape::Cuboid {
+                center,
+                half,
+                rotation,
+            } => {
                 let local = rotation.invert(sub(p, center));
                 (0..3).all(|a| local[a].abs() <= half[a])
             }
-            Shape::Torus { center, major, minor, rotation } => {
+            Shape::Torus {
+                center,
+                major,
+                minor,
+                rotation,
+            } => {
                 let [x, y, z] = rotation.invert(sub(p, center));
                 let ring = (x * x + z * z).sqrt() - major;
                 ring * ring + y * y < minor * minor
             }
-            Shape::Water { center: [cx, cz], radius, level, floor, t } => {
+            Shape::Water {
+                center: [cx, cz],
+                radius,
+                level,
+                floor,
+                t,
+            } => {
                 let dist_sq = (p[0] - cx).powi(2) + (p[2] - cz).powi(2);
-                p[1] >= floor && dist_sq <= radius * radius && p[1] < level + wave_height(p[0], p[2], dist_sq.sqrt(), t)
+                p[1] >= floor
+                    && dist_sq <= radius * radius
+                    && p[1] < level + wave_height(p[0], p[2], dist_sq.sqrt(), t)
             }
         }
     }
@@ -703,7 +876,8 @@ impl Shape {
 
 /// Offset of the water surface from its rest level, within [-WAVE_AMPLITUDE, WAVE_AMPLITUDE].
 fn wave_height(x: f32, z: f32, dist_from_center: f32, t: f32) -> f32 {
-    1.2 * (0.21 * x + 1.1 * t).sin() * (0.17 * z + 0.8 * t).cos() + 0.8 * (0.45 * dist_from_center - 2.4 * t).sin()
+    1.2 * (0.21 * x + 1.1 * t).sin() * (0.17 * z + 0.8 * t).cos()
+        + 0.8 * (0.45 * dist_from_center - 2.4 * t).sin()
 }
 
 /// A ball bouncing along a Lissajous path across the terrain.
@@ -732,11 +906,18 @@ impl Ball {
     }
 
     fn shape(&self, t: f32, world: &World) -> Shape {
-        let x = WORLD_X as f32 / 2.0 + self.amplitude[0] * (self.frequency[0] * t + self.phase[0]).sin();
-        let z = WORLD_Z as f32 / 2.0 + self.amplitude[1] * (self.frequency[1] * t + self.phase[1]).sin();
+        let x = WORLD_X as f32 / 2.0
+            + self.amplitude[0] * (self.frequency[0] * t + self.phase[0]).sin();
+        let z = WORLD_Z as f32 / 2.0
+            + self.amplitude[1] * (self.frequency[1] * t + self.phase[1]).sin();
         let ground = world.height_at(x as i32, z as i32) as f32;
-        let y = ground + self.radius + self.bounce_height * (self.bounce_frequency * t + self.phase[0]).sin().abs();
-        Shape::Sphere { center: [x, y.min(WORLD_Y as f32 - self.radius - 1.0), z], radius: self.radius }
+        let y = ground
+            + self.radius
+            + self.bounce_height * (self.bounce_frequency * t + self.phase[0]).sin().abs();
+        Shape::Sphere {
+            center: [x, y.min(WORLD_Y as f32 - self.radius - 1.0), z],
+            radius: self.radius,
+        }
     }
 }
 
@@ -772,10 +953,15 @@ impl Snake {
         for segment in 0..SNAKE_SEGMENTS {
             let a = self.angular_speed * (t - segment as f32 * lag) + self.phase;
             let x = self.home[0] + self.loop_radius * a.cos() + SNAKE_WIGGLE * (7.0 * a).sin();
-            let z = self.home[1] + 0.6 * self.loop_radius * (2.0 * a).sin() + SNAKE_WIGGLE * (7.0 * a).cos();
+            let z = self.home[1]
+                + 0.6 * self.loop_radius * (2.0 * a).sin()
+                + SNAKE_WIGGLE * (7.0 * a).cos();
             let radius = self.radius * (1.0 - 0.5 * segment as f32 / SNAKE_SEGMENTS as f32);
             let ground = world.height_at(x as i32, z as i32) as f32;
-            shapes.push(Shape::Sphere { center: [x, ground + 0.8 * radius, z], radius });
+            shapes.push(Shape::Sphere {
+                center: [x, ground + 0.8 * radius, z],
+                radius,
+            });
         }
     }
 }
@@ -813,8 +999,18 @@ impl Gyroscope {
         let a = self.speed * t + self.phase;
         let mut center = self.center;
         center[1] += 2.0 * (0.7 * t + self.phase).sin();
-        shapes.push(Shape::Torus { center, major: GYRO_RADIUS, minor: 1.5, rotation: Rotation::new(0, a) });
-        shapes.push(Shape::Torus { center, major: GYRO_RADIUS - 3.5, minor: 1.2, rotation: Rotation::new(2, -1.7 * a) });
+        shapes.push(Shape::Torus {
+            center,
+            major: GYRO_RADIUS,
+            minor: 1.5,
+            rotation: Rotation::new(0, a),
+        });
+        shapes.push(Shape::Torus {
+            center,
+            major: GYRO_RADIUS - 3.5,
+            minor: 1.2,
+            rotation: Rotation::new(2, -1.7 * a),
+        });
     }
 }
 
@@ -836,7 +1032,11 @@ impl PistonField {
             let z = self.origin[1] as f32 + row * PISTON_PITCH as f32 + PISTON_SIZE as f32 / 2.0;
             shapes.push(Shape::Cuboid {
                 center: [x, base as f32 + height / 2.0, z],
-                half: [PISTON_SIZE as f32 / 2.0, height / 2.0, PISTON_SIZE as f32 / 2.0],
+                half: [
+                    PISTON_SIZE as f32 / 2.0,
+                    height / 2.0,
+                    PISTON_SIZE as f32 / 2.0,
+                ],
                 rotation: Rotation::NONE,
             });
         }
@@ -855,12 +1055,21 @@ impl Lake {
     }
 
     fn covers(&self, x: i32, z: i32) -> bool {
-        let (dx, dz) = (x as f32 + 0.5 - self.center[0], z as f32 + 0.5 - self.center[1]);
+        let (dx, dz) = (
+            x as f32 + 0.5 - self.center[0],
+            z as f32 + 0.5 - self.center[1],
+        );
         dx * dx + dz * dz <= LAKE_RADIUS * LAKE_RADIUS
     }
 
     fn shape(&self, t: f32) -> Shape {
-        Shape::Water { center: self.center, radius: LAKE_RADIUS, level: self.level as f32, floor: self.floor() as f32, t }
+        Shape::Water {
+            center: self.center,
+            radius: LAKE_RADIUS,
+            level: self.level as f32,
+            floor: self.floor() as f32,
+            t,
+        }
     }
 }
 
@@ -939,7 +1148,8 @@ impl World {
 
     fn is_free(&self, center: [f32; 2], radius: f32) -> bool {
         self.reserved.iter().all(|&(other, other_radius)| {
-            (center[0] - other[0]).powi(2) + (center[1] - other[1]).powi(2) > (radius + other_radius).powi(2)
+            (center[0] - other[0]).powi(2) + (center[1] - other[1]).powi(2)
+                > (radius + other_radius).powi(2)
         })
     }
 
@@ -968,7 +1178,10 @@ impl World {
                 let rim = (0..64)
                     .map(|k| {
                         let (sin, cos) = (k as f32 * TAU / 64.0).sin_cos();
-                        self.height_at(cx + (cos * LAKE_RADIUS) as i32, cz + (sin * LAKE_RADIUS) as i32)
+                        self.height_at(
+                            cx + (cos * LAKE_RADIUS) as i32,
+                            cz + (sin * LAKE_RADIUS) as i32,
+                        )
                     })
                     .min()
                     .unwrap();
@@ -995,10 +1208,16 @@ impl World {
                 continue;
             }
             self.reserved.push((center, LAKE_RADIUS + 8.0));
-            let lake = Lake { center, level: rim + 1 };
+            let lake = Lake {
+                center,
+                level: rim + 1,
+            };
             for z in cz - radius..=cz + radius {
                 for x in cx - radius..=cx + radius {
-                    if !lake.covers(x, z) || !(0..WORLD_X).contains(&x) || !(0..WORLD_Z).contains(&z) {
+                    if !lake.covers(x, z)
+                        || !(0..WORLD_X).contains(&x)
+                        || !(0..WORLD_Z).contains(&z)
+                    {
                         continue;
                     }
                     for y in self.height_at(x, z)..lake.floor() {
@@ -1149,7 +1368,9 @@ impl World {
             }
         } else {
             // Unchanged bricks are filtered out by the tesselator.
-            let vacated = previous.iter().filter(|&&index| self.dynamic_bricks[index] == 0);
+            let vacated = previous
+                .iter()
+                .filter(|&&index| self.dynamic_bricks[index] == 0);
             for &index in self.dynamic_touched.iter().chain(vacated) {
                 delta.push(brick_point(index, mask(index)));
             }
@@ -1161,7 +1382,10 @@ impl World {
     /// Adds the voxels inside `shape` that are not already filled to `dynamic_bricks`.
     fn rasterize(&mut self, shape: &Shape) {
         let (min, max) = shape.bounds();
-        let (min, max) = (clamp_voxel(min.map(|c| c.floor() as i32)), clamp_voxel(max.map(|c| c.ceil() as i32)));
+        let (min, max) = (
+            clamp_voxel(min.map(|c| c.floor() as i32)),
+            clamp_voxel(max.map(|c| c.ceil() as i32)),
+        );
         let (bmin, bmax) = (brick_of(min), brick_of(max));
         for bz in bmin[2]..=bmax[2] {
             for by in bmin[1]..=bmax[1] {
@@ -1171,7 +1395,9 @@ impl World {
                     let filled = self.static_bricks[index] | self.dynamic_bricks[index];
                     let (lo, hi) = (
                         array::from_fn::<_, 3, _>(|axis| (min[axis] - origin[axis]).max(0)),
-                        array::from_fn::<_, 3, _>(|axis| (max[axis] - origin[axis]).min([BRICK_X, BRICK_Y, BRICK_Z][axis] - 1)),
+                        array::from_fn::<_, 3, _>(|axis| {
+                            (max[axis] - origin[axis]).min([BRICK_X, BRICK_Y, BRICK_Z][axis] - 1)
+                        }),
                     );
                     let mut mask = 0;
                     for lz in lo[2]..=hi[2] {
@@ -1181,7 +1407,8 @@ impl World {
                                 if filled & bit != 0 {
                                     continue;
                                 }
-                                let p = [0, 1, 2].map(|axis| (origin[axis] + [lx, ly, lz][axis]) as f32 + 0.5);
+                                let p = [0, 1, 2]
+                                    .map(|axis| (origin[axis] + [lx, ly, lz][axis]) as f32 + 0.5);
                                 if shape.contains(p) {
                                     mask |= bit;
                                 }
@@ -1213,7 +1440,11 @@ fn voxel_bit(lx: i32, ly: i32, lz: i32) -> u32 {
 }
 
 fn clamp_voxel(v: [i32; 3]) -> [i32; 3] {
-    [v[0].clamp(0, WORLD_X - 1), v[1].clamp(0, WORLD_Y - 1), v[2].clamp(0, WORLD_Z - 1)]
+    [
+        v[0].clamp(0, WORLD_X - 1),
+        v[1].clamp(0, WORLD_Y - 1),
+        v[2].clamp(0, WORLD_Z - 1),
+    ]
 }
 
 /// Brick coordinates containing voxel `v`, clamped to the world.
@@ -1225,13 +1456,24 @@ fn brick_of(v: [i32; 3]) -> [i32; 3] {
 /// Brick at `index` into `World::static_bricks`, as sent to the tesselator.
 fn brick_point(index: usize, mask: u32) -> PointI {
     let index = index as i32;
-    let (bx, by, bz) = (index % WORLD_BRICKS_X, index / WORLD_BRICKS_X % WORLD_BRICKS_Y, index / (WORLD_BRICKS_X * WORLD_BRICKS_Y));
-    PointI { x: bx * BRICK_X, y: by * BRICK_Y, z: bz * BRICK_Z, i: mask }
+    let (bx, by, bz) = (
+        index % WORLD_BRICKS_X,
+        index / WORLD_BRICKS_X % WORLD_BRICKS_Y,
+        index / (WORLD_BRICKS_X * WORLD_BRICKS_Y),
+    );
+    PointI {
+        x: bx * BRICK_X,
+        y: by * BRICK_Y,
+        z: bz * BRICK_Z,
+        i: mask,
+    }
 }
 
 /// Deterministic hash of a 2D lattice point to [0, 1).
 fn hash2(x: i32, z: i32, seed: u32) -> f32 {
-    let mut h = (x as u32).wrapping_mul(0x8da6_b343) ^ (z as u32).wrapping_mul(0xd816_3841) ^ seed.wrapping_mul(0xcb1a_b31f);
+    let mut h = (x as u32).wrapping_mul(0x8da6_b343)
+        ^ (z as u32).wrapping_mul(0xd816_3841)
+        ^ seed.wrapping_mul(0xcb1a_b31f);
     h ^= h >> 13;
     h = h.wrapping_mul(0x5bd1_e995);
     h ^= h >> 15;
@@ -1323,7 +1565,11 @@ fn draw_text(bgra_pixels: &mut [u8], width: usize, height: usize, x: usize, y: u
                 }
                 for sy in 0..OVERLAY_SCALE {
                     for sx in 0..OVERLAY_SCALE {
-                        put(glyph_x + col * OVERLAY_SCALE + sx, y + pad + row * OVERLAY_SCALE + sy, [80, 255, 80, 255]);
+                        put(
+                            glyph_x + col * OVERLAY_SCALE + sx,
+                            y + pad + row * OVERLAY_SCALE + sy,
+                            [80, 255, 80, 255],
+                        );
                     }
                 }
             }
@@ -1336,7 +1582,7 @@ fn save_frame(filename: &str, width: u32, height: u32, bgra_pixels: &[u8]) {
     for chunk in rgba_pixels.chunks_exact_mut(4) {
         chunk.swap(0, 2);
     }
-    let img: ImageBuffer<Rgba<u8>, _> = ImageBuffer::from_raw(width, height, rgba_pixels)
-        .expect("Failed to create image buffer");
+    let img: ImageBuffer<Rgba<u8>, _> =
+        ImageBuffer::from_raw(width, height, rgba_pixels).expect("Failed to create image buffer");
     img.save(filename).expect("Failed to save image");
 }

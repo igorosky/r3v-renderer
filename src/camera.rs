@@ -54,7 +54,14 @@ impl OrbitCamera {
         }
     }
 
-    fn calculate_vectors(&self) -> (cgmath::Point3<f32>, cgmath::Point3<f32>, cgmath::Vector3<f32>, cgmath::Vector3<f32>) {
+    fn calculate_vectors(
+        &self,
+    ) -> (
+        cgmath::Point3<f32>,
+        cgmath::Point3<f32>,
+        cgmath::Vector3<f32>,
+        cgmath::Vector3<f32>,
+    ) {
         let eye_x = self.target.x + self.distance * self.yaw.sin() * self.pitch.cos();
         let eye_y = self.target.y + self.distance * self.pitch.sin();
         let eye_z = self.target.z + self.distance * self.yaw.cos() * self.pitch.cos();
@@ -96,7 +103,7 @@ impl Camera for OrbitCamera {
 
     fn zoom(&mut self, delta_distance: f32) {
         self.distance += delta_distance;
-        self.distance = self.distance.max(0.1); 
+        self.distance = self.distance.max(0.1);
         self.new_uniform_available = true;
     }
 
@@ -106,19 +113,31 @@ impl Camera for OrbitCamera {
         self.target += up * delta_y;
         self.new_uniform_available = true;
     }
-    
+
     fn get_uniform(&self, aspect_ratio: f32) -> CameraUniform {
         let view = self.view_matrix();
-        let proj = OPENGL_TO_WGPU_MATRIX * cgmath::perspective(cgmath::Rad(std::f32::consts::FRAC_PI_4), aspect_ratio, self.near, self.far);
+        let proj = OPENGL_TO_WGPU_MATRIX
+            * cgmath::perspective(
+                cgmath::Rad(std::f32::consts::FRAC_PI_4),
+                aspect_ratio,
+                self.near,
+                self.far,
+            );
         let view_proj = proj * view;
         CameraUniform::from_matrix(view_proj)
     }
-    
-    fn look_at(&mut self, target: crate::geometry::Point<f32>, distance: f32, yaw_deg: f32, pitch_deg: f32) {
+
+    fn look_at(
+        &mut self,
+        target: crate::geometry::Point<f32>,
+        distance: f32,
+        yaw_deg: f32,
+        pitch_deg: f32,
+    ) {
         self.target = cgmath::Point3::new(target.x, target.y, target.z);
         self.distance = distance;
         self.yaw = yaw_deg.to_radians();
         self.pitch = pitch_deg.to_radians();
-        self.new_uniform_available = true;   
+        self.new_uniform_available = true;
     }
 }

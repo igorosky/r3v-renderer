@@ -17,7 +17,11 @@ impl PointI {
 
     pub const fn voxel_local(bit: u32) -> Point<usize> {
         let bit = bit as usize;
-        Point { x: bit & 0b11, y: (bit >> 2) & 0b11, z: (bit >> 4) & 0b1 }
+        Point {
+            x: bit & 0b11,
+            y: (bit >> 2) & 0b11,
+            z: (bit >> 4) & 0b1,
+        }
     }
 }
 
@@ -33,11 +37,7 @@ pub enum Axis {
 }
 
 impl Axis {
-    pub const ALL: [Axis; 3] = [
-        Axis::X,
-        Axis::Y,
-        Axis::Z,
-    ];
+    pub const ALL: [Axis; 3] = [Axis::X, Axis::Y, Axis::Z];
 
     pub const fn plane(self) -> (Axis, Axis) {
         match self {
@@ -83,20 +83,38 @@ pub struct Point<T> {
 }
 
 impl<T> Point<T> {
-    pub fn to_array(&self) -> [T; 3] where T: Copy {
+    pub fn to_array(&self) -> [T; 3]
+    where
+        T: Copy,
+    {
         [self.x, self.y, self.z]
     }
 
-    pub fn from_array(arr: [T; 3]) -> Self where T: Copy {
-        Self { x: arr[0], y: arr[1], z: arr[2] }
+    pub fn from_array(arr: [T; 3]) -> Self
+    where
+        T: Copy,
+    {
+        Self {
+            x: arr[0],
+            y: arr[1],
+            z: arr[2],
+        }
     }
 
     pub fn from_fn(mut f: impl FnMut(Axis) -> T) -> Self {
-        Self { x: f(Axis::X), y: f(Axis::Y), z: f(Axis::Z) }
+        Self {
+            x: f(Axis::X),
+            y: f(Axis::Y),
+            z: f(Axis::Z),
+        }
     }
 
     pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Point<U> {
-        Point { x: f(self.x), y: f(self.y), z: f(self.z) }
+        Point {
+            x: f(self.x),
+            y: f(self.y),
+            z: f(self.z),
+        }
     }
 }
 
@@ -164,7 +182,7 @@ impl<T> Triangle<T> {
 
     pub fn to_vertices(&self) -> [Vertex; 3]
     where
-        T: Into<f32> + Copy
+        T: Into<f32> + Copy,
     {
         [
             Vertex::with_default_color(self.v0[0].into(), self.v0[1].into(), self.v0[2].into()),
@@ -174,12 +192,16 @@ impl<T> Triangle<T> {
     }
 
     pub fn reverse(self) -> Self {
-        Self { v0: self.v0, v1: self.v2, v2: self.v1 }
+        Self {
+            v0: self.v0,
+            v1: self.v2,
+            v2: self.v1,
+        }
     }
 
     pub fn with_winding(&self, winding: Winding, normal: Vector3D<T>) -> Self
     where
-        T: Copy + PartialOrd + num_traits::Zero + Sub<Output = T> + Mul<Output = T>
+        T: Copy + PartialOrd + num_traits::Zero + Sub<Output = T> + Mul<Output = T>,
     {
         let is_ccw = match winding {
             Winding::Clockwise => false,
@@ -191,7 +213,11 @@ impl<T> Triangle<T> {
             let v2: Vector3D<T> = self.v2.into();
             (v1 - v0).cross(v2 - v0).dot(normal) >= T::zero()
         };
-        if is_ccw == current_is_ccw { *self } else { self.reverse() }
+        if is_ccw == current_is_ccw {
+            *self
+        } else {
+            self.reverse()
+        }
     }
 }
 
@@ -215,7 +241,9 @@ pub struct Vector3D<T> {
 impl<T> Vector3D<T> {
     #[inline]
     pub fn cross(self, rhs: Self) -> Self
-    where T: Sub<Output = T> + Mul<Output = T> + Copy {
+    where
+        T: Sub<Output = T> + Mul<Output = T> + Copy,
+    {
         Self {
             x: self.y * rhs.z - self.z * rhs.y,
             y: self.z * rhs.x - self.x * rhs.z,
@@ -225,7 +253,9 @@ impl<T> Vector3D<T> {
 
     #[inline]
     pub fn dot(self, rhs: Self) -> T
-    where T: Mul<Output = T> + std::ops::Add<Output = T> + Copy {
+    where
+        T: Mul<Output = T> + std::ops::Add<Output = T> + Copy,
+    {
         self.x * rhs.x + self.y * rhs.y + self.z * rhs.z
     }
 }
@@ -241,7 +271,9 @@ where
 }
 
 impl<T> Sub for Vector3D<T>
-where T: Sub<Output = T> {
+where
+    T: Sub<Output = T>,
+{
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
@@ -254,12 +286,14 @@ where T: Sub<Output = T> {
 }
 
 impl<T, U> Into<Point<U>> for Vector3D<T>
-where T: Into<U> {
+where
+    T: Into<U>,
+{
     fn into(self) -> Point<U> {
         Point {
             x: self.x.into(),
             y: self.y.into(),
-            z: self.z.into()
+            z: self.z.into(),
         }
     }
 }
@@ -285,8 +319,17 @@ pub type RealTwist = Twist<RealUnit>;
 impl RealTwist {
     pub const fn identity() -> Self {
         Self {
-            linear: Vector3D { x: 0.0, y: 0.0, z: 0.0 },
-            rotational: Quaternion { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
+            linear: Vector3D {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            rotational: Quaternion {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
         }
     }
 }
@@ -315,9 +358,31 @@ impl VoxelQuad<DiscreteUnit> {
         };
         let [a, b, c, d] = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
         if self.normal.is_positive() {
-            [Triangle { v0: a, v1: b, v2: c }, Triangle { v0: a, v1: c, v2: d }]
+            [
+                Triangle {
+                    v0: a,
+                    v1: b,
+                    v2: c,
+                },
+                Triangle {
+                    v0: a,
+                    v1: c,
+                    v2: d,
+                },
+            ]
         } else {
-            [Triangle { v0: a, v1: c, v2: b }, Triangle { v0: a, v1: d, v2: c }]
+            [
+                Triangle {
+                    v0: a,
+                    v1: c,
+                    v2: b,
+                },
+                Triangle {
+                    v0: a,
+                    v1: d,
+                    v2: c,
+                },
+            ]
         }
     }
 }

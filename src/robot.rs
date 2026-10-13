@@ -1,7 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::{
-    Robot, geometry::{self, Quaternion, RealTwist, Vector3D}, urdf,
+    Robot,
+    geometry::{self, Quaternion, RealTwist, Vector3D},
+    urdf,
 };
 
 pub struct UrdfRobot {
@@ -125,7 +127,7 @@ impl Robot for UrdfRobot {
         self.last_transforms = Some(transforms.clone());
         transforms
     }
-    
+
     fn last_transform(&self) -> Option<&Self::Transform> {
         self.last_transforms.as_ref()
     }

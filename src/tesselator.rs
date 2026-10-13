@@ -1,13 +1,14 @@
-use std::collections::VecDeque;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::VecDeque;
 
 #[cfg(feature = "multi-threaded")]
 use rayon::prelude::*;
 
 use crate::{
-    Tesselator, geometry::{
-        Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, RealTriangle, RealUnit, TriangleChunk, Vector2D, Vector3D,
-        VoxelNormal, VoxelQuad,
+    Tesselator,
+    geometry::{
+        Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, RealTriangle, RealUnit,
+        TriangleChunk, Vector2D, Vector3D, VoxelNormal, VoxelQuad,
     },
 };
 
@@ -37,9 +38,18 @@ const fn layer_mask(axis: Axis, layer: usize) -> u32 {
 }
 
 const BOUNDARY_LAYERS: [[u32; 2]; 3] = [
-    [layer_mask(Axis::X, 0), layer_mask(Axis::X, SUBCHUNK_SIZE.get(Axis::X) - 1)],
-    [layer_mask(Axis::Y, 0), layer_mask(Axis::Y, SUBCHUNK_SIZE.get(Axis::Y) - 1)],
-    [layer_mask(Axis::Z, 0), layer_mask(Axis::Z, SUBCHUNK_SIZE.get(Axis::Z) - 1)],
+    [
+        layer_mask(Axis::X, 0),
+        layer_mask(Axis::X, SUBCHUNK_SIZE.get(Axis::X) - 1),
+    ],
+    [
+        layer_mask(Axis::Y, 0),
+        layer_mask(Axis::Y, SUBCHUNK_SIZE.get(Axis::Y) - 1),
+    ],
+    [
+        layer_mask(Axis::Z, 0),
+        layer_mask(Axis::Z, SUBCHUNK_SIZE.get(Axis::Z) - 1),
+    ],
 ];
 
 struct Chunk {
@@ -50,7 +60,11 @@ struct Chunk {
 
 impl Chunk {
     fn new() -> Box<Self> {
-        Box::new(Self { subchunks: [0; CHUNK_RATIO], columns: [[[0; CHUNK_WIDTH]; CHUNK_WIDTH]; 3], solid_subchunks: 0 })
+        Box::new(Self {
+            subchunks: [0; CHUNK_RATIO],
+            columns: [[[0; CHUNK_WIDTH]; CHUNK_WIDTH]; 3],
+            solid_subchunks: 0,
+        })
     }
 
     fn subchunk_index(subchunk: Point<usize>) -> usize {
@@ -73,7 +87,8 @@ impl Chunk {
 
     fn set_subchunk_mask(&mut self, subchunk: Point<usize>, mask: u32) {
         let previous = std::mem::replace(&mut self.subchunks[Self::subchunk_index(subchunk)], mask);
-        self.solid_subchunks = self.solid_subchunks + (mask != 0) as usize - (previous != 0) as usize;
+        self.solid_subchunks =
+            self.solid_subchunks + (mask != 0) as usize - (previous != 0) as usize;
         let origin = Point::from_fn(|axis| subchunk[axis] * SUBCHUNK_SIZE[axis]);
         for normal in Axis::ALL {
             let (column, row) = normal.plane();
@@ -88,7 +103,8 @@ impl Chunk {
                         local[normal] = n;
                         bits |= (mask >> PointI::voxel_bit(local) & 1) << n;
                     }
-                    let voxels = &mut self.columns[normal as usize][origin[row] + r][origin[column] + c];
+                    let voxels =
+                        &mut self.columns[normal as usize][origin[row] + r][origin[column] + c];
                     *voxels = *voxels & !(run << origin[normal]) | bits << origin[normal];
                 }
             }
@@ -105,6 +121,12 @@ pub struct GreedyMeshTesselator {
     chunks: FxHashMap<DiscretePoint, Box<Chunk>>,
     dirty_queue: VecDeque<DiscretePoint>,
     in_queue: FxHashSet<DiscretePoint>,
+}
+
+impl Default for GreedyMeshTesselator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GreedyMeshTesselator {
@@ -147,7 +169,9 @@ impl GreedyMeshTesselator {
             let normal = normal as usize;
             for r in 0..CHUNK_WIDTH {
                 for c in 0..CHUNK_WIDTH {
-                    let column = |chunk: Option<&Box<Chunk>>| chunk.map_or(0, |chunk| chunk.columns[normal][r][c] as u64);
+                    let column = |chunk: Option<&Box<Chunk>>| {
+                        chunk.map_or(0, |chunk| chunk.columns[normal][r][c] as u64)
+                    };
                     solid[normal][r][c] = column(own) << 1
                         | column(below) >> (CHUNK_WIDTH - 1) & 1
                         | (column(above) & 1) << (CHUNK_WIDTH + 1);
@@ -157,7 +181,9 @@ impl GreedyMeshTesselator {
         solid
     }
 
-    fn greedy_rectangles(mut rows: [u32; CHUNK_WIDTH]) -> impl Iterator<Item = (Vector2D<DiscreteUnit>, Vector2D<DiscreteUnit>)> {
+    fn greedy_rectangles(
+        mut rows: [u32; CHUNK_WIDTH],
+    ) -> impl Iterator<Item = (Vector2D<DiscreteUnit>, Vector2D<DiscreteUnit>)> {
         let mut r = 0;
         std::iter::from_fn(move || {
             while rows.get(r)? == &0 {
@@ -166,11 +192,20 @@ impl GreedyMeshTesselator {
             let start = rows[r].trailing_zeros();
             let width = (rows[r] >> start).trailing_ones();
             let run = (((1u64 << width) - 1) << start) as u32;
-            let height = rows[r..].iter().take_while(|&&row| row & run == run).count();
+            let height = rows[r..]
+                .iter()
+                .take_while(|&&row| row & run == run)
+                .count();
             rows[r..r + height].iter_mut().for_each(|row| *row &= !run);
             Some((
-                Vector2D { x: start as DiscreteUnit, y: r as DiscreteUnit },
-                Vector2D { x: width as DiscreteUnit, y: height as DiscreteUnit },
+                Vector2D {
+                    x: start as DiscreteUnit,
+                    y: r as DiscreteUnit,
+                },
+                Vector2D {
+                    x: width as DiscreteUnit,
+                    y: height as DiscreteUnit,
+                },
             ))
         })
     }
@@ -210,14 +245,22 @@ impl GreedyMeshTesselator {
                     origin[axis] += layer as DiscreteUnit;
                     origin[column] += start.x;
                     origin[row] += start.y;
-                    VoxelQuad { normal, origin, size }
+                    VoxelQuad {
+                        normal,
+                        origin,
+                        size,
+                    }
                 })
             })
         })
     }
 
     fn tesselate_chunk(&self, chunk: DiscretePoint) -> Vec<RealTriangle> {
-        let voxel_size = self.config.as_ref().expect("Tesselator must be configured before generating output geometry").voxel_size as DiscreteUnit;
+        let voxel_size = self
+            .config
+            .as_ref()
+            .expect("Tesselator must be configured before generating output geometry")
+            .voxel_size as DiscreteUnit;
         self.chunk_quads(chunk)
             .flat_map(|quad| quad.triangles())
             .map(|triangle| triangle.map(|coordinate| (coordinate * voxel_size) as RealUnit))
@@ -230,20 +273,32 @@ impl Tesselator for GreedyMeshTesselator {
     type InputGeometryDelta = Vec<PointI>;
     type OutputGeometryDelta = Vec<TriangleChunk>;
 
-    fn update_input_geometry(
-        &mut self, 
-        geometry_delta: &Self::InputGeometryDelta
-    ) {
-        assert!(self.config.is_some(), "Tesselator must be configured before updating input geometry");
+    fn update_input_geometry(&mut self, geometry_delta: &Self::InputGeometryDelta) {
+        assert!(
+            self.config.is_some(),
+            "Tesselator must be configured before updating input geometry"
+        );
         for subchunk in geometry_delta {
-            let origin = DiscretePoint { x: subchunk.x, y: subchunk.y, z: subchunk.z };
+            let origin = DiscretePoint {
+                x: subchunk.x,
+                y: subchunk.y,
+                z: subchunk.z,
+            };
             debug_assert!(
-                Axis::ALL.iter().all(|&axis| origin[axis].rem_euclid(SUBCHUNK_SIZE[axis] as DiscreteUnit) == 0),
-                "Subchunk origin {:?} is not aligned to {:?}", origin, SUBCHUNK_SIZE,
+                Axis::ALL
+                    .iter()
+                    .all(|&axis| origin[axis].rem_euclid(SUBCHUNK_SIZE[axis] as DiscreteUnit) == 0),
+                "Subchunk origin {:?} is not aligned to {:?}",
+                origin,
+                SUBCHUNK_SIZE,
             );
             let chunk = Chunk::origin_of(origin);
-            let local = Point::from_fn(|axis| (origin[axis] - chunk[axis]) as usize / SUBCHUNK_SIZE[axis]);
-            let previous = self.chunks.get(&chunk).map_or(0, |stored| stored.subchunk_mask(local));
+            let local =
+                Point::from_fn(|axis| (origin[axis] - chunk[axis]) as usize / SUBCHUNK_SIZE[axis]);
+            let previous = self
+                .chunks
+                .get(&chunk)
+                .map_or(0, |stored| stored.subchunk_mask(local));
             if previous == subchunk.i {
                 continue;
             }
@@ -257,7 +312,10 @@ impl Tesselator for GreedyMeshTesselator {
     }
 
     fn get_output_geometry_delta(&mut self) -> Option<Self::OutputGeometryDelta> {
-        assert!(self.config.is_some(), "Tesselator must be configured before generating output geometry");
+        assert!(
+            self.config.is_some(),
+            "Tesselator must be configured before generating output geometry"
+        );
         if self.dirty_queue.is_empty() {
             return None;
         }
@@ -268,13 +326,14 @@ impl Tesselator for GreedyMeshTesselator {
         #[cfg(not(feature = "multi-threaded"))]
         let dirty = dirty.into_iter();
         let output_delta = dirty
-            .map(|chunk| {
-                TriangleChunk { index: chunk, triangles: self.tesselate_chunk(chunk) }
+            .map(|chunk| TriangleChunk {
+                index: chunk,
+                triangles: self.tesselate_chunk(chunk),
             })
             .collect();
         Some(output_delta)
     }
-    
+
     fn configure(&mut self, configuration: Self::Configuration) {
         self.config = Some(configuration);
     }

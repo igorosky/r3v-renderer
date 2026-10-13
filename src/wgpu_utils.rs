@@ -1,8 +1,9 @@
 use wgpu::util::DrawIndirectArgs;
 
-use crate::geometry::{Vertex};
+use crate::geometry::Vertex;
 
-pub const DRAW_ARGS_STRIDE: wgpu::BufferAddress = std::mem::size_of::<DrawIndirectArgs>() as wgpu::BufferAddress;
+pub const DRAW_ARGS_STRIDE: wgpu::BufferAddress =
+    std::mem::size_of::<DrawIndirectArgs>() as wgpu::BufferAddress;
 pub const VERTEX_STRIDE: wgpu::BufferAddress = std::mem::size_of::<Vertex>() as wgpu::BufferAddress;
 
 pub const BASIC_VERTEX_BUFFER_LAYOUT: wgpu::VertexBufferLayout = wgpu::VertexBufferLayout {
@@ -27,7 +28,9 @@ pub fn create_vertex_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buf
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Vertex Arena Buffer"),
         size: capacity as wgpu::BufferAddress * VERTEX_STRIDE,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        usage: wgpu::BufferUsages::VERTEX
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     })
 }

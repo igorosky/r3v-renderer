@@ -68,15 +68,27 @@ impl VertexArena {
         self.draws.len() as u32
     }
 
-    pub fn set_chunk(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, index: DiscretePoint, vertices: &[Vertex]) {
+    pub fn set_chunk(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        index: DiscretePoint,
+        vertices: &[Vertex],
+    ) {
         if vertices.is_empty() {
             self.remove_chunk(index);
             return;
         }
         let count = vertices.len() as u32;
-        if let Some(alloc) = self.chunks.get_mut(&index) && count <= alloc.capacity {
+        if let Some(alloc) = self.chunks.get_mut(&index)
+            && count <= alloc.capacity
+        {
             alloc.count = count;
-            queue.write_buffer(&self.vertex_buffer, alloc.offset as wgpu::BufferAddress * VERTEX_STRIDE, bytemuck::cast_slice(vertices));
+            queue.write_buffer(
+                &self.vertex_buffer,
+                alloc.offset as wgpu::BufferAddress * VERTEX_STRIDE,
+                bytemuck::cast_slice(vertices),
+            );
             self.draws[alloc.draw_slot].vertex_count = count;
             self.draws_dirty = true;
             return;
@@ -86,9 +98,18 @@ impl VertexArena {
         }
         let capacity = size_class(count);
         let offset = self.allocate(device, queue, capacity);
-        queue.write_buffer(&self.vertex_buffer, offset as wgpu::BufferAddress * VERTEX_STRIDE, bytemuck::cast_slice(vertices));
+        queue.write_buffer(
+            &self.vertex_buffer,
+            offset as wgpu::BufferAddress * VERTEX_STRIDE,
+            bytemuck::cast_slice(vertices),
+        );
 
-        let args = DrawIndirectArgs { vertex_count: count, instance_count: 1, first_vertex: offset, first_instance: 0 };
+        let args = DrawIndirectArgs {
+            vertex_count: count,
+            instance_count: 1,
+            first_vertex: offset,
+            first_instance: 0,
+        };
         match self.chunks.get_mut(&index) {
             Some(alloc) => {
                 alloc.offset = offset;
@@ -97,7 +118,15 @@ impl VertexArena {
                 self.draws[alloc.draw_slot] = args;
             }
             None => {
-                self.chunks.insert(index, ChunkAlloc { offset, capacity, count, draw_slot: self.draws.len() });
+                self.chunks.insert(
+                    index,
+                    ChunkAlloc {
+                        offset,
+                        capacity,
+                        count,
+                        draw_slot: self.draws.len(),
+                    },
+                );
                 self.draws.push(args);
                 self.draw_owners.push(index);
             }
@@ -113,7 +142,10 @@ impl VertexArena {
         self.draws.swap_remove(alloc.draw_slot);
         self.draw_owners.swap_remove(alloc.draw_slot);
         if let Some(moved) = self.draw_owners.get(alloc.draw_slot) {
-            self.chunks.get_mut(moved).expect("Draw owner without allocation").draw_slot = alloc.draw_slot;
+            self.chunks
+                .get_mut(moved)
+                .expect("Draw owner without allocation")
+                .draw_slot = alloc.draw_slot;
         }
         self.draws_dirty = true;
     }
@@ -134,7 +166,11 @@ impl VertexArena {
     }
 
     fn allocate(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, capacity: u32) -> u32 {
-        if let Some(offset) = self.free_lists.get_mut(class_index(capacity)).and_then(Vec::pop) {
+        if let Some(offset) = self
+            .free_lists
+            .get_mut(class_index(capacity))
+            .and_then(Vec::pop)
+        {
             self.free_slots -= capacity;
             return offset;
         }
@@ -157,7 +193,7 @@ impl VertexArena {
 
     fn grow(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, required: usize) {
         let mut new_capacity = self.vertex_capacity;
-        while new_capacity < required as usize {
+        while new_capacity < required {
             new_capacity *= 2;
         }
         let new_buffer = create_vertex_buffer(device, new_capacity);
@@ -165,7 +201,13 @@ impl VertexArena {
             label: Some("Vertex Arena Grow Encoder"),
         });
         if self.high_water > 0 {
-            encoder.copy_buffer_to_buffer(&self.vertex_buffer, 0, &new_buffer, 0, self.high_water as wgpu::BufferAddress * VERTEX_STRIDE);
+            encoder.copy_buffer_to_buffer(
+                &self.vertex_buffer,
+                0,
+                &new_buffer,
+                0,
+                self.high_water as wgpu::BufferAddress * VERTEX_STRIDE,
+            );
         }
         queue.submit(Some(encoder.finish()));
         self.vertex_buffer = new_buffer;

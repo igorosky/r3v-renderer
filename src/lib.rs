@@ -2,15 +2,21 @@ pub mod camera;
 pub mod geometry;
 pub mod renderer;
 pub mod robot;
-pub mod tesselator;
 pub mod stl;
+pub mod tesselator;
 pub mod urdf;
 
 mod vertex_arena;
 mod wgpu_utils;
 
 pub trait Camera {
-    fn look_at(&mut self, target: geometry::Point<f32>, distance: f32, yaw_deg: f32, pitch_deg: f32);
+    fn look_at(
+        &mut self,
+        target: geometry::Point<f32>,
+        distance: f32,
+        yaw_deg: f32,
+        pitch_deg: f32,
+    );
     fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32);
     fn zoom(&mut self, delta_distance: f32);
     fn pan(&mut self, delta_x: f32, delta_y: f32);
@@ -34,10 +40,7 @@ pub trait Tesselator {
     type OutputGeometryDelta;
 
     fn configure(&mut self, configuration: Self::Configuration);
-    fn update_input_geometry(
-        &mut self, 
-        geometry_delta: &Self::InputGeometryDelta
-    );
+    fn update_input_geometry(&mut self, geometry_delta: &Self::InputGeometryDelta);
     fn get_output_geometry_delta(&mut self) -> Option<Self::OutputGeometryDelta>;
 }
 
@@ -51,11 +54,15 @@ pub trait Renderer {
 
     fn configure(&mut self, configuration: Self::Configuration);
     fn update_geometry(&mut self, geometry_delta: Self::GeometryDelta);
-    fn upload_asset(&mut self, description: Self::AssetDescription, instances: usize) -> Vec<Self::AssetInstanceId>;
-    fn set_asset_transform(&mut self, instance_id: Self::AssetInstanceId, transform: Self::AssetTransform);
-    fn render(
+    fn upload_asset(
         &mut self,
-        camera_uniform: &camera::CameraUniform,
-        output:         &mut [u8]
+        description: Self::AssetDescription,
+        instances: usize,
+    ) -> Vec<Self::AssetInstanceId>;
+    fn set_asset_transform(
+        &mut self,
+        instance_id: Self::AssetInstanceId,
+        transform: Self::AssetTransform,
     );
+    fn render(&mut self, camera_uniform: &camera::CameraUniform, output: &mut [u8]);
 }

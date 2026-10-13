@@ -1,7 +1,5 @@
-use crate::{
-    Renderer, camera, geometry, stl, vertex_arena::VertexArena,
-};
 use crate::wgpu_utils::*;
+use crate::{Renderer, camera, geometry, stl, vertex_arena::VertexArena};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WgpuAcceleratedConfiguration {
@@ -33,7 +31,8 @@ struct RenderTargets {
 
 const INITIAL_ASSET_VERTEX_CAPACITY: usize = 1 << 20;
 const INITIAL_ASSET_TRANSFORM_CAPACITY: usize = 1024;
-const ASSET_TRANSFORM_STRIDE: wgpu::BufferAddress = std::mem::size_of::<geometry::RealTwist>() as wgpu::BufferAddress;
+const ASSET_TRANSFORM_STRIDE: wgpu::BufferAddress =
+    std::mem::size_of::<geometry::RealTwist>() as wgpu::BufferAddress;
 
 struct Asset {
     vertex_offset: u32,
@@ -68,7 +67,10 @@ impl Assets {
             vertex_buffer: create_vertex_buffer(device, INITIAL_ASSET_VERTEX_CAPACITY),
             vertex_capacity: INITIAL_ASSET_VERTEX_CAPACITY,
             vertex_count: 0,
-            transform_buffer: create_asset_transform_buffer(device, INITIAL_ASSET_TRANSFORM_CAPACITY),
+            transform_buffer: create_asset_transform_buffer(
+                device,
+                INITIAL_ASSET_TRANSFORM_CAPACITY,
+            ),
             transform_capacity: INITIAL_ASSET_TRANSFORM_CAPACITY,
             transforms: Vec::new(),
             transforms_dirty: false,
@@ -80,7 +82,13 @@ impl Assets {
         self.assets.is_empty()
     }
 
-    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[geometry::Vertex], instances: usize) -> usize {
+    fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vertices: &[geometry::Vertex],
+        instances: usize,
+    ) -> usize {
         self.reserve_vertices(device, queue, vertices.len());
         queue.write_buffer(
             &self.vertex_buffer,
@@ -89,7 +97,10 @@ impl Assets {
         );
         self.reserve_transforms(device, instances);
         let first_instance = self.transforms.len();
-        self.transforms.extend(std::iter::repeat_n(geometry::RealTwist::identity(), instances));
+        self.transforms.extend(std::iter::repeat_n(
+            geometry::RealTwist::identity(),
+            instances,
+        ));
         self.transforms_dirty = true;
         self.assets.push(Asset {
             vertex_offset: self.vertex_count as u32,
@@ -114,7 +125,11 @@ impl Assets {
         if !self.transforms_dirty {
             return;
         }
-        queue.write_buffer(&self.transform_buffer, 0, bytemuck::cast_slice(&self.transforms));
+        queue.write_buffer(
+            &self.transform_buffer,
+            0,
+            bytemuck::cast_slice(&self.transforms),
+        );
         self.transforms_dirty = false;
     }
 
@@ -166,7 +181,7 @@ pub struct WgpuAccelerated {
     render_targets: Option<RenderTargets>,
     vertex_arena: VertexArena,
     assets: Assets,
-    frame_index: usize, 
+    frame_index: usize,
 }
 
 impl WgpuAccelerated {
@@ -174,7 +189,7 @@ impl WgpuAccelerated {
         pollster::block_on(Self::new_async())
     }
 
-    pub async fn new_async() -> Option<Self> { 
+    pub async fn new_async() -> Option<Self> {
         let instance = wgpu::Instance::default();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
@@ -192,19 +207,20 @@ impl WgpuAccelerated {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Camera Bind Group Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Camera Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Camera Bind Group"),
             layout: &camera_bind_group_layout,
@@ -225,7 +241,7 @@ impl WgpuAccelerated {
             label: Some("Geometry Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/voxel.wgsl").into()),
         });
-        
+
         // Environment pipeline
         let environment_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Environment Render Pipeline"),
@@ -281,7 +297,8 @@ impl WgpuAccelerated {
                 buffers: &[
                     Some(BASIC_VERTEX_BUFFER_LAYOUT),
                     Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<geometry::RealTwist>() as wgpu::BufferAddress,
+                        array_stride: std::mem::size_of::<geometry::RealTwist>()
+                            as wgpu::BufferAddress,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &wgpu::vertex_attr_array![
                             2 => Float32x3, // linear.x, linear.y, linear.z
@@ -340,7 +357,10 @@ impl WgpuAccelerated {
     }
 
     fn rebuild_targets(&mut self) {
-        assert!(self.active_configuration.is_some(), "Renderer is not configured. Call configure() before render().");
+        assert!(
+            self.active_configuration.is_some(),
+            "Renderer is not configured. Call configure() before render()."
+        );
         let config = self.active_configuration.as_ref().unwrap();
         let unpadded_bytes_per_row = config.width * self.state.pixel_size;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -378,24 +398,26 @@ impl WgpuAccelerated {
         };
         let depth_texture = self.state.device.create_texture(&depth_texture_descriptor);
         let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let create_output_buffer = || self.state.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Output Buffer"),
-            size: (padded_bytes_per_row * config.height) as wgpu::BufferAddress,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let create_output_buffer = || {
+            self.state.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Output Buffer"),
+                size: (padded_bytes_per_row * config.height) as wgpu::BufferAddress,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            })
+        };
         self.render_targets = Some(RenderTargets {
             width: config.width,
             height: config.height,
             render_texture: texture,
             render_texture_view: texture_view,
             _depth_texture: depth_texture,
-            depth_texture_view: depth_texture_view,
+            depth_texture_view,
             output_buffers: [create_output_buffer(), create_output_buffer()],
             padded_bytes_per_row,
             unpadded_bytes_per_row,
         });
-        self.frame_index = 0; 
+        self.frame_index = 0;
     }
 }
 
@@ -411,13 +433,14 @@ impl Renderer for WgpuAccelerated {
         self.active_configuration = Some(configuration);
     }
 
-    fn render(
-        &mut self,
-        camera_uniform: &camera::CameraUniform,
-        output: &mut [u8]
-    ) {
-        let config = self.active_configuration.expect("Renderer is not configured.");
-        assert!(output.len() >= (config.width * config.height * self.state.pixel_size) as usize, "Output buffer is too small.");
+    fn render(&mut self, camera_uniform: &camera::CameraUniform, output: &mut [u8]) {
+        let config = self
+            .active_configuration
+            .expect("Renderer is not configured.");
+        assert!(
+            output.len() >= (config.width * config.height * self.state.pixel_size) as usize,
+            "Output buffer is too small."
+        );
 
         let needs_rebuild = match &self.render_targets {
             Some(targets) => targets.width != config.width || targets.height != config.height,
@@ -438,9 +461,12 @@ impl Renderer for WgpuAccelerated {
             buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
                 sender.send(result).unwrap();
             });
-            let _ = self.state.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+            let _ = self.state.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
             receiver.recv().unwrap().unwrap();
-            
+
             {
                 let padded_data = buffer_slice.get_mapped_range().unwrap();
                 let mut offset = 0;
@@ -454,10 +480,17 @@ impl Renderer for WgpuAccelerated {
         } else {
             output.fill(0);
         }
-        self.state.queue.write_buffer(&self.state.camera_buffer, 0, bytemuck::cast_slice(&[*camera_uniform]));
-        let mut encoder = self.state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
+        self.state.queue.write_buffer(
+            &self.state.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[*camera_uniform]),
+        );
+        let mut encoder =
+            self.state
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Render Encoder"),
+                });
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -536,9 +569,21 @@ impl Renderer for WgpuAccelerated {
             vertices.clear();
             vertices.extend(triangles.into_iter().flat_map(|triangle| {
                 [
-                    geometry::Vertex::with_default_color(triangle.v0[0], triangle.v0[1], triangle.v0[2]),
-                    geometry::Vertex::with_default_color(triangle.v1[0], triangle.v1[1], triangle.v1[2]),
-                    geometry::Vertex::with_default_color(triangle.v2[0], triangle.v2[1], triangle.v2[2]),
+                    geometry::Vertex::with_default_color(
+                        triangle.v0[0],
+                        triangle.v0[1],
+                        triangle.v0[2],
+                    ),
+                    geometry::Vertex::with_default_color(
+                        triangle.v1[0],
+                        triangle.v1[1],
+                        triangle.v1[2],
+                    ),
+                    geometry::Vertex::with_default_color(
+                        triangle.v2[0],
+                        triangle.v2[1],
+                        triangle.v2[2],
+                    ),
                 ]
             }));
             self.vertex_arena.set_chunk(device, queue, index, &vertices);
@@ -546,16 +591,28 @@ impl Renderer for WgpuAccelerated {
         self.vertex_arena.finish_update(device, queue);
     }
 
-    fn upload_asset(&mut self, description: Self::AssetDescription, instances: usize) -> Vec<Self::AssetInstanceId> {
-        let vertices = description.triangles
+    fn upload_asset(
+        &mut self,
+        description: Self::AssetDescription,
+        instances: usize,
+    ) -> Vec<Self::AssetInstanceId> {
+        let vertices = description
+            .triangles
             .iter()
             .flat_map(|triangle| triangle.to_vertices())
             .collect::<Vec<geometry::Vertex>>();
-        let first_instance = self.assets.upload(&self.state.device, &self.state.queue, &vertices, instances) as u64;
+        let first_instance =
+            self.assets
+                .upload(&self.state.device, &self.state.queue, &vertices, instances)
+                as u64;
         (first_instance..first_instance + instances as u64).collect()
     }
 
-    fn set_asset_transform(&mut self, instance_id: Self::AssetInstanceId, transform: Self::AssetTransform) {
+    fn set_asset_transform(
+        &mut self,
+        instance_id: Self::AssetInstanceId,
+        transform: Self::AssetTransform,
+    ) {
         self.assets.set_transform(instance_id as usize, transform);
     }
 }
