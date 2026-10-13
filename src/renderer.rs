@@ -1,9 +1,7 @@
 use crate::{
-    Renderer,
-    camera,
-    geometry,
-    vertex_arena::VertexArena,
+    Renderer, camera, geometry, stl, vertex_arena::VertexArena,
 };
+use crate::wgpu_utils::*;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WgpuAcceleratedConfiguration {
@@ -14,7 +12,8 @@ pub struct WgpuAcceleratedConfiguration {
 struct WgpuAcceleratedState {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    pub pipeline: wgpu::RenderPipeline,
+    pub environment_pipeline: wgpu::RenderPipeline,
+    pub asset_pipeline: wgpu::RenderPipeline,
     pub pixel_size: u32,
     pub camera_buffer: wgpu::Buffer,
     pub camera_bind_group: wgpu::BindGroup,
@@ -32,11 +31,41 @@ struct RenderTargets {
     unpadded_bytes_per_row: u32,
 }
 
+const INITIAL_ASSET_VERTEX_CAPACITY: usize = 1 << 20;
+const INITIAL_ASSET_TRANSFORM_CAPACITY: usize = 1024;
+const ASSET_TRANSFORM_STRIDE: wgpu::BufferAddress = std::mem::size_of::<geometry::RealTwist>() as wgpu::BufferAddress;
+
+struct Asset {
+    vertex_offset: u32,
+    vertex_count: u32,
+    first_instance: u32,
+    instance_count: u32,
+}
+
+fn create_asset_transform_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Asset Transform Buffer"),
+        size: capacity as wgpu::BufferAddress * ASSET_TRANSFORM_STRIDE,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 pub struct WgpuAccelerated {
     state: WgpuAcceleratedState,
     active_configuration: Option<WgpuAcceleratedConfiguration>,
     render_targets: Option<RenderTargets>,
     vertex_arena: VertexArena,
+
+    asset_vertex_buffer: wgpu::Buffer,
+    asset_vertex_capacity: usize,
+    asset_vertex_count: usize,
+    asset_transform_buffer: wgpu::Buffer,
+    asset_transform_capacity: usize,
+    asset_transforms: Vec<geometry::RealTwist>,
+    asset_transforms_dirty: bool,
+    assets: Vec<Asset>,
+
     frame_index: usize, 
 }
 
@@ -55,12 +84,6 @@ impl WgpuAccelerated {
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .ok()?;
-
-        // Shader
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Geometry Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/voxel.wgsl").into()),
-        });
 
         // Camera
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -91,32 +114,86 @@ impl WgpuAccelerated {
             }],
         });
 
-        // Pipeline
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Pipeline Layout"),
             bind_group_layouts: &[
                 Some(&camera_bind_group_layout)
-            ],
-            immediate_size: 0,
+                ],
+                immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
+
+        // Environment shader
+        let environment_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Geometry Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/voxel.wgsl").into()),
+        });
+        
+        // Environment pipeline
+        let environment_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Environment Render Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
+                module: &environment_shader,
                 entry_point: Some("vs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<geometry::Vertex>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x3, // position
-                        1 => Float32x3, // color
-                    ],
-                })],
+                buffers: &[Some(BASIC_VERTEX_BUFFER_LAYOUT)],
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
+                module: &environment_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let vertex_arena = VertexArena::new(&device);
+
+        // Asset shader
+        let asset_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Asset Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/model.wgsl").into()),
+        });
+
+        // Asset pipeline
+        let asset_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Asset Render Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &asset_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[
+                    Some(BASIC_VERTEX_BUFFER_LAYOUT),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<geometry::RealTwist>() as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            2 => Float32x3, // linear.x, linear.y, linear.z
+                            3 => Float32x4, // rotational.x, rotational.y, rotational.z, rotational.w
+                        ],
+                    }),
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &asset_shader,
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
@@ -142,12 +219,14 @@ impl WgpuAccelerated {
             cache: None,
         });
 
-        let vertex_arena = VertexArena::new(&device);
+        let asset_vertex_buffer = create_vertex_buffer(&device, INITIAL_ASSET_VERTEX_CAPACITY);
+        let asset_transform_buffer = create_asset_transform_buffer(&device, INITIAL_ASSET_TRANSFORM_CAPACITY);
 
         let state = WgpuAcceleratedState {
             device,
             queue,
-            pipeline,
+            environment_pipeline,
+            asset_pipeline,
             pixel_size: std::mem::size_of::<[u8; 4]>() as u32,
             camera_buffer,
             camera_bind_group,
@@ -158,6 +237,14 @@ impl WgpuAccelerated {
             active_configuration: None,
             render_targets: None,
             vertex_arena,
+            asset_vertex_buffer,
+            asset_vertex_capacity: INITIAL_ASSET_VERTEX_CAPACITY,
+            asset_vertex_count: 0,
+            asset_transform_buffer,
+            asset_transform_capacity: INITIAL_ASSET_TRANSFORM_CAPACITY,
+            asset_transforms: Vec::new(),
+            asset_transforms_dirty: false,
+            assets: Vec::new(),
             frame_index: 0,
         })
     }
@@ -222,9 +309,64 @@ impl WgpuAccelerated {
     }
 }
 
+impl WgpuAccelerated {
+    fn reserve_asset_vertices(&mut self, additional: usize) {
+        let required = self.asset_vertex_count + additional;
+        if required <= self.asset_vertex_capacity {
+            return;
+        }
+        let mut new_capacity = self.asset_vertex_capacity;
+        while new_capacity < required {
+            new_capacity *= 2;
+        }
+        let new_buffer = create_vertex_buffer(&self.state.device, new_capacity);
+        if self.asset_vertex_count > 0 {
+            let mut encoder = self.state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Asset Vertex Buffer Grow Encoder"),
+            });
+            encoder.copy_buffer_to_buffer(
+                &self.asset_vertex_buffer,
+                0,
+                &new_buffer,
+                0,
+                self.asset_vertex_count as wgpu::BufferAddress * VERTEX_STRIDE,
+            );
+            self.state.queue.submit(Some(encoder.finish()));
+        }
+        self.asset_vertex_buffer = new_buffer;
+        self.asset_vertex_capacity = new_capacity;
+    }
+
+    fn reserve_asset_transforms(&mut self, additional: usize) {
+        let required = self.asset_transforms.len() + additional;
+        if required <= self.asset_transform_capacity {
+            return;
+        }
+        let mut new_capacity = self.asset_transform_capacity;
+        while new_capacity < required {
+            new_capacity *= 2;
+        }
+        self.asset_transform_buffer = create_asset_transform_buffer(&self.state.device, new_capacity);
+        self.asset_transform_capacity = new_capacity;
+        self.asset_transforms_dirty = true;
+    }
+
+    fn flush_asset_transforms(&mut self) {
+        if !self.asset_transforms_dirty {
+            return;
+        }
+        self.state.queue.write_buffer(&self.asset_transform_buffer, 0, bytemuck::cast_slice(&self.asset_transforms));
+        self.asset_transforms_dirty = false;
+    }
+}
+
 impl Renderer for WgpuAccelerated {
     type Configuration = WgpuAcceleratedConfiguration;
     type GeometryDelta = Vec<geometry::TriangleChunk>;
+
+    type AssetInstanceId = u64;
+    type AssetDescription = stl::StlMesh;
+    type AssetTransform = geometry::RealTwist;
 
     fn configure(&mut self, configuration: Self::Configuration) {
         self.active_configuration = Some(configuration);
@@ -245,6 +387,7 @@ impl Renderer for WgpuAccelerated {
         if needs_rebuild {
             self.rebuild_targets();
         }
+        self.flush_asset_transforms();
 
         let targets = self.render_targets.as_ref().unwrap();
         if self.frame_index > 0 {
@@ -302,10 +445,22 @@ impl Renderer for WgpuAccelerated {
             });
             let draw_count = self.vertex_arena.draw_count();
             if draw_count > 0 {
-                render_pass.set_pipeline(&self.state.pipeline);
+                render_pass.set_pipeline(&self.state.environment_pipeline);
                 render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.vertex_arena.vertex_buffer().slice(..));
                 render_pass.multi_draw_indirect(self.vertex_arena.draw_buffer(), 0, draw_count);
+            }
+            if !self.assets.is_empty() {
+                render_pass.set_pipeline(&self.state.asset_pipeline);
+                render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.asset_vertex_buffer.slice(..));
+                render_pass.set_vertex_buffer(1, self.asset_transform_buffer.slice(..));
+                for asset in &self.assets {
+                    render_pass.draw(
+                        asset.vertex_offset..asset.vertex_offset + asset.vertex_count,
+                        asset.first_instance..asset.first_instance + asset.instance_count,
+                    );
+                }
             }
         }
         let write_index = self.frame_index % 2;
@@ -350,5 +505,43 @@ impl Renderer for WgpuAccelerated {
             self.vertex_arena.set_chunk(device, queue, index, &vertices);
         }
         self.vertex_arena.finish_update(device, queue);
+    }
+    
+    fn upload_asset(&mut self, description: Self::AssetDescription, instances: usize) -> Vec<Self::AssetInstanceId> {
+        let vertices = description.triangles
+            .iter()
+            .flat_map(|triangle| triangle.to_vertices())
+            .collect::<Vec<geometry::Vertex>>();
+
+        self.reserve_asset_vertices(vertices.len());
+        self.state.queue.write_buffer(
+            &self.asset_vertex_buffer,
+            self.asset_vertex_count as wgpu::BufferAddress * VERTEX_STRIDE,
+            bytemuck::cast_slice(&vertices),
+        );
+
+        self.reserve_asset_transforms(instances);
+        let first_instance = self.asset_transforms.len();
+        self.asset_transforms.extend(std::iter::repeat_n(geometry::RealTwist::identity(), instances));
+        self.asset_transforms_dirty = true;
+
+        self.assets.push(Asset {
+            vertex_offset: self.asset_vertex_count as u32,
+            vertex_count: vertices.len() as u32,
+            first_instance: first_instance as u32,
+            instance_count: instances as u32,
+        });
+        self.asset_vertex_count += vertices.len();
+
+        (first_instance as u64..(first_instance + instances) as u64).collect()
+    }
+
+    fn set_asset_transform(&mut self, instance_id: Self::AssetInstanceId, transform: Self::AssetTransform) {
+        let current = &mut self.asset_transforms[instance_id as usize];
+        if *current == transform {
+            return;
+        }
+        *current = transform;
+        self.asset_transforms_dirty = true;
     }
 }

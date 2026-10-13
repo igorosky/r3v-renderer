@@ -7,6 +7,7 @@ pub mod stl;
 pub mod urdf;
 
 mod vertex_arena;
+mod wgpu_utils;
 
 pub trait Camera {
     fn look_at(&mut self, target: geometry::Point<f32>, distance: f32, yaw_deg: f32, pitch_deg: f32);
@@ -20,11 +21,11 @@ pub trait Camera {
 pub trait Robot {
     type RobotDescription;
     type SensorInput;
-    type TransformDescription;
+    type Transform;
 
     fn from_description(description: Self::RobotDescription) -> Self;
-    fn feed_sensor_input(&mut self, input: &Self::SensorInput) -> Self::TransformDescription;
-    fn last_transform_description(&self) -> Option<&Self::TransformDescription>;
+    fn feed_sensor_input(&mut self, input: &Self::SensorInput) -> Self::Transform;
+    fn last_transform(&self) -> Option<&Self::Transform>;
 }
 
 pub trait Tesselator {
@@ -44,8 +45,14 @@ pub trait Renderer {
     type Configuration;
     type GeometryDelta;
 
+    type AssetInstanceId;
+    type AssetDescription;
+    type AssetTransform;
+
     fn configure(&mut self, configuration: Self::Configuration);
     fn update_geometry(&mut self, geometry_delta: Self::GeometryDelta);
+    fn upload_asset(&mut self, description: Self::AssetDescription, instances: usize) -> Vec<Self::AssetInstanceId>;
+    fn set_asset_transform(&mut self, instance_id: Self::AssetInstanceId, transform: Self::AssetTransform);
     fn render(
         &mut self,
         camera_uniform: &camera::CameraUniform,

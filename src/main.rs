@@ -1,13 +1,21 @@
 use r3v_renderer::{
-    Camera, Renderer, Tesselator, camera::OrbitCamera, geometry::PointI, renderer::{self, WgpuAccelerated}, tesselator::{GreedyMeshTesselator, GreedyMeshTesselatorConfiguration},
+    Camera, Renderer, Robot, Tesselator,
+    camera::OrbitCamera,
+    geometry::{self, PointI, RealTwist},
+    renderer::{self, WgpuAccelerated},
+    robot::UrdfRobot,
+    stl,
+    tesselator::{GreedyMeshTesselator, GreedyMeshTesselatorConfiguration},
+    urdf,
 };
-use cgmath::Vector3;
+use cgmath::{InnerSpace, Rotation3, Vector3};
 use image::{ImageBuffer, Rgba};
 use std::{
     array,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     f32::consts::TAU,
     num::NonZeroU32,
+    path::Path,
     rc::Rc,
     time::Instant,
 };
@@ -55,6 +63,16 @@ const WAVE_AMPLITUDE: f32 = 2.0;
 const MAX_STRUCTURE_GROUND: i32 = 28;
 const TREE_CELL: i32 = 16;
 
+/// Loaded when no URDF path is passed on the command line.
+const DEFAULT_ROBOT_URDF: &str = "assets/scorpio8.urdf.xacro";
+/// Voxels per URDF metre.
+const ROBOT_SCALE: f32 = 20.0;
+const ROBOT_SITE_RADIUS: f32 = 24.0;
+const ROBOT_JOINT_SPEED: f32 = 0.8;
+/// Sweep amplitude, in radians, for continuous joints that carry other links (rockers, wrists).
+const ROBOT_CONTINUOUS_SWEEP: f32 = 0.4;
+const ROBOT_FOCUS_DISTANCE: f32 = 70.0;
+
 const CAMERA_DISTANCE: f32 = 160.0;
 const CAMERA_MIN_DISTANCE: f32 = 2.0;
 const CAMERA_MAX_DISTANCE: f32 = 900.0;
@@ -83,6 +101,7 @@ Controls:
   Shift             move faster
   O                 toggle auto-orbit
   R                 reset camera
+  F                 focus camera on the robot
   P                 save snapshot
   Esc               quit";
 
@@ -91,7 +110,8 @@ fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut demo = Demo::new();
+    let urdf_path = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_ROBOT_URDF.to_owned());
+    let mut demo = Demo::new(Path::new(&urdf_path));
     event_loop.run_app(&mut demo)?;
     Ok(())
 }
@@ -118,6 +138,7 @@ struct Demo {
     camera: OrbitCamera,
     tesselator: GreedyMeshTesselator,
     renderer: WgpuAccelerated,
+    robot: Option<RobotScene>,
 
     input: InputState,
     auto_orbit: bool,
@@ -143,7 +164,7 @@ fn initial_camera() -> OrbitCamera {
 }
 
 impl Demo {
-    fn new() -> Self {
+    fn new(urdf_path: &Path) -> Self {
         let world_start = Instant::now();
         let world = World::new();
         println!(
@@ -159,7 +180,14 @@ impl Demo {
         tesselator.configure(GreedyMeshTesselatorConfiguration{
             voxel_size: 1
         });
-        let renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
+        let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
+        let robot = match RobotScene::load(urdf_path, robot_placement(&world), &mut renderer) {
+            Ok(robot) => Some(robot),
+            Err(err) => {
+                eprintln!("Running without a robot: {err}");
+                None
+            }
+        };
         let now = Instant::now();
 
         Self {
@@ -169,6 +197,7 @@ impl Demo {
             camera: initial_camera(),
             tesselator,
             renderer,
+            robot,
             input: InputState::default(),
             auto_orbit: true,
             width: 0,
@@ -215,6 +244,11 @@ impl Demo {
                 self.chunk_count += !delta.triangles.is_empty() as usize;
             }
             self.renderer.update_geometry(geometry_delta);
+        }
+
+        // Robot meshes were uploaded once; each frame only moves their instances.
+        if let Some(robot) = &mut self.robot {
+            robot.update(t, &mut self.renderer);
         }
 
         self.update_camera(dt);
@@ -290,6 +324,12 @@ impl Demo {
             KeyCode::KeyR => {
                 self.camera = initial_camera();
                 self.auto_orbit = true;
+            }
+            KeyCode::KeyF => {
+                if let Some(target) = self.robot.as_ref().and_then(RobotScene::focus_point) {
+                    let (yaw, pitch) = (self.camera.yaw.to_degrees(), self.camera.pitch.to_degrees());
+                    self.camera.look_at(target, ROBOT_FOCUS_DISTANCE, yaw, pitch);
+                }
             }
             _ => {}
         }
@@ -394,6 +434,182 @@ impl ApplicationHandler for Demo {
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(window) = &self.window {
             window.request_redraw();
+        }
+    }
+}
+
+/// Where the robot's root link sits in the voxel world: on the ground at its reserved site,
+/// turned from URDF's Z-up into the world's Y-up.
+fn robot_placement(world: &World) -> Placement {
+    let [x, z] = world.robot_site.unwrap_or([WORLD_X / 2, WORLD_Z / 2]);
+    Placement {
+        translation: Vector3::new(x as f32 + 0.5, world.height_at(x, z) as f32, z as f32 + 0.5),
+        rotation: cgmath::Quaternion::from_angle_x(cgmath::Deg(-90.0)),
+        scale: ROBOT_SCALE,
+    }
+}
+
+/// Maps the robot frame into the world: scale, then rotate, then translate.
+struct Placement {
+    translation: Vector3<f32>,
+    rotation: cgmath::Quaternion<f32>,
+    scale: f32,
+}
+
+impl Placement {
+    fn point(&self, point: Vector3<f32>) -> Vector3<f32> {
+        self.translation + self.rotation * (point * self.scale)
+    }
+
+    /// The scale is baked into the uploaded vertices, so only the translation is scaled here.
+    fn twist(&self, twist: RealTwist) -> RealTwist {
+        let linear = self.point(Vector3::new(twist.linear.x, twist.linear.y, twist.linear.z));
+        let q = twist.rotational;
+        let rotation = (self.rotation * cgmath::Quaternion::new(q.w, q.x, q.y, q.z)).normalize();
+        RealTwist {
+            linear: geometry::Vector3D { x: linear.x, y: linear.y, z: linear.z },
+            rotational: geometry::Quaternion { x: rotation.v.x, y: rotation.v.y, z: rotation.v.z, w: rotation.s },
+        }
+    }
+}
+
+/// How the demo drives a joint over time.
+enum JointMotion {
+    /// Spins forever, like a wheel.
+    Spin { phase: f32 },
+    /// Sweeps back and forth between its limits.
+    Sweep { phase: f32, center: f32, amplitude: f32 },
+}
+
+/// A URDF robot whose meshes live on the GPU as asset instances, one per visual.
+struct RobotScene {
+    robot: UrdfRobot,
+    placement: Placement,
+    joints: Vec<(String, JointMotion)>,
+    joint_positions: HashMap<String, f32>,
+    /// Renderer instance for each visual, keyed like `RobotTransforms::visuals`.
+    instances: Vec<((String, usize), u64)>,
+    focus_link: Option<String>,
+}
+
+impl RobotScene {
+    fn load(urdf_path: &Path, placement: Placement, renderer: &mut WgpuAccelerated) -> Result<Self, String> {
+        let load_start = Instant::now();
+        let description = urdf::read_file(urdf_path)?;
+        let urdf_dir = urdf_path.parent().unwrap_or(Path::new("."));
+
+        // Visuals sharing a mesh file and scale share one upload and differ only by instance transform.
+        let mut groups: Vec<((String, [u32; 3]), Vec<(String, usize)>)> = Vec::new();
+        let mut skipped = 0;
+        for link in &description.links {
+            for (visual_index, visual) in link.visuals.iter().enumerate() {
+                let Some(urdf::UrdfGeometry::Mesh(mesh)) = &visual.geometry else {
+                    skipped += 1;
+                    continue;
+                };
+                let scale = mesh.scale.unwrap_or(urdf::Vector3 { x: 1.0, y: 1.0, z: 1.0 });
+                let key = (mesh.filename.clone(), [scale.x, scale.y, scale.z].map(f32::to_bits));
+                let visual_key = (link.name.clone(), visual_index);
+                match groups.iter_mut().find(|(group_key, _)| *group_key == key) {
+                    Some((_, visuals)) => visuals.push(visual_key),
+                    None => groups.push((key, vec![visual_key])),
+                }
+            }
+        }
+
+        let mut instances = Vec::new();
+        let mut triangle_count = 0;
+        for ((filename, scale), visuals) in groups {
+            let path = resolve_mesh_file(&filename, urdf_dir);
+            let mut mesh = stl::read_file(&path)?;
+            scale_mesh(&mut mesh, scale.map(f32::from_bits).map(|axis| axis * placement.scale));
+            triangle_count += mesh.triangles.len();
+            let ids = renderer.upload_asset(mesh, visuals.len());
+            instances.extend(visuals.into_iter().zip(ids));
+        }
+
+        let parent_links = description.joints.iter().map(|joint| joint.parent.as_str()).collect::<HashSet<_>>();
+        let joints = description
+            .joints
+            .iter()
+            .enumerate()
+            .filter_map(|(index, joint)| {
+                let phase = index as f32 * 0.7;
+                let motion = match (joint.joint_type.as_str(), joint.limit) {
+                    // Only leaf links (wheels) spin freely; spinning a rocker would lift its wheels off the ground.
+                    ("continuous", _) if !parent_links.contains(joint.child.as_str()) => JointMotion::Spin { phase },
+                    ("continuous", _) => JointMotion::Sweep { phase, center: 0.0, amplitude: ROBOT_CONTINUOUS_SWEEP },
+                    ("revolute" | "prismatic", Some(limit)) if limit.upper > limit.lower => JointMotion::Sweep {
+                        phase,
+                        center: (limit.upper + limit.lower) * 0.5,
+                        amplitude: (limit.upper - limit.lower) * 0.5,
+                    },
+                    _ => return None,
+                };
+                Some((joint.name.clone(), motion))
+            })
+            .collect::<Vec<_>>();
+
+        let focus_link = description.links.iter().find(|link| !link.visuals.is_empty()).map(|link| link.name.clone());
+        println!(
+            "Loaded robot '{}' in {:.0} ms: {} visuals ({} skipped, only meshes are supported), {} triangles, {} animated joints",
+            description.name, load_start.elapsed().as_secs_f32() * 1000.0, instances.len(), skipped, triangle_count, joints.len(),
+        );
+
+        Ok(Self {
+            robot: UrdfRobot::from_description(description),
+            placement,
+            joints,
+            joint_positions: HashMap::new(),
+            instances,
+            focus_link,
+        })
+    }
+
+    fn update(&mut self, t: f32, renderer: &mut WgpuAccelerated) {
+        for (name, motion) in &self.joints {
+            let position = match *motion {
+                JointMotion::Spin { phase } => t * ROBOT_JOINT_SPEED * 2.0 + phase,
+                JointMotion::Sweep { phase, center, amplitude } => center + amplitude * (t * ROBOT_JOINT_SPEED + phase).sin(),
+            };
+            self.joint_positions.insert(name.clone(), position);
+        }
+        let transforms = self.robot.feed_sensor_input(&self.joint_positions);
+        for (visual, instance) in &self.instances {
+            if let Some(&twist) = transforms.visuals.get(visual) {
+                renderer.set_asset_transform(*instance, self.placement.twist(twist));
+            }
+        }
+    }
+
+    fn focus_point(&self) -> Option<geometry::Point<f32>> {
+        let origin = self.robot.last_transform()?.get_link_origin(self.focus_link.as_deref()?)?;
+        let world = self.placement.point(Vector3::new(origin.x, origin.y, origin.z));
+        Some(geometry::Point { x: world.x, y: world.y, z: world.z })
+    }
+}
+
+/// `urdf::read_file` resolves `package://<name>/...` only when an ancestor directory is called
+/// `<name>`. Otherwise this falls back to the path relative to the URDF file, which is how the
+/// bundled assets are laid out.
+fn resolve_mesh_file(filename: &str, urdf_dir: &Path) -> std::path::PathBuf {
+    match filename.strip_prefix("package://").and_then(|uri| uri.split_once('/')) {
+        Some((_, relative_path)) => urdf_dir.join(relative_path),
+        None => Path::new(filename).to_path_buf(),
+    }
+}
+
+fn scale_mesh(mesh: &mut stl::StlMesh, scale: [f32; 3]) {
+    let mirrored = scale[0] * scale[1] * scale[2] < 0.0;
+    for triangle in &mut mesh.triangles {
+        for vertex in [&mut triangle.v0, &mut triangle.v1, &mut triangle.v2] {
+            for axis in 0..3 {
+                vertex[axis] *= scale[axis];
+            }
+        }
+        // A mirroring scale flips the winding, which would get the triangle back-face culled.
+        if mirrored {
+            *triangle = triangle.reverse();
         }
     }
 }
@@ -660,6 +876,7 @@ struct World {
     gyroscopes: Vec<Gyroscope>,
     piston_fields: Vec<PistonField>,
     lakes: Vec<Lake>,
+    robot_site: Option<[i32; 2]>,
     dynamic_bricks: Vec<u32>,
     dynamic_touched: Vec<usize>,
     initialized: bool,
@@ -677,6 +894,7 @@ impl World {
             gyroscopes: Vec::new(),
             piston_fields: Vec::new(),
             lakes: Vec::new(),
+            robot_site: None,
             dynamic_bricks: vec![0; (WORLD_BRICKS_X * WORLD_BRICKS_Y * WORLD_BRICKS_Z) as usize],
             dynamic_touched: Vec::new(),
             initialized: false,
@@ -694,6 +912,7 @@ impl World {
             }
         }
         world.fill_lakes();
+        world.robot_site = world.reserve_site(0x7090, ROBOT_SITE_RADIUS);
         world.build_windmills();
         world.build_piston_fields();
         world.place_gyroscopes();

@@ -57,7 +57,7 @@ impl RobotTransforms {
 impl Robot for UrdfRobot {
     type RobotDescription = urdf::UrdfRobot;
     type SensorInput = HashMap<String, f32>;
-    type TransformDescription = RobotTransforms;
+    type Transform = RobotTransforms;
 
     fn from_description(description: Self::RobotDescription) -> Self {
         Self {
@@ -66,7 +66,7 @@ impl Robot for UrdfRobot {
         }
     }
 
-    fn feed_sensor_input(&mut self, input: &Self::SensorInput) -> Self::TransformDescription {
+    fn feed_sensor_input(&mut self, input: &Self::SensorInput) -> Self::Transform {
         let mut joints_by_parent: HashMap<&str, Vec<&urdf::UrdfJoint>> = HashMap::new();
         let mut child_links = std::collections::HashSet::new();
         for joint in &self.description.joints {
@@ -126,7 +126,7 @@ impl Robot for UrdfRobot {
         transforms
     }
     
-    fn last_transform_description(&self) -> Option<&Self::TransformDescription> {
+    fn last_transform(&self) -> Option<&Self::Transform> {
         self.last_transforms.as_ref()
     }
 }

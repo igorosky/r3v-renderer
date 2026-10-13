@@ -2,12 +2,10 @@ use rustc_hash::FxHashMap;
 use wgpu::util::DrawIndirectArgs;
 
 use crate::geometry::{DiscretePoint, Vertex};
-
-const VERTEX_STRIDE: wgpu::BufferAddress = std::mem::size_of::<Vertex>() as wgpu::BufferAddress;
-const DRAW_ARGS_STRIDE: wgpu::BufferAddress = std::mem::size_of::<DrawIndirectArgs>() as wgpu::BufferAddress;
+use crate::wgpu_utils::*;
 
 const MIN_CLASS_SHIFT: u32 = 6;
-const INITIAL_VERTEX_CAPACITY: u32 = 1 << 16;
+const INITIAL_VERTEX_CAPACITY: usize = 1 << 16;
 const INITIAL_DRAW_CAPACITY: usize = 64;
 
 struct ChunkAlloc {
@@ -19,7 +17,7 @@ struct ChunkAlloc {
 
 pub(crate) struct VertexArena {
     vertex_buffer: wgpu::Buffer,
-    vertex_capacity: u32,
+    vertex_capacity: usize,
     high_water: u32,
     free_lists: Vec<Vec<u32>>,
     free_slots: u32,
@@ -39,24 +37,6 @@ fn size_class(count: u32) -> u32 {
 
 fn class_index(capacity: u32) -> usize {
     (capacity.trailing_zeros() - MIN_CLASS_SHIFT) as usize
-}
-
-fn create_vertex_buffer(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Vertex Arena Buffer"),
-        size: capacity as wgpu::BufferAddress * VERTEX_STRIDE,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    })
-}
-
-fn create_draw_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Vertex Arena Draw Buffer"),
-        size: capacity as wgpu::BufferAddress * DRAW_ARGS_STRIDE,
-        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }
 
 impl VertexArena {
@@ -158,8 +138,8 @@ impl VertexArena {
             self.free_slots -= capacity;
             return offset;
         }
-        if self.high_water + capacity > self.vertex_capacity {
-            self.grow(device, queue, self.high_water + capacity);
+        if (self.high_water + capacity) as usize > self.vertex_capacity {
+            self.grow(device, queue, (self.high_water + capacity) as usize);
         }
         let offset = self.high_water;
         self.high_water += capacity;
@@ -175,9 +155,9 @@ impl VertexArena {
         self.free_slots += capacity;
     }
 
-    fn grow(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, required: u32) {
+    fn grow(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, required: usize) {
         let mut new_capacity = self.vertex_capacity;
-        while new_capacity < required {
+        while new_capacity < required as usize {
             new_capacity *= 2;
         }
         let new_buffer = create_vertex_buffer(device, new_capacity);

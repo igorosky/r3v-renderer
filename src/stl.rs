@@ -1,14 +1,10 @@
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Triangle {
-    pub normal: [f32; 3],
-    pub vertices: [[f32; 3]; 3],
-}
+use crate::geometry::{self, RealTriangle};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct StlMesh {
-    pub triangles: Vec<Triangle>,
+    pub triangles: Vec<RealTriangle>,
 }
 
 pub fn read_file(path: &Path) -> Result<StlMesh, String> {
@@ -20,9 +16,10 @@ pub fn read_file(path: &Path) -> Result<StlMesh, String> {
     let triangles = parsed
         .faces
         .into_iter()
-        .map(|face| Triangle {
-            normal: face.normal.0,
-            vertices: face.vertices.map(|index| parsed.vertices[index].0),
+        .map(|face| {
+            let [v0, v1, v2] = face.vertices.map(|index| parsed.vertices[index].0);
+            geometry::RealTriangle { v0, v1, v2 }
+                .with_winding(geometry::Winding::CounterClockwise, face.normal.into())
         })
         .collect();
     Ok(StlMesh { triangles })

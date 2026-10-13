@@ -1,4 +1,6 @@
-use std::ops::{Index, IndexMut};
+use std::ops::{Index, IndexMut, Mul, Sub};
+
+use cgmath::num_traits;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PointI {
@@ -98,7 +100,6 @@ impl<T> Point<T> {
     }
 }
 
-/// Per-axis access for the 3D `{ x, y, z }` structs; `get` is the `const` counterpart of indexing.
 macro_rules! impl_axis_access {
     ($($type:ident),*) => {$(
         impl<T: Copy> $type<T> {
@@ -140,6 +141,11 @@ impl_axis_access!(Point, Vector3D);
 pub type DiscretePoint = Point<DiscreteUnit>;
 pub type RealPoint = Point<RealUnit>;
 
+pub enum Winding {
+    Clockwise,
+    CounterClockwise,
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct Triangle<T> {
     pub v0: [T; 3],
@@ -155,6 +161,38 @@ impl<T> Triangle<T> {
             v2: self.v2.map(&mut f),
         }
     }
+
+    pub fn to_vertices(&self) -> [Vertex; 3]
+    where
+        T: Into<f32> + Copy
+    {
+        [
+            Vertex::with_default_color(self.v0[0].into(), self.v0[1].into(), self.v0[2].into()),
+            Vertex::with_default_color(self.v1[0].into(), self.v1[1].into(), self.v1[2].into()),
+            Vertex::with_default_color(self.v2[0].into(), self.v2[1].into(), self.v2[2].into()),
+        ]
+    }
+
+    pub fn reverse(self) -> Self {
+        Self { v0: self.v0, v1: self.v2, v2: self.v1 }
+    }
+
+    pub fn with_winding(&self, winding: Winding, normal: Vector3D<T>) -> Self
+    where
+        T: Copy + PartialOrd + num_traits::Zero + Sub<Output = T> + Mul<Output = T>
+    {
+        let is_ccw = match winding {
+            Winding::Clockwise => false,
+            Winding::CounterClockwise => true,
+        };
+        let current_is_ccw = {
+            let v0: Vector3D<T> = self.v0.into();
+            let v1: Vector3D<T> = self.v1.into();
+            let v2: Vector3D<T> = self.v2.into();
+            (v1 - v0).cross(v2 - v0).dot(normal) >= T::zero()
+        };
+        if is_ccw == current_is_ccw { *self } else { self.reverse() }
+    }
 }
 
 pub type DiscreteTriangle = Triangle<DiscreteUnit>;
@@ -166,11 +204,53 @@ pub struct Vector2D<T> {
     pub y: T,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::Zeroable)]
 pub struct Vector3D<T> {
     pub x: T,
     pub y: T,
     pub z: T,
+}
+
+impl<T> Vector3D<T> {
+    #[inline]
+    pub fn cross(self, rhs: Self) -> Self
+    where T: Sub<Output = T> + Mul<Output = T> + Copy {
+        Self {
+            x: self.y * rhs.z - self.z * rhs.y,
+            y: self.z * rhs.x - self.x * rhs.z,
+            z: self.x * rhs.y - self.y * rhs.x,
+        }
+    }
+
+    #[inline]
+    pub fn dot(self, rhs: Self) -> T
+    where T: Mul<Output = T> + std::ops::Add<Output = T> + Copy {
+        self.x * rhs.x + self.y * rhs.y + self.z * rhs.z
+    }
+}
+
+impl<T, V> From<V> for Vector3D<T>
+where
+    V: Into<[T; 3]>,
+{
+    fn from(value: V) -> Self {
+        let [x, y, z] = value.into();
+        Vector3D { x, y, z }
+    }
+}
+
+impl<T> Sub for Vector3D<T>
+where T: Sub<Output = T> {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y,
+            z: self.z - rhs.z,
+        }
+    }
 }
 
 impl<T, U> Into<Point<U>> for Vector3D<T>
@@ -184,7 +264,8 @@ where T: Into<U> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, bytemuck::Zeroable)]
 pub struct Quaternion<T> {
     pub x: T,
     pub y: T,
@@ -192,13 +273,27 @@ pub struct Quaternion<T> {
     pub w: T,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, bytemuck::Zeroable)]
 pub struct Twist<T> {
     pub linear: Vector3D<T>,
     pub rotational: Quaternion<T>,
 }
 
 pub type RealTwist = Twist<RealUnit>;
+
+impl RealTwist {
+    pub const fn identity() -> Self {
+        Self {
+            linear: Vector3D { x: 0.0, y: 0.0, z: 0.0 },
+            rotational: Quaternion { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
+        }
+    }
+}
+
+unsafe impl bytemuck::Pod for Vector3D<f32> {}
+unsafe impl bytemuck::Pod for Quaternion<f32> {}
+unsafe impl bytemuck::Pod for Twist<f32> {}
 
 #[derive(Debug, Clone, Copy)]
 pub struct VoxelQuad<T> {
