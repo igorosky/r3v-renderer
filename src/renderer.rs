@@ -42,6 +42,17 @@ struct Asset {
     instance_count: u32,
 }
 
+struct Assets {
+    vertex_buffer: wgpu::Buffer,
+    vertex_capacity: usize,
+    vertex_count: usize,
+    transform_buffer: wgpu::Buffer,
+    transform_capacity: usize,
+    transforms: Vec<geometry::RealTwist>,
+    transforms_dirty: bool,
+    assets: Vec<Asset>,
+}
+
 fn create_asset_transform_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Asset Transform Buffer"),
@@ -51,21 +62,110 @@ fn create_asset_transform_buffer(device: &wgpu::Device, capacity: usize) -> wgpu
     })
 }
 
+impl Assets {
+    fn new(device: &wgpu::Device) -> Self {
+        Self {
+            vertex_buffer: create_vertex_buffer(device, INITIAL_ASSET_VERTEX_CAPACITY),
+            vertex_capacity: INITIAL_ASSET_VERTEX_CAPACITY,
+            vertex_count: 0,
+            transform_buffer: create_asset_transform_buffer(device, INITIAL_ASSET_TRANSFORM_CAPACITY),
+            transform_capacity: INITIAL_ASSET_TRANSFORM_CAPACITY,
+            transforms: Vec::new(),
+            transforms_dirty: false,
+            assets: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.assets.is_empty()
+    }
+
+    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[geometry::Vertex], instances: usize) -> usize {
+        self.reserve_vertices(device, queue, vertices.len());
+        queue.write_buffer(
+            &self.vertex_buffer,
+            self.vertex_count as wgpu::BufferAddress * VERTEX_STRIDE,
+            bytemuck::cast_slice(vertices),
+        );
+        self.reserve_transforms(device, instances);
+        let first_instance = self.transforms.len();
+        self.transforms.extend(std::iter::repeat_n(geometry::RealTwist::identity(), instances));
+        self.transforms_dirty = true;
+        self.assets.push(Asset {
+            vertex_offset: self.vertex_count as u32,
+            vertex_count: vertices.len() as u32,
+            first_instance: first_instance as u32,
+            instance_count: instances as u32,
+        });
+        self.vertex_count += vertices.len();
+        first_instance
+    }
+
+    fn set_transform(&mut self, instance: usize, transform: geometry::RealTwist) {
+        let current = &mut self.transforms[instance];
+        if *current == transform {
+            return;
+        }
+        *current = transform;
+        self.transforms_dirty = true;
+    }
+
+    fn flush_transforms(&mut self, queue: &wgpu::Queue) {
+        if !self.transforms_dirty {
+            return;
+        }
+        queue.write_buffer(&self.transform_buffer, 0, bytemuck::cast_slice(&self.transforms));
+        self.transforms_dirty = false;
+    }
+
+    fn reserve_vertices(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, additional: usize) {
+        let required = self.vertex_count + additional;
+        if required <= self.vertex_capacity {
+            return;
+        }
+        let mut new_capacity = self.vertex_capacity;
+        while new_capacity < required {
+            new_capacity *= 2;
+        }
+        let new_buffer = create_vertex_buffer(device, new_capacity);
+        if self.vertex_count > 0 {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Asset Vertex Buffer Grow Encoder"),
+            });
+            encoder.copy_buffer_to_buffer(
+                &self.vertex_buffer,
+                0,
+                &new_buffer,
+                0,
+                self.vertex_count as wgpu::BufferAddress * VERTEX_STRIDE,
+            );
+            queue.submit(Some(encoder.finish()));
+        }
+        self.vertex_buffer = new_buffer;
+        self.vertex_capacity = new_capacity;
+    }
+
+    fn reserve_transforms(&mut self, device: &wgpu::Device, additional: usize) {
+        let required = self.transforms.len() + additional;
+        if required <= self.transform_capacity {
+            return;
+        }
+        let mut new_capacity = self.transform_capacity;
+        while new_capacity < required {
+            new_capacity *= 2;
+        }
+        self.transform_buffer = create_asset_transform_buffer(device, new_capacity);
+        self.transform_capacity = new_capacity;
+        self.transforms_dirty = true;
+    }
+}
+
 pub struct WgpuAccelerated {
     state: WgpuAcceleratedState,
     active_configuration: Option<WgpuAcceleratedConfiguration>,
     render_targets: Option<RenderTargets>,
     vertex_arena: VertexArena,
-
-    asset_vertex_buffer: wgpu::Buffer,
-    asset_vertex_capacity: usize,
-    asset_vertex_count: usize,
-    asset_transform_buffer: wgpu::Buffer,
-    asset_transform_capacity: usize,
-    asset_transforms: Vec<geometry::RealTwist>,
-    asset_transforms_dirty: bool,
-    assets: Vec<Asset>,
-
+    assets: Assets,
     frame_index: usize, 
 }
 
@@ -116,10 +216,8 @@ impl WgpuAccelerated {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Pipeline Layout"),
-            bind_group_layouts: &[
-                Some(&camera_bind_group_layout)
-                ],
-                immediate_size: 0,
+            bind_group_layouts: &[Some(&camera_bind_group_layout)],
+            immediate_size: 0,
         });
 
         // Environment shader
@@ -219,8 +317,7 @@ impl WgpuAccelerated {
             cache: None,
         });
 
-        let asset_vertex_buffer = create_vertex_buffer(&device, INITIAL_ASSET_VERTEX_CAPACITY);
-        let asset_transform_buffer = create_asset_transform_buffer(&device, INITIAL_ASSET_TRANSFORM_CAPACITY);
+        let assets = Assets::new(&device);
 
         let state = WgpuAcceleratedState {
             device,
@@ -237,14 +334,7 @@ impl WgpuAccelerated {
             active_configuration: None,
             render_targets: None,
             vertex_arena,
-            asset_vertex_buffer,
-            asset_vertex_capacity: INITIAL_ASSET_VERTEX_CAPACITY,
-            asset_vertex_count: 0,
-            asset_transform_buffer,
-            asset_transform_capacity: INITIAL_ASSET_TRANSFORM_CAPACITY,
-            asset_transforms: Vec::new(),
-            asset_transforms_dirty: false,
-            assets: Vec::new(),
+            assets,
             frame_index: 0,
         })
     }
@@ -309,57 +399,6 @@ impl WgpuAccelerated {
     }
 }
 
-impl WgpuAccelerated {
-    fn reserve_asset_vertices(&mut self, additional: usize) {
-        let required = self.asset_vertex_count + additional;
-        if required <= self.asset_vertex_capacity {
-            return;
-        }
-        let mut new_capacity = self.asset_vertex_capacity;
-        while new_capacity < required {
-            new_capacity *= 2;
-        }
-        let new_buffer = create_vertex_buffer(&self.state.device, new_capacity);
-        if self.asset_vertex_count > 0 {
-            let mut encoder = self.state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Asset Vertex Buffer Grow Encoder"),
-            });
-            encoder.copy_buffer_to_buffer(
-                &self.asset_vertex_buffer,
-                0,
-                &new_buffer,
-                0,
-                self.asset_vertex_count as wgpu::BufferAddress * VERTEX_STRIDE,
-            );
-            self.state.queue.submit(Some(encoder.finish()));
-        }
-        self.asset_vertex_buffer = new_buffer;
-        self.asset_vertex_capacity = new_capacity;
-    }
-
-    fn reserve_asset_transforms(&mut self, additional: usize) {
-        let required = self.asset_transforms.len() + additional;
-        if required <= self.asset_transform_capacity {
-            return;
-        }
-        let mut new_capacity = self.asset_transform_capacity;
-        while new_capacity < required {
-            new_capacity *= 2;
-        }
-        self.asset_transform_buffer = create_asset_transform_buffer(&self.state.device, new_capacity);
-        self.asset_transform_capacity = new_capacity;
-        self.asset_transforms_dirty = true;
-    }
-
-    fn flush_asset_transforms(&mut self) {
-        if !self.asset_transforms_dirty {
-            return;
-        }
-        self.state.queue.write_buffer(&self.asset_transform_buffer, 0, bytemuck::cast_slice(&self.asset_transforms));
-        self.asset_transforms_dirty = false;
-    }
-}
-
 impl Renderer for WgpuAccelerated {
     type Configuration = WgpuAcceleratedConfiguration;
     type GeometryDelta = Vec<geometry::TriangleChunk>;
@@ -387,7 +426,7 @@ impl Renderer for WgpuAccelerated {
         if needs_rebuild {
             self.rebuild_targets();
         }
-        self.flush_asset_transforms();
+        self.assets.flush_transforms(&self.state.queue);
 
         let targets = self.render_targets.as_ref().unwrap();
         if self.frame_index > 0 {
@@ -453,9 +492,9 @@ impl Renderer for WgpuAccelerated {
             if !self.assets.is_empty() {
                 render_pass.set_pipeline(&self.state.asset_pipeline);
                 render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.asset_vertex_buffer.slice(..));
-                render_pass.set_vertex_buffer(1, self.asset_transform_buffer.slice(..));
-                for asset in &self.assets {
+                render_pass.set_vertex_buffer(0, self.assets.vertex_buffer.slice(..));
+                render_pass.set_vertex_buffer(1, self.assets.transform_buffer.slice(..));
+                for asset in &self.assets.assets {
                     render_pass.draw(
                         asset.vertex_offset..asset.vertex_offset + asset.vertex_count,
                         asset.first_instance..asset.first_instance + asset.instance_count,
@@ -506,42 +545,17 @@ impl Renderer for WgpuAccelerated {
         }
         self.vertex_arena.finish_update(device, queue);
     }
-    
+
     fn upload_asset(&mut self, description: Self::AssetDescription, instances: usize) -> Vec<Self::AssetInstanceId> {
         let vertices = description.triangles
             .iter()
             .flat_map(|triangle| triangle.to_vertices())
             .collect::<Vec<geometry::Vertex>>();
-
-        self.reserve_asset_vertices(vertices.len());
-        self.state.queue.write_buffer(
-            &self.asset_vertex_buffer,
-            self.asset_vertex_count as wgpu::BufferAddress * VERTEX_STRIDE,
-            bytemuck::cast_slice(&vertices),
-        );
-
-        self.reserve_asset_transforms(instances);
-        let first_instance = self.asset_transforms.len();
-        self.asset_transforms.extend(std::iter::repeat_n(geometry::RealTwist::identity(), instances));
-        self.asset_transforms_dirty = true;
-
-        self.assets.push(Asset {
-            vertex_offset: self.asset_vertex_count as u32,
-            vertex_count: vertices.len() as u32,
-            first_instance: first_instance as u32,
-            instance_count: instances as u32,
-        });
-        self.asset_vertex_count += vertices.len();
-
-        (first_instance as u64..(first_instance + instances) as u64).collect()
+        let first_instance = self.assets.upload(&self.state.device, &self.state.queue, &vertices, instances) as u64;
+        (first_instance..first_instance + instances as u64).collect()
     }
 
     fn set_asset_transform(&mut self, instance_id: Self::AssetInstanceId, transform: Self::AssetTransform) {
-        let current = &mut self.asset_transforms[instance_id as usize];
-        if *current == transform {
-            return;
-        }
-        *current = transform;
-        self.asset_transforms_dirty = true;
+        self.assets.set_transform(instance_id as usize, transform);
     }
 }
