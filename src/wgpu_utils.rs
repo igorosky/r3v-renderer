@@ -12,6 +12,7 @@ pub const BASIC_VERTEX_BUFFER_LAYOUT: wgpu::VertexBufferLayout = wgpu::VertexBuf
     attributes: &wgpu::vertex_attr_array![
         0 => Float32x3, // position
         1 => Float32x3, // color
+        2 => Float32x3, // normal
     ],
 };
 

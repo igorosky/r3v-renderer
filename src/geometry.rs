@@ -184,11 +184,10 @@ impl<T> Triangle<T> {
     where
         T: Into<f32> + Copy,
     {
-        [
-            Vertex::with_default_color(self.v0[0].into(), self.v0[1].into(), self.v0[2].into()),
-            Vertex::with_default_color(self.v1[0].into(), self.v1[1].into(), self.v1[2].into()),
-            Vertex::with_default_color(self.v2[0].into(), self.v2[1].into(), self.v2[2].into()),
-        ]
+        let triangle: RealTriangle = (*self).map(Into::into);
+        let normal = triangle.normal();
+        [triangle.v0, triangle.v1, triangle.v2]
+            .map(|position| Vertex::from(Point::from_array(position)).with_normal(normal))
     }
 
     pub fn reverse(self) -> Self {
@@ -223,6 +222,24 @@ impl<T> Triangle<T> {
 
 pub type DiscreteTriangle = Triangle<DiscreteUnit>;
 pub type RealTriangle = Triangle<RealUnit>;
+
+impl RealTriangle {
+    pub fn normal(&self) -> Vector3D<f32> {
+        let v0: Vector3D<f32> = self.v0.into();
+        let v1: Vector3D<f32> = self.v1.into();
+        let v2: Vector3D<f32> = self.v2.into();
+        let normal = (v1 - v0).cross(v2 - v0);
+        let length = normal.dot(normal).sqrt();
+        if length == 0.0 {
+            return normal;
+        }
+        Vector3D {
+            x: normal.x / length,
+            y: normal.y / length,
+            z: normal.z / length,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Vector2D<T> {
@@ -395,13 +412,26 @@ pub type RealQuad = VoxelQuad<RealUnit>;
 pub struct Vertex {
     pub position: [f32; 3],
     pub color: [f32; 3],
+    pub normal: [f32; 3],
 }
 
 impl Vertex {
-    pub fn with_default_color(x: f32, y: f32, z: f32) -> Self {
+    pub const DEFAULT_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
+
+    pub fn with_normal(self, normal: Vector3D<f32>) -> Self {
         Self {
-            position: [x, y, z],
-            color: [1.0, 1.0, 1.0],
+            normal: [normal.x, normal.y, normal.z],
+            ..self
+        }
+    }
+}
+
+impl From<Point<f32>> for Vertex {
+    fn from(point: Point<f32>) -> Self {
+        Self {
+            position: point.to_array(),
+            color: Self::DEFAULT_COLOR,
+            normal: [0.0; 3],
         }
     }
 }

@@ -301,8 +301,8 @@ impl WgpuAccelerated {
                             as wgpu::BufferAddress,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &wgpu::vertex_attr_array![
-                            2 => Float32x3, // linear.x, linear.y, linear.z
-                            3 => Float32x4, // rotational.x, rotational.y, rotational.z, rotational.w
+                            3 => Float32x3, // linear.x, linear.y, linear.z
+                            4 => Float32x4, // rotational.x, rotational.y, rotational.z, rotational.w
                         ],
                     }),
                 ],
@@ -567,25 +567,7 @@ impl Renderer for WgpuAccelerated {
         let mut vertices = Vec::new();
         for geometry::TriangleChunk { index, triangles } in geometry_delta {
             vertices.clear();
-            vertices.extend(triangles.into_iter().flat_map(|triangle| {
-                [
-                    geometry::Vertex::with_default_color(
-                        triangle.v0[0],
-                        triangle.v0[1],
-                        triangle.v0[2],
-                    ),
-                    geometry::Vertex::with_default_color(
-                        triangle.v1[0],
-                        triangle.v1[1],
-                        triangle.v1[2],
-                    ),
-                    geometry::Vertex::with_default_color(
-                        triangle.v2[0],
-                        triangle.v2[1],
-                        triangle.v2[2],
-                    ),
-                ]
-            }));
+            vertices.extend(triangles.iter().flat_map(|triangle| triangle.to_vertices()));
             self.vertex_arena.set_chunk(device, queue, index, &vertices);
         }
         self.vertex_arena.finish_update(device, queue);
