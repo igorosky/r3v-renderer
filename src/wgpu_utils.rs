@@ -1,6 +1,7 @@
-use wgpu::util::DrawIndirectArgs;
+use wgpu::util::{DeviceExt, DrawIndirectArgs};
 
 use crate::geometry::Vertex;
+use crate::turbo_colormap::TURBO_COLORMAP;
 
 pub const DRAW_ARGS_STRIDE: wgpu::BufferAddress =
     std::mem::size_of::<DrawIndirectArgs>() as wgpu::BufferAddress;
@@ -34,4 +35,33 @@ pub fn create_vertex_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buf
             | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     })
+}
+
+pub fn create_turbo_colormap_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+    let texels = TURBO_COLORMAP
+        .iter()
+        .flat_map(|&[r, g, b]| {
+            let to_unorm = |c: f32| (c * 255.0).round() as u8;
+            [to_unorm(r), to_unorm(g), to_unorm(b), 255]
+        })
+        .collect::<Vec<u8>>();
+    device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("Turbo Colormap Texture"),
+            size: wgpu::Extent3d {
+                width: TURBO_COLORMAP.len() as u32,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D1,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &texels,
+    )
 }
