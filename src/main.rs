@@ -10,6 +10,7 @@ use r3v_renderer::{
     tesselator::{GreedyMeshTesselator, GreedyMeshTesselatorConfiguration},
     urdf,
 };
+use rayon::prelude::*;
 use std::{
     array,
     collections::{HashMap, HashSet},
@@ -1367,8 +1368,16 @@ impl World {
         for &index in &previous {
             self.dynamic_bricks[index] = 0;
         }
-        for shape in &shapes {
-            self.rasterize(shape);
+        // Shapes rasterize in parallel against the static world; the merge is cheap and serial.
+        let masks: Vec<Vec<(usize, u32)>> = shapes
+            .par_iter()
+            .map(|shape| self.rasterize(shape))
+            .collect();
+        for (index, mask) in masks.into_iter().flatten() {
+            if self.dynamic_bricks[index] == 0 {
+                self.dynamic_touched.push(index);
+            }
+            self.dynamic_bricks[index] |= mask;
         }
 
         let mask = |index: usize| self.static_bricks[index] | self.dynamic_bricks[index];
@@ -1392,51 +1401,52 @@ impl World {
         delta
     }
 
-    /// Adds the voxels inside `shape` that are not already filled to `dynamic_bricks`.
-    fn rasterize(&mut self, shape: &Shape) {
+    /// Returns the voxels inside `shape` that are not static, as masks per touched brick.
+    fn rasterize(&self, shape: &Shape) -> Vec<(usize, u32)> {
         let (min, max) = shape.bounds();
         let (min, max) = (
             clamp_voxel(min.map(|c| c.floor() as i32)),
             clamp_voxel(max.map(|c| c.ceil() as i32)),
         );
         let (bmin, bmax) = (brick_of(min), brick_of(max));
-        for bz in bmin[2]..=bmax[2] {
-            for by in bmin[1]..=bmax[1] {
-                for bx in bmin[0]..=bmax[0] {
-                    let index = Self::brick_index(bx, by, bz);
-                    let origin = [bx * BRICK_X, by * BRICK_Y, bz * BRICK_Z];
-                    let filled = self.static_bricks[index] | self.dynamic_bricks[index];
-                    let (lo, hi) = (
-                        array::from_fn::<_, 3, _>(|axis| (min[axis] - origin[axis]).max(0)),
-                        array::from_fn::<_, 3, _>(|axis| {
-                            (max[axis] - origin[axis]).min([BRICK_X, BRICK_Y, BRICK_Z][axis] - 1)
-                        }),
-                    );
-                    let mut mask = 0;
-                    for lz in lo[2]..=hi[2] {
-                        for ly in lo[1]..=hi[1] {
-                            for lx in lo[0]..=hi[0] {
-                                let bit = voxel_bit(lx, ly, lz);
-                                if filled & bit != 0 {
-                                    continue;
-                                }
-                                let p = [0, 1, 2]
-                                    .map(|axis| (origin[axis] + [lx, ly, lz][axis]) as f32 + 0.5);
-                                if shape.contains(p) {
-                                    mask |= bit;
+        // Split by brick slab too, so one large shape (a lake) does not serialize the frame.
+        (bmin[2]..=bmax[2])
+            .into_par_iter()
+            .flat_map_iter(|bz| {
+                (bmin[1]..=bmax[1]).flat_map(move |by| {
+                    (bmin[0]..=bmax[0]).filter_map(move |bx| {
+                        let index = Self::brick_index(bx, by, bz);
+                        let origin = [bx * BRICK_X, by * BRICK_Y, bz * BRICK_Z];
+                        let filled = self.static_bricks[index];
+                        let (lo, hi) = (
+                            array::from_fn::<_, 3, _>(|axis| (min[axis] - origin[axis]).max(0)),
+                            array::from_fn::<_, 3, _>(|axis| {
+                                (max[axis] - origin[axis])
+                                    .min([BRICK_X, BRICK_Y, BRICK_Z][axis] - 1)
+                            }),
+                        );
+                        let mut mask = 0;
+                        for lz in lo[2]..=hi[2] {
+                            for ly in lo[1]..=hi[1] {
+                                for lx in lo[0]..=hi[0] {
+                                    let bit = voxel_bit(lx, ly, lz);
+                                    if filled & bit != 0 {
+                                        continue;
+                                    }
+                                    let p = [0, 1, 2].map(|axis| {
+                                        (origin[axis] + [lx, ly, lz][axis]) as f32 + 0.5
+                                    });
+                                    if shape.contains(p) {
+                                        mask |= bit;
+                                    }
                                 }
                             }
                         }
-                    }
-                    if mask != 0 {
-                        if self.dynamic_bricks[index] == 0 {
-                            self.dynamic_touched.push(index);
-                        }
-                        self.dynamic_bricks[index] |= mask;
-                    }
-                }
-            }
-        }
+                        (mask != 0).then_some((index, mask))
+                    })
+                })
+            })
+            .collect()
     }
 }
 
