@@ -18,7 +18,7 @@ wgpu = "30.0.1"
 winit = { version = "0.30", optional = true }
 
 [features]
-demo = ["dep:image", "dep:winit", "dep:softbuffer"]
+demo = ["dep:image", "dep:winit", "dep:softbuffer", "multi-threaded"]
 multi-threaded = ["dep:rayon"]
 
 [[bin]]
