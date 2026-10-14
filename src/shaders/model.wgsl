@@ -1,4 +1,5 @@
-const light_direction = vec3<f32>(0.25, 1.0, 0.25);
+const light_direction = vec3<f32>(-0.25, 1.0, -0.25);
+const minimum_light_intensity = 0.25;
 
 struct CameraUniform {
     view_proj: mat4x4<f32>,
@@ -45,7 +46,7 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let smooth_normal = normalize(in.normal);
-    var light_intensity = max(dot(smooth_normal, normalize(light_direction)), 0.0);
+    var light_intensity = max(dot(smooth_normal, normalize(light_direction)), minimum_light_intensity);
     light_intensity = smoothstep(0.2, 1.0, light_intensity);
     return vec4<f32>(in.color * light_intensity, 1.0);    
 }

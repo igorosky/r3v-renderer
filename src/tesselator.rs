@@ -113,7 +113,7 @@ impl Chunk {
 }
 
 pub struct GreedyMeshTesselatorConfiguration {
-    pub voxel_size: u16,
+    pub voxel_size: f32,
 }
 
 pub struct GreedyMeshTesselator {
@@ -260,10 +260,12 @@ impl GreedyMeshTesselator {
             .config
             .as_ref()
             .expect("Tesselator must be configured before generating output geometry")
-            .voxel_size as DiscreteUnit;
+            .voxel_size;
         self.chunk_quads(chunk)
             .flat_map(|quad| quad.triangles())
-            .map(|triangle| triangle.map(|coordinate| (coordinate * voxel_size) as RealUnit))
+            .map(|triangle| {
+                triangle.map(|coordinate| ((coordinate as RealUnit) * voxel_size) as RealUnit)
+            })
             .collect()
     }
 }
