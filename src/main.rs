@@ -616,6 +616,10 @@ impl RobotScene {
             .iter()
             .enumerate()
             .filter_map(|(index, joint)| {
+                // This joint is a mounting adjustment, not an animated articulation.
+                if joint.name == "mani_base_offset_joint" {
+                    return None;
+                }
                 let phase = index as f32 * 0.7;
                 let motion = match (joint.joint_type.as_str(), joint.limit) {
                     // Only leaf links (wheels) spin freely; spinning a rocker would lift its wheels off the ground.
