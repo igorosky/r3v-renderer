@@ -100,6 +100,7 @@ Controls:
   Arrow keys        orbit
   Shift             move faster
   O                 toggle auto-orbit
+  M                 toggle marching-cubes terrain smoothing
   R                 reset camera
   F                 focus camera on the robot
   P                 save snapshot
@@ -352,6 +353,9 @@ impl Demo {
             KeyCode::Escape => event_loop.exit(),
             KeyCode::KeyP => self.save_snapshot(),
             KeyCode::KeyO => self.auto_orbit = !self.auto_orbit,
+            KeyCode::KeyM => self
+                .tesselator
+                .set_marching_cubes_enabled(!self.tesselator.marching_cubes_enabled()),
             KeyCode::KeyR => {
                 self.camera = initial_camera();
                 self.auto_orbit = true;
@@ -376,11 +380,16 @@ impl Demo {
         }
         let fps = self.stats_frames as f32 / elapsed;
         let frame_ms = 1000.0 / fps;
-        self.overlay_text = format!("{:.0} FPS {:.1}MS", fps, frame_ms);
+        let smoothing = if self.tesselator.marching_cubes_enabled() {
+            "MC ON"
+        } else {
+            "MC OFF"
+        };
+        self.overlay_text = format!("{:.0} FPS {:.1}MS {}", fps, frame_ms, smoothing);
         if let Some(window) = &self.window {
             window.set_title(&format!(
-                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} triangles re-meshed, {} chunks updated",
-                fps, frame_ms, self.triangle_count, self.chunk_count,
+                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} - {} triangles re-meshed, {} chunks updated",
+                fps, frame_ms, smoothing, self.triangle_count, self.chunk_count,
             ));
         }
         self.triangle_count = 0;
