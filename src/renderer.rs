@@ -195,8 +195,10 @@ impl WgpuAccelerated {
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
             .ok()?;
-        let mut required_limits = wgpu::Limits::default();
-        required_limits.max_buffer_size = adapter.limits().max_buffer_size;
+        let required_limits = wgpu::Limits {
+            max_buffer_size: adapter.limits().max_buffer_size,
+            ..Default::default()
+        };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 required_limits,
