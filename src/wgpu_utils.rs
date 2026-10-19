@@ -1,10 +1,10 @@
-use wgpu::util::{DeviceExt, DrawIndirectArgs};
+use wgpu::util::{DeviceExt, DrawIndexedIndirectArgs};
 
 use crate::geometry::Vertex;
 use crate::turbo_colormap::TURBO_COLORMAP;
 
 pub const DRAW_ARGS_STRIDE: wgpu::BufferAddress =
-    std::mem::size_of::<DrawIndirectArgs>() as wgpu::BufferAddress;
+    std::mem::size_of::<DrawIndexedIndirectArgs>() as wgpu::BufferAddress;
 pub const VERTEX_STRIDE: wgpu::BufferAddress = std::mem::size_of::<Vertex>() as wgpu::BufferAddress;
 
 pub const BASIC_VERTEX_BUFFER_LAYOUT: wgpu::VertexBufferLayout = wgpu::VertexBufferLayout {
@@ -23,6 +23,21 @@ pub fn create_draw_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffe
         size: capacity as wgpu::BufferAddress * DRAW_ARGS_STRIDE,
         usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
+    })
+}
+
+pub const QUAD_VERTICES: u32 = 4;
+pub const QUAD_INDICES: u32 = 6;
+
+/// Index buffer splitting each run of four quad vertices into two triangles.
+pub fn create_quad_index_buffer(device: &wgpu::Device, quad_capacity: usize) -> wgpu::Buffer {
+    let indices = (0..quad_capacity as u32)
+        .flat_map(|quad| [0, 1, 2, 0, 2, 3].map(|index| quad * QUAD_VERTICES + index))
+        .collect::<Vec<u32>>();
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Quad Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
     })
 }
 

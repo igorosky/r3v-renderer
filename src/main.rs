@@ -161,7 +161,7 @@ struct Demo {
     stats_since: Instant,
     overlay_text: String,
 
-    triangle_count: usize,
+    quad_count: usize,
     chunk_count: usize,
     snapshot_index: u32,
 }
@@ -228,7 +228,7 @@ impl Demo {
             stats_frames: 0,
             stats_since: now,
             overlay_text: String::new(),
-            triangle_count: 0,
+            quad_count: 0,
             chunk_count: 0,
             snapshot_index: 0,
         }
@@ -265,8 +265,8 @@ impl Demo {
         self.tesselator.update_input_geometry(&brick_delta);
         if let Some(geometry_delta) = self.tesselator.get_output_geometry_delta() {
             for delta in &geometry_delta {
-                self.triangle_count += delta.triangles.len();
-                self.chunk_count += !delta.triangles.is_empty() as usize;
+                self.quad_count += delta.quads.len();
+                self.chunk_count += !delta.quads.is_empty() as usize;
             }
             self.renderer.update_geometry(geometry_delta);
         }
@@ -388,11 +388,11 @@ impl Demo {
         self.overlay_text = format!("{:.0} FPS {:.1}MS", fps, frame_ms);
         if let Some(window) = &self.window {
             window.set_title(&format!(
-                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} triangles re-meshed, {} chunks updated",
-                fps, frame_ms, self.triangle_count, self.chunk_count,
+                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated",
+                fps, frame_ms, self.quad_count, self.chunk_count,
             ));
         }
-        self.triangle_count = 0;
+        self.quad_count = 0;
         self.chunk_count = 0;
         self.stats_frames = 0;
         self.stats_since = now;

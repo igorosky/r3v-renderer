@@ -1,5 +1,5 @@
 use rustc_hash::FxHashMap;
-use wgpu::util::DrawIndirectArgs;
+use wgpu::util::DrawIndexedIndirectArgs;
 
 use crate::geometry::{DiscretePoint, Vertex};
 use crate::wgpu_utils::*;
@@ -7,6 +7,7 @@ use crate::wgpu_utils::*;
 const MIN_CLASS_SHIFT: u32 = 6;
 const INITIAL_VERTEX_CAPACITY: usize = 1 << 16;
 const INITIAL_DRAW_CAPACITY: usize = 64;
+const INITIAL_QUAD_CAPACITY: usize = 1 << 12;
 
 struct ChunkAlloc {
     offset: u32,
@@ -17,6 +18,8 @@ struct ChunkAlloc {
 
 pub(crate) struct VertexArena {
     vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    quad_capacity: usize,
     vertex_capacity: usize,
     high_water: u32,
     free_lists: Vec<Vec<u32>>,
@@ -24,7 +27,7 @@ pub(crate) struct VertexArena {
 
     chunks: FxHashMap<DiscretePoint, ChunkAlloc>,
 
-    draws: Vec<DrawIndirectArgs>,
+    draws: Vec<DrawIndexedIndirectArgs>,
     draw_owners: Vec<DiscretePoint>,
     draw_buffer: wgpu::Buffer,
     draw_capacity: usize,
@@ -44,6 +47,8 @@ impl VertexArena {
         Self {
             vertex_buffer: create_vertex_buffer(device, INITIAL_VERTEX_CAPACITY),
             vertex_capacity: INITIAL_VERTEX_CAPACITY,
+            index_buffer: create_quad_index_buffer(device, INITIAL_QUAD_CAPACITY),
+            quad_capacity: INITIAL_QUAD_CAPACITY,
             high_water: 0,
             free_lists: Vec::new(),
             free_slots: 0,
@@ -58,6 +63,10 @@ impl VertexArena {
 
     pub fn vertex_buffer(&self) -> &wgpu::Buffer {
         &self.vertex_buffer
+    }
+
+    pub fn index_buffer(&self) -> &wgpu::Buffer {
+        &self.index_buffer
     }
 
     pub fn draw_buffer(&self) -> &wgpu::Buffer {
@@ -79,7 +88,13 @@ impl VertexArena {
             self.remove_chunk(index);
             return;
         }
+        debug_assert!(vertices.len().is_multiple_of(QUAD_VERTICES as usize));
         let count = vertices.len() as u32;
+        let quads = (count / QUAD_VERTICES) as usize;
+        if quads > self.quad_capacity {
+            self.quad_capacity = quads.next_power_of_two();
+            self.index_buffer = create_quad_index_buffer(device, self.quad_capacity);
+        }
         if let Some(alloc) = self.chunks.get_mut(&index)
             && count <= alloc.capacity
         {
@@ -89,7 +104,7 @@ impl VertexArena {
                 alloc.offset as wgpu::BufferAddress * VERTEX_STRIDE,
                 bytemuck::cast_slice(vertices),
             );
-            self.draws[alloc.draw_slot].vertex_count = count;
+            self.draws[alloc.draw_slot].index_count = count / QUAD_VERTICES * QUAD_INDICES;
             self.draws_dirty = true;
             return;
         }
@@ -104,10 +119,11 @@ impl VertexArena {
             bytemuck::cast_slice(vertices),
         );
 
-        let args = DrawIndirectArgs {
-            vertex_count: count,
+        let args = DrawIndexedIndirectArgs {
+            index_count: count / QUAD_VERTICES * QUAD_INDICES,
             instance_count: 1,
-            first_vertex: offset,
+            first_index: 0,
+            base_vertex: offset as i32,
             first_instance: 0,
         };
         match self.chunks.get_mut(&index) {
@@ -230,7 +246,7 @@ impl VertexArena {
             );
             alloc.offset = high_water;
             alloc.capacity = size_class(alloc.count);
-            self.draws[alloc.draw_slot].first_vertex = high_water;
+            self.draws[alloc.draw_slot].base_vertex = high_water as i32;
             high_water += alloc.capacity;
         }
         queue.submit(Some(encoder.finish()));

@@ -482,7 +482,7 @@ impl WgpuAccelerated {
 
 impl Renderer for WgpuAccelerated {
     type Configuration = WgpuAcceleratedConfiguration;
-    type GeometryDelta = Vec<geometry::TriangleChunk>;
+    type GeometryDelta = Vec<geometry::QuadChunk>;
 
     type AssetInstanceId = u64;
     type AssetDescription = stl::StlMesh;
@@ -582,7 +582,15 @@ impl Renderer for WgpuAccelerated {
                 render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
                 render_pass.set_bind_group(1, &self.state.colormap_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.vertex_arena.vertex_buffer().slice(..));
-                render_pass.multi_draw_indirect(self.vertex_arena.draw_buffer(), 0, draw_count);
+                render_pass.set_index_buffer(
+                    self.vertex_arena.index_buffer().slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                render_pass.multi_draw_indexed_indirect(
+                    self.vertex_arena.draw_buffer(),
+                    0,
+                    draw_count,
+                );
             }
             if !self.assets.is_empty() {
                 render_pass.set_pipeline(&self.state.asset_pipeline);
@@ -627,9 +635,9 @@ impl Renderer for WgpuAccelerated {
         let device = &self.state.device;
         let queue = &self.state.queue;
         let mut vertices = Vec::new();
-        for geometry::TriangleChunk { index, triangles } in geometry_delta {
+        for geometry::QuadChunk { index, quads } in geometry_delta {
             vertices.clear();
-            vertices.extend(triangles.iter().flat_map(|triangle| triangle.to_vertices()));
+            vertices.extend(quads.iter().flat_map(|quad| quad.to_vertices()));
             self.vertex_arena.set_chunk(device, queue, index, &vertices);
         }
         self.vertex_arena.finish_update(device, queue);

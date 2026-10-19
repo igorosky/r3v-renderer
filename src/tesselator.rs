@@ -7,8 +7,8 @@ use rayon::prelude::*;
 use crate::{
     Tesselator,
     geometry::{
-        Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, RealTriangle, RealUnit,
-        TriangleChunk, Vector2D, Vector3D, VoxelNormal, VoxelQuad,
+        Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, QuadChunk, RealQuad,
+        RealUnit, Vector2D, Vector3D, VoxelNormal,
     },
 };
 
@@ -245,27 +245,20 @@ impl GreedyMeshTesselator {
                     origin[axis] += layer as DiscreteUnit;
                     origin[column] += start.x;
                     origin[row] += start.y;
-                    VoxelQuad {
-                        normal,
-                        origin,
-                        size,
-                    }
+                    DiscreteQuad::voxel_face(normal, origin, size)
                 })
             })
         })
     }
 
-    fn tesselate_chunk(&self, chunk: DiscretePoint) -> Vec<RealTriangle> {
+    fn tesselate_chunk(&self, chunk: DiscretePoint) -> Vec<RealQuad> {
         let voxel_size = self
             .config
             .as_ref()
             .expect("Tesselator must be configured before generating output geometry")
             .voxel_size;
         self.chunk_quads(chunk)
-            .flat_map(|quad| quad.triangles())
-            .map(|triangle| {
-                triangle.map(|coordinate| ((coordinate as RealUnit) * voxel_size) as RealUnit)
-            })
+            .map(|quad| quad.map(|coordinate| coordinate as RealUnit * voxel_size))
             .collect()
     }
 }
@@ -273,7 +266,7 @@ impl GreedyMeshTesselator {
 impl Tesselator for GreedyMeshTesselator {
     type Configuration = GreedyMeshTesselatorConfiguration;
     type InputGeometryDelta = Vec<PointI>;
-    type OutputGeometryDelta = Vec<TriangleChunk>;
+    type OutputGeometryDelta = Vec<QuadChunk>;
 
     fn update_input_geometry(&mut self, geometry_delta: &Self::InputGeometryDelta) {
         assert!(
@@ -328,9 +321,9 @@ impl Tesselator for GreedyMeshTesselator {
         #[cfg(not(feature = "multi-threaded"))]
         let dirty = dirty.into_iter();
         let output_delta = dirty
-            .map(|chunk| TriangleChunk {
+            .map(|chunk| QuadChunk {
                 index: chunk,
-                triangles: self.tesselate_chunk(chunk),
+                quads: self.tesselate_chunk(chunk),
             })
             .collect();
         Some(output_delta)
