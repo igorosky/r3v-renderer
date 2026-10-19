@@ -5,8 +5,10 @@ use std::collections::VecDeque;
 use rayon::prelude::*;
 
 use crate::{
-    Tesselator, geometry::{
-        Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, QuadChunk, RealQuad, Vector2D, Vector3D, VoxelNormal,
+    Tesselator,
+    geometry::{
+        Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, QuadChunk, RealQuad,
+        Vector2D, Vector3D, VoxelNormal,
     },
 };
 
