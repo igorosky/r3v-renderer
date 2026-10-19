@@ -46,9 +46,12 @@ pub struct CameraState {
 pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
     1.0, 0.0, 0.0, 0.0,
     0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 0.5, 0.5,
-    0.0, 0.0, 0.0, 1.0,
+    0.0, 0.0, 0.5, 0.0,
+    0.0, 0.0, 0.5, 1.0,
 );
+
+const SAFE_PITCH: f32 = std::f32::consts::FRAC_PI_2 - 0.01;
+const MIN_DISTANCE: f32 = 0.1;
 
 struct CameraBasis {
     eye: cgmath::Point3<f32>,
@@ -118,15 +121,13 @@ impl Camera for OrbitCamera {
     fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32) {
         self.yaw += delta_yaw;
         self.pitch += delta_pitch;
-
-        const SAFE_PITCH: f32 = std::f32::consts::FRAC_PI_2 - 0.01;
         self.pitch = self.pitch.clamp(-SAFE_PITCH, SAFE_PITCH);
         self.new_uniform_available = true;
     }
 
     fn zoom(&mut self, delta_distance: f32) {
         self.distance += delta_distance;
-        self.distance = self.distance.max(0.1);
+        self.distance = self.distance.max(MIN_DISTANCE);
         self.new_uniform_available = true;
     }
 
@@ -162,9 +163,9 @@ impl Camera for OrbitCamera {
         pitch_deg: f32,
     ) {
         self.target = cgmath::Point3::new(target.x, target.y, target.z);
-        self.distance = distance;
+        self.distance = distance.max(MIN_DISTANCE);
         self.yaw = yaw_deg.to_radians();
-        self.pitch = pitch_deg.to_radians();
+        self.pitch = pitch_deg.to_radians().clamp(-SAFE_PITCH, SAFE_PITCH);
         self.new_uniform_available = true;
     }
 }

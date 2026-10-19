@@ -99,6 +99,7 @@ pub fn read_str(xml: &str) -> Result<UrdfRobot, String> {
 }
 
 fn read_str_with_base_dir(xml: &str, base_dir: Option<&Path>) -> Result<UrdfRobot, String> {
+    check_root_element(xml)?;
     let parsed = urdf_rs::read_from_string(xml)
         .map_err(|err| format!("urdf-rs failed to parse URDF: {err}"))?;
 
@@ -145,6 +146,30 @@ fn read_str_with_base_dir(xml: &str, base_dir: Option<&Path>) -> Result<UrdfRobo
             .collect(),
         materials: parsed.materials.into_iter().map(convert_material).collect(),
     })
+}
+
+fn check_root_element(xml: &str) -> Result<(), String> {
+    let mut reader = quick_xml::Reader::from_str(xml);
+    loop {
+        match reader.read_event() {
+            Ok(
+                quick_xml::events::Event::Start(element) | quick_xml::events::Event::Empty(element),
+            ) => {
+                return match element.name().as_ref() {
+                    b"robot" => Ok(()),
+                    name => Err(format!(
+                        "URDF root element must be <robot>, found <{}>",
+                        String::from_utf8_lossy(name)
+                    )),
+                };
+            }
+            Ok(quick_xml::events::Event::Eof) => {
+                return Err("URDF document has no root element".to_string());
+            }
+            Ok(_) => {}
+            Err(err) => return Err(format!("Failed to parse URDF XML: {err}")),
+        }
+    }
 }
 
 fn convert_vector3(value: [f64; 3]) -> Vector3 {

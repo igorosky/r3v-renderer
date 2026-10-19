@@ -265,6 +265,18 @@ impl<T> Quad<T> {
     }
 }
 
+impl<T, U> Mul<U> for Quad<T>
+where
+    T: Mul<U, Output = T>,
+    U: Copy,
+{
+    type Output = Self;
+
+    fn mul(self, rhs: U) -> Self::Output {
+        self.map(|v| v * rhs)
+    }
+}
+
 pub type DiscreteQuad = Quad<DiscreteUnit>;
 pub type RealQuad = Quad<RealUnit>;
 
@@ -299,6 +311,10 @@ impl DiscreteQuad {
                 v3: b,
             }
         }
+    }
+
+    pub fn to_real(&self, voxel_size: RealUnit) -> RealQuad {
+        self.map(|v| v as RealUnit * voxel_size)
     }
 }
 

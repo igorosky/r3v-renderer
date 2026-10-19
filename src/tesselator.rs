@@ -5,10 +5,8 @@ use std::collections::VecDeque;
 use rayon::prelude::*;
 
 use crate::{
-    Tesselator,
-    geometry::{
-        Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, QuadChunk, RealQuad,
-        RealUnit, Vector2D, Vector3D, VoxelNormal,
+    Tesselator, geometry::{
+        Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, QuadChunk, RealQuad, Vector2D, Vector3D, VoxelNormal,
     },
 };
 
@@ -162,7 +160,7 @@ impl GreedyMeshTesselator {
 
     fn solid_columns(&self, chunk: DiscretePoint) -> Box<SolidColumns> {
         let mut solid = Box::new([[[0u64; CHUNK_WIDTH]; CHUNK_WIDTH]; 3]);
-        let own = self.chunks.get(&chunk);
+        let curr: Option<&Box<Chunk>> = self.chunks.get(&chunk);
         for normal in Axis::ALL {
             let below = self.chunks.get(&Chunk::neighbour_of(chunk, normal, -1));
             let above = self.chunks.get(&Chunk::neighbour_of(chunk, normal, 1));
@@ -172,7 +170,7 @@ impl GreedyMeshTesselator {
                     let column = |chunk: Option<&Box<Chunk>>| {
                         chunk.map_or(0, |chunk| chunk.columns[normal][r][c] as u64)
                     };
-                    solid[normal][r][c] = column(own) << 1
+                    solid[normal][r][c] = column(curr) << 1
                         | column(below) >> (CHUNK_WIDTH - 1) & 1
                         | (column(above) & 1) << (CHUNK_WIDTH + 1);
                 }
@@ -258,7 +256,7 @@ impl GreedyMeshTesselator {
             .expect("Tesselator must be configured before generating output geometry")
             .voxel_size;
         self.chunk_quads(chunk)
-            .map(|quad| quad.map(|coordinate| coordinate as RealUnit * voxel_size))
+            .map(|quad| quad.to_real(voxel_size))
             .collect()
     }
 }
