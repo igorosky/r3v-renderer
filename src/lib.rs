@@ -67,5 +67,6 @@ pub trait Renderer {
         instance_id: Self::AssetInstanceId,
         transform: Self::AssetTransform,
     );
+    fn set_asset_visibility(&mut self, instance_id: Self::AssetInstanceId, visible: bool);
     fn render(&mut self, camera_state: &Self::CameraState, output: &mut [u8]);
 }

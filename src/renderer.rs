@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use crate::wgpu_utils::*;
 use crate::{Renderer, camera, geometry, stl, vertex_arena::VertexArena};
 
@@ -50,7 +52,19 @@ struct Assets {
     transform_capacity: usize,
     transforms: Vec<geometry::RealTwist>,
     transforms_dirty: bool,
+    visible: Vec<bool>,
     assets: Vec<Asset>,
+}
+
+fn visible_runs(visible: &[bool], first: u32) -> impl Iterator<Item = Range<u32>> + '_ {
+    visible
+        .chunk_by(|a, b| a == b)
+        .scan(first, |start, run| {
+            let range = *start..*start + run.len() as u32;
+            *start = range.end;
+            Some(run[0].then_some(range))
+        })
+        .flatten()
 }
 
 fn create_asset_transform_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
@@ -75,6 +89,7 @@ impl Assets {
             transform_capacity: INITIAL_ASSET_TRANSFORM_CAPACITY,
             transforms: Vec::new(),
             transforms_dirty: false,
+            visible: Vec::new(),
             assets: Vec::new(),
         }
     }
@@ -103,6 +118,7 @@ impl Assets {
             instances,
         ));
         self.transforms_dirty = true;
+        self.visible.extend(std::iter::repeat_n(true, instances));
         self.assets.push(Asset {
             vertex_offset: self.vertex_count as u32,
             vertex_count: vertices.len() as u32,
@@ -120,6 +136,18 @@ impl Assets {
         }
         *current = transform;
         self.transforms_dirty = true;
+    }
+
+    fn set_visible(&mut self, instance: usize, visible: bool) {
+        self.visible[instance] = visible;
+    }
+
+    fn visible_instances(&self, asset: &Asset) -> impl Iterator<Item = Range<u32>> + '_ {
+        let first = asset.first_instance as usize;
+        visible_runs(
+            &self.visible[first..first + asset.instance_count as usize],
+            asset.first_instance,
+        )
     }
 
     fn flush_transforms(&mut self, queue: &wgpu::Queue) {
@@ -598,10 +626,12 @@ impl Renderer for WgpuAccelerated {
                 render_pass.set_vertex_buffer(0, self.assets.vertex_buffer.slice(..));
                 render_pass.set_vertex_buffer(1, self.assets.transform_buffer.slice(..));
                 for asset in &self.assets.assets {
-                    render_pass.draw(
-                        asset.vertex_offset..asset.vertex_offset + asset.vertex_count,
-                        asset.first_instance..asset.first_instance + asset.instance_count,
-                    );
+                    for instances in self.assets.visible_instances(asset) {
+                        render_pass.draw(
+                            asset.vertex_offset..asset.vertex_offset + asset.vertex_count,
+                            instances,
+                        );
+                    }
                 }
             }
         }
@@ -666,5 +696,41 @@ impl Renderer for WgpuAccelerated {
         transform: Self::AssetTransform,
     ) {
         self.assets.set_transform(instance_id as usize, transform);
+    }
+
+    fn set_asset_visibility(&mut self, instance_id: Self::AssetInstanceId, visible: bool) {
+        self.assets.set_visible(instance_id as usize, visible);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visible_runs;
+
+    fn runs(visible: &[bool], first: u32) -> Vec<(u32, u32)> {
+        visible_runs(visible, first)
+            .map(|range| (range.start, range.end))
+            .collect()
+    }
+
+    #[test]
+    fn all_visible_is_one_run() {
+        assert_eq!(runs(&[true; 5], 10), [(10, 15)]);
+    }
+
+    #[test]
+    fn all_hidden_or_empty_draws_nothing() {
+        assert!(runs(&[false; 5], 10).is_empty());
+        assert!(runs(&[], 10).is_empty());
+    }
+
+    #[test]
+    fn hidden_instances_split_runs() {
+        assert_eq!(
+            runs(&[true, false, false, true, true, false, true], 3),
+            [(3, 4), (6, 8), (9, 10)]
+        );
+        assert_eq!(runs(&[false, true, true], 0), [(1, 3)]);
+        assert_eq!(runs(&[true, true, false], 0), [(0, 2)]);
     }
 }

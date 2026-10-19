@@ -77,6 +77,8 @@ const ROBOT_JOINT_SPEED: f32 = 0.8;
 const ROBOT_CONTINUOUS_SWEEP: f32 = 0.4;
 /// In metres.
 const ROBOT_FOCUS_DISTANCE: f32 = 3.5;
+/// Joint mounting the manipulator on the rover: every link below it belongs to the arm.
+const ROBOT_ARM_MOUNT_JOINT: &str = "mani_base_offset_joint";
 
 // Camera framing is relative to the voxel world, so it follows VOXEL_SIZE.
 const CAMERA_DISTANCE: f32 = 160.0 * VOXEL_SIZE;
@@ -108,6 +110,7 @@ Controls:
   O                 toggle auto-orbit
   R                 reset camera
   F                 focus camera on the robot
+  M                 add/remove the robot arm
   P                 save snapshot
   Esc               quit";
 
@@ -365,6 +368,11 @@ impl Demo {
                 self.camera = initial_camera();
                 self.auto_orbit = true;
             }
+            KeyCode::KeyM => {
+                if let Some(robot) = &mut self.robot {
+                    robot.toggle_arm(&mut self.renderer);
+                }
+            }
             KeyCode::KeyF => {
                 if let Some(target) = self.robot.as_ref().and_then(RobotScene::focus_point) {
                     let (yaw, pitch) =
@@ -563,6 +571,9 @@ struct RobotScene {
     joint_positions: HashMap<String, f32>,
     /// Renderer instance for each visual, keyed like `RobotTransforms::visuals`.
     instances: Vec<((String, usize), u64)>,
+    /// Renderer instances of the visuals on the arm's links.
+    arm_instances: Vec<u64>,
+    arm_attached: bool,
     focus_link: Option<String>,
 }
 
@@ -627,7 +638,7 @@ impl RobotScene {
             .enumerate()
             .filter_map(|(index, joint)| {
                 // This joint is a mounting adjustment, not an animated articulation.
-                if joint.name == "mani_base_offset_joint" {
+                if joint.name == ROBOT_ARM_MOUNT_JOINT {
                     return None;
                 }
                 let phase = index as f32 * 0.7;
@@ -654,6 +665,13 @@ impl RobotScene {
             })
             .collect::<Vec<_>>();
 
+        let arm_links = arm_links(&description);
+        let arm_instances = instances
+            .iter()
+            .filter(|((link, _), _)| arm_links.contains(link.as_str()))
+            .map(|(_, instance)| *instance)
+            .collect();
+
         let focus_link = description
             .links
             .iter()
@@ -675,8 +693,21 @@ impl RobotScene {
             joints,
             joint_positions: HashMap::new(),
             instances,
+            arm_instances,
+            arm_attached: true,
             focus_link,
         })
+    }
+
+    fn toggle_arm(&mut self, renderer: &mut WgpuAccelerated) {
+        if self.arm_instances.is_empty() {
+            println!("Robot has no arm (no '{ROBOT_ARM_MOUNT_JOINT}' joint with visuals)");
+            return;
+        }
+        self.arm_attached = !self.arm_attached;
+        for &instance in &self.arm_instances {
+            renderer.set_asset_visibility(instance, self.arm_attached);
+        }
     }
 
     fn update(&mut self, t: f32, renderer: &mut WgpuAccelerated) {
@@ -713,6 +744,29 @@ impl RobotScene {
             z: world.z,
         })
     }
+}
+
+/// Links below the arm mount joint, i.e. the whole manipulator.
+fn arm_links(description: &urdf::UrdfRobot) -> HashSet<&str> {
+    let mut links = HashSet::new();
+    let mut pending = description
+        .joints
+        .iter()
+        .filter(|joint| joint.name == ROBOT_ARM_MOUNT_JOINT)
+        .map(|joint| joint.child.as_str())
+        .collect::<Vec<_>>();
+    while let Some(link) = pending.pop() {
+        if links.insert(link) {
+            pending.extend(
+                description
+                    .joints
+                    .iter()
+                    .filter(|joint| joint.parent == link)
+                    .map(|joint| joint.child.as_str()),
+            );
+        }
+    }
+    links
 }
 
 /// `urdf::read_file` resolves `package://<name>/...` only when an ancestor directory is called
