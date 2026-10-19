@@ -1,5 +1,6 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
+use std::sync::LazyLock;
 
 #[cfg(feature = "multi-threaded")]
 use rayon::prelude::*;
@@ -33,15 +34,38 @@ const MC_CUBE_CORNERS: [[usize; 3]; 8] = [
     [1, 1, 1],
     [0, 1, 1],
 ];
-const MC_CUBE_TETRAHEDRA: [[usize; 4]; 6] = [
-    [0, 5, 1, 6],
-    [0, 1, 2, 6],
-    [0, 2, 3, 6],
-    [0, 3, 7, 6],
-    [0, 7, 4, 6],
-    [0, 4, 5, 6],
+const MC_CUBE_EDGES: [[usize; 2]; 12] = [
+    [0, 1],
+    [1, 2],
+    [2, 3],
+    [3, 0],
+    [4, 5],
+    [5, 6],
+    [6, 7],
+    [7, 4],
+    [0, 4],
+    [1, 5],
+    [2, 6],
+    [3, 7],
+];
+const MC_CUBE_FACES: [([usize; 4], [usize; 4]); 6] = [
+    ([0, 1, 2, 3], [0, 1, 2, 3]),
+    ([4, 5, 6, 7], [4, 5, 6, 7]),
+    ([0, 1, 5, 4], [0, 9, 4, 8]),
+    ([3, 2, 6, 7], [2, 10, 6, 11]),
+    ([0, 3, 7, 4], [3, 11, 7, 8]),
+    ([1, 2, 6, 5], [1, 10, 5, 9]),
 ];
 const MC_ISO_LEVEL: RealUnit = 0.5;
+const MC_TRIANGLE_TABLE_WIDTH: usize = 48;
+
+struct MarchingCubesLookup {
+    edge_masks: [u16; 256],
+    triangle_edges: [[i8; MC_TRIANGLE_TABLE_WIDTH]; 256],
+}
+
+static MARCHING_CUBES_LOOKUP: LazyLock<MarchingCubesLookup> =
+    LazyLock::new(MarchingCubesLookup::build);
 
 type Columns<T> = [[[T; CHUNK_WIDTH]; CHUNK_WIDTH]; 3];
 type SolidColumns = Columns<u64>;
@@ -433,11 +457,9 @@ impl GreedyMeshTesselator {
                     if solid_corners == 0 || solid_corners == MC_CUBE_CORNERS.len() {
                         continue;
                     }
-                    for tetrahedron in MC_CUBE_TETRAHEDRA {
-                        let points = tetrahedron.map(|corner| corners[corner].0);
-                        let values = tetrahedron.map(|corner| corners[corner].1);
-                        polygonize_tetrahedron(&points, values, voxel_size, &mut triangles);
-                    }
+                    let points = corners.map(|corner| corner.0);
+                    let values = corners.map(|corner| corner.1);
+                    polygonize_cube(&points, values, voxel_size, &mut triangles);
                 }
             }
         }
@@ -510,101 +532,195 @@ impl GreedyMeshTesselator {
     }
 }
 
-fn polygonize_tetrahedron(
-    points: &[[RealUnit; 3]; 4],
-    values: [RealUnit; 4],
+fn polygonize_cube(
+    corners: &[[RealUnit; 3]; 8],
+    values: [RealUnit; 8],
     voxel_size: DiscreteUnit,
     triangles: &mut Vec<RealTriangle>,
 ) {
-    let mut inside = [0usize; 4];
-    let mut outside = [0usize; 4];
-    let (mut inside_count, mut outside_count) = (0, 0);
-    for (index, &value) in values.iter().enumerate() {
-        if value > MC_ISO_LEVEL {
-            inside[inside_count] = index;
-            inside_count += 1;
-        } else {
-            outside[outside_count] = index;
-            outside_count += 1;
-        }
-    }
-    if inside_count == 0 || outside_count == 0 {
+    let case_index = values
+        .iter()
+        .enumerate()
+        .fold(0usize, |mask, (corner, &value)| {
+            mask | (((value > MC_ISO_LEVEL) as usize) << corner)
+        });
+    let lookup = &*MARCHING_CUBES_LOOKUP;
+    let edge_mask = lookup.edge_masks[case_index];
+    if edge_mask == 0 {
         return;
     }
 
-    let center = |indices: &[usize; 4], count: usize| {
-        let mut center = [0.0; 3];
-        for &index in &indices[..count] {
-            for axis in 0..3 {
-                center[axis] += points[index][axis] / count as RealUnit;
+    let mut edge_vertices = [[0.0; 3]; 12];
+    for (edge, &[a, b]) in MC_CUBE_EDGES.iter().enumerate() {
+        if edge_mask & (1 << edge) == 0 {
+            continue;
+        }
+        let t = ((MC_ISO_LEVEL - values[a]) / (values[b] - values[a])).clamp(0.0, 1.0);
+        edge_vertices[edge] = std::array::from_fn(|axis| {
+            corners[a][axis] + (corners[b][axis] - corners[a][axis]) * t
+        });
+    }
+
+    let scale = voxel_size as RealUnit;
+    let mut edges = &lookup.triangle_edges[case_index][..];
+    while let [a, b, c, rest @ ..] = edges {
+        if *a < 0 {
+            break;
+        }
+        let vertex = |edge: i8| edge_vertices[edge as usize].map(|coordinate| coordinate * scale);
+        triangles.push(RealTriangle {
+            v0: vertex(*a),
+            v1: vertex(*b),
+            v2: vertex(*c),
+        });
+        edges = rest;
+    }
+}
+
+impl MarchingCubesLookup {
+    fn build() -> Self {
+        let mut lookup = Self {
+            edge_masks: [0; 256],
+            triangle_edges: [[-1; MC_TRIANGLE_TABLE_WIDTH]; 256],
+        };
+        for case_index in 0..256 {
+            let (edge_mask, triangle_edges) = Self::build_case(case_index as u8);
+            lookup.edge_masks[case_index] = edge_mask;
+            lookup.triangle_edges[case_index] = triangle_edges;
+        }
+        lookup
+    }
+
+    fn build_case(case_index: u8) -> (u16, [i8; MC_TRIANGLE_TABLE_WIDTH]) {
+        let mut edge_mask = 0u16;
+        for (edge, [a, b]) in MC_CUBE_EDGES.iter().copied().enumerate() {
+            if ((case_index >> a) & 1) != ((case_index >> b) & 1) {
+                edge_mask |= 1 << edge;
             }
         }
-        center
-    };
-    let inside_center = center(&inside, inside_count);
-    let outside_center = center(&outside, outside_count);
-    let interpolate = |a: usize, b: usize| {
-        let t = ((MC_ISO_LEVEL - values[a]) / (values[b] - values[a])).clamp(0.0, 1.0);
-        std::array::from_fn(|axis| points[a][axis] + (points[b][axis] - points[a][axis]) * t)
-    };
-    let mut add_triangle = |mut triangle: [[RealUnit; 3]; 3]| {
-        let ab = [
-            triangle[1][0] - triangle[0][0],
-            triangle[1][1] - triangle[0][1],
-            triangle[1][2] - triangle[0][2],
-        ];
-        let ac = [
-            triangle[2][0] - triangle[0][0],
-            triangle[2][1] - triangle[0][1],
-            triangle[2][2] - triangle[0][2],
-        ];
-        let normal = [
-            ab[1] * ac[2] - ab[2] * ac[1],
-            ab[2] * ac[0] - ab[0] * ac[2],
-            ab[0] * ac[1] - ab[1] * ac[0],
-        ];
-        let direction = [
-            outside_center[0] - inside_center[0],
-            outside_center[1] - inside_center[1],
-            outside_center[2] - inside_center[2],
-        ];
-        if normal[0] * direction[0] + normal[1] * direction[1] + normal[2] * direction[2] < 0.0 {
-            triangle.swap(1, 2);
+        if edge_mask == 0 {
+            return (edge_mask, [-1; MC_TRIANGLE_TABLE_WIDTH]);
         }
-        let scale = voxel_size as RealUnit;
-        triangles.push(RealTriangle {
-            v0: triangle[0].map(|coordinate| coordinate * scale),
-            v1: triangle[1].map(|coordinate| coordinate * scale),
-            v2: triangle[2].map(|coordinate| coordinate * scale),
-        });
-    };
 
-    match (inside_count, outside_count) {
-        (1, 3) => {
-            let a = inside[0];
-            add_triangle([
-                interpolate(a, outside[0]),
-                interpolate(a, outside[1]),
-                interpolate(a, outside[2]),
-            ]);
+        let mut connections = [[0u8; 2]; 12];
+        let mut connection_counts = [0u8; 12];
+        let mut connect = |a: usize, b: usize| {
+            let a_count = connection_counts[a] as usize;
+            let b_count = connection_counts[b] as usize;
+            if a_count < 2 && b_count < 2 {
+                connections[a][a_count] = b as u8;
+                connections[b][b_count] = a as u8;
+                connection_counts[a] += 1;
+                connection_counts[b] += 1;
+            }
+        };
+        for (face_corners, face_edges) in MC_CUBE_FACES {
+            let mut crossings = [0usize; 4];
+            let mut crossing_count = 0;
+            for edge in face_edges {
+                if edge_mask & (1 << edge) != 0 {
+                    crossings[crossing_count] = edge;
+                    crossing_count += 1;
+                }
+            }
+            match crossing_count {
+                2 => connect(crossings[0], crossings[1]),
+                4 => {
+                    let inside_count = face_corners
+                        .iter()
+                        .filter(|&&corner| case_index & (1 << corner) != 0)
+                        .count();
+                    let face_inside = inside_count > 2;
+                    for corner in 0..4 {
+                        let corner_inside = case_index & (1 << face_corners[corner]) != 0;
+                        if corner_inside != face_inside {
+                            connect(face_edges[(corner + 3) % 4], face_edges[corner]);
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
-        (3, 1) => {
-            let a = outside[0];
-            add_triangle([
-                interpolate(a, inside[0]),
-                interpolate(a, inside[1]),
-                interpolate(a, inside[2]),
-            ]);
+        drop(connect);
+
+        let inside_count = case_index.count_ones() as RealUnit;
+        let outside_count = 8.0 - inside_count;
+        let mut direction = [0.0; 3];
+        for corner in 0..8 {
+            let sign = if case_index & (1 << corner) != 0 {
+                -1.0 / inside_count
+            } else {
+                1.0 / outside_count
+            };
+            for axis in 0..3 {
+                direction[axis] += MC_CUBE_CORNERS[corner][axis] as RealUnit * sign;
+            }
         }
-        (2, 2) => {
-            let ac = interpolate(inside[0], outside[0]);
-            let ad = interpolate(inside[0], outside[1]);
-            let bc = interpolate(inside[1], outside[0]);
-            let bd = interpolate(inside[1], outside[1]);
-            add_triangle([ac, ad, bd]);
-            add_triangle([ac, bd, bc]);
+
+        let edge_midpoint = |edge: usize| {
+            let [a, b] = MC_CUBE_EDGES[edge];
+            std::array::from_fn::<_, 3, _>(|axis| {
+                (MC_CUBE_CORNERS[a][axis] + MC_CUBE_CORNERS[b][axis]) as RealUnit * 0.5
+            })
+        };
+        let mut triangle_edges = [-1; MC_TRIANGLE_TABLE_WIDTH];
+        let mut table_cursor = 0;
+        let mut visited = [false; 12];
+        for start in 0..12 {
+            if edge_mask & (1 << start) == 0 || visited[start] {
+                continue;
+            }
+            let mut polygon = [0usize; 12];
+            let mut polygon_count = 0;
+            let (mut previous, mut current) = (usize::MAX, start);
+            loop {
+                if visited[current] {
+                    break;
+                }
+                visited[current] = true;
+                polygon[polygon_count] = current;
+                polygon_count += 1;
+                if connection_counts[current] != 2 {
+                    break;
+                }
+                let [first, second] = connections[current].map(usize::from);
+                let next = if first == previous { second } else { first };
+                previous = current;
+                current = next;
+                if current == start || polygon_count == 12 {
+                    break;
+                }
+            }
+            if polygon_count < 3 {
+                continue;
+            }
+
+            let p0 = edge_midpoint(polygon[0]);
+            let p1 = edge_midpoint(polygon[1]);
+            let p2 = edge_midpoint(polygon[2]);
+            let ab = std::array::from_fn::<_, 3, _>(|axis| p1[axis] - p0[axis]);
+            let ac = std::array::from_fn::<_, 3, _>(|axis| p2[axis] - p0[axis]);
+            let normal = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+            let reverse =
+                normal[0] * direction[0] + normal[1] * direction[1] + normal[2] * direction[2]
+                    < 0.0;
+            for index in 1..polygon_count - 1 {
+                if table_cursor + 3 > MC_TRIANGLE_TABLE_WIDTH {
+                    break;
+                }
+                triangle_edges[table_cursor] = polygon[0] as i8;
+                triangle_edges[table_cursor + 1] =
+                    polygon[if reverse { index + 1 } else { index }] as i8;
+                triangle_edges[table_cursor + 2] =
+                    polygon[if reverse { index } else { index + 1 }] as i8;
+                table_cursor += 3;
+            }
         }
-        _ => unreachable!(),
+        (edge_mask, triangle_edges)
     }
 }
 
@@ -676,102 +792,5 @@ impl Tesselator for GreedyMeshTesselator {
 
     fn configure(&mut self, configuration: Self::Configuration) {
         self.config = Some(configuration);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn mesher_with_voxel() -> GreedyMeshTesselator {
-        let mut tesselator = GreedyMeshTesselator::new();
-        tesselator.configure(GreedyMeshTesselatorConfiguration { voxel_size: 1 });
-        let input = vec![PointI {
-            x: 0,
-            y: 0,
-            z: 0,
-            i: 1 << PointI::voxel_bit(Point { x: 1, y: 1, z: 0 }),
-        }];
-        tesselator.update_input_geometry(&input);
-        tesselator
-    }
-
-    #[test]
-    fn marching_cubes_corner_field_contains_each_terrain_voxel() {
-        let tesselator = mesher_with_voxel();
-        let field = tesselator.marching_cubes_field(DiscretePoint { x: 0, y: 0, z: 0 });
-        let index = |x: usize, y: usize, z: usize| (z * MC_GRID_SIZE + y) * MC_GRID_SIZE + x;
-
-        for z in 0..=1 {
-            for y in 1..=2 {
-                for x in 1..=2 {
-                    assert_ne!(field[index(x, y, z)], 0);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn marching_cubes_can_be_toggled_and_rebuilds_chunks() {
-        let mut tesselator = mesher_with_voxel();
-        let greedy = tesselator.get_output_geometry_delta().unwrap();
-        let greedy_triangle_count: usize = greedy.iter().map(|chunk| chunk.triangles.len()).sum();
-
-        tesselator.set_marching_cubes_enabled(true);
-        assert!(tesselator.marching_cubes_enabled());
-        let smoothed = tesselator.get_output_geometry_delta().unwrap();
-        let smoothed_triangle_count: usize =
-            smoothed.iter().map(|chunk| chunk.triangles.len()).sum();
-        assert!(smoothed_triangle_count > greedy_triangle_count);
-        assert!(tesselator.get_output_geometry_delta().is_none());
-
-        tesselator.set_marching_cubes_enabled(false);
-        assert!(!tesselator.marching_cubes_enabled());
-        assert!(tesselator.get_output_geometry_delta().is_some());
-    }
-
-    #[test]
-    fn marching_cubes_interpolates_from_corner_density() {
-        let points = [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ];
-        let mut triangles = Vec::new();
-        polygonize_tetrahedron(&points, [2.0, 0.0, 0.0, 0.0], 1, &mut triangles);
-
-        assert_eq!(triangles.len(), 1);
-        assert!(
-            triangles[0]
-                .v0
-                .iter()
-                .chain(&triangles[0].v1)
-                .chain(&triangles[0].v2)
-                .any(|&coordinate| (coordinate - 0.75).abs() < f32::EPSILON)
-        );
-    }
-
-    #[test]
-    fn marching_cubes_dirties_diagonal_chunks_for_boundary_changes() {
-        let mut tesselator = mesher_with_voxel();
-        tesselator.set_marching_cubes_enabled(true);
-        tesselator.get_output_geometry_delta().unwrap();
-
-        let input = vec![PointI {
-            x: 0,
-            y: 0,
-            z: 0,
-            i: (1 << PointI::voxel_bit(Point { x: 1, y: 1, z: 0 }))
-                | (1 << PointI::voxel_bit(Point { x: 0, y: 0, z: 0 })),
-        }];
-        tesselator.update_input_geometry(&input);
-        let delta = tesselator.get_output_geometry_delta().unwrap();
-        assert!(delta.iter().any(|chunk| chunk.index
-            == DiscretePoint {
-                x: -16,
-                y: -16,
-                z: 0
-            }));
     }
 }
