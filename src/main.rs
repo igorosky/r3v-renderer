@@ -192,7 +192,10 @@ impl Demo {
             world.lakes.len(),
         );
         let mut tesselator = GreedyMeshTesselator::new();
-        tesselator.configure(GreedyMeshTesselatorConfiguration { voxel_size: 1 });
+        tesselator.configure(GreedyMeshTesselatorConfiguration {
+            voxel_size: 1,
+            marching_cubes_enabled: false,
+        });
         let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
         let robot = match RobotScene::load(urdf_path, robot_placement(&world), &mut renderer) {
             Ok(robot) => Some(robot),
@@ -353,9 +356,10 @@ impl Demo {
             KeyCode::Escape => event_loop.exit(),
             KeyCode::KeyP => self.save_snapshot(),
             KeyCode::KeyO => self.auto_orbit = !self.auto_orbit,
-            KeyCode::KeyM => self
-                .tesselator
-                .set_marching_cubes_enabled(!self.tesselator.marching_cubes_enabled()),
+            KeyCode::KeyM => self.tesselator.configure(GreedyMeshTesselatorConfiguration {
+                voxel_size: 1,
+                marching_cubes_enabled: !self.tesselator.marching_cubes_enabled(),
+            }),
             KeyCode::KeyR => {
                 self.camera = initial_camera();
                 self.auto_orbit = true;

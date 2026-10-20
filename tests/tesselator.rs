@@ -6,7 +6,10 @@ use r3v_renderer::{
 
 fn tesselator_with_voxels(mask: u32) -> GreedyMeshTesselator {
     let mut tesselator = GreedyMeshTesselator::new();
-    tesselator.configure(GreedyMeshTesselatorConfiguration { voxel_size: 1 });
+    tesselator.configure(GreedyMeshTesselatorConfiguration {
+        voxel_size: 1,
+        marching_cubes_enabled: false,
+    });
     let input = vec![PointI {
         x: 0,
         y: 0,
@@ -31,7 +34,10 @@ fn marching_cubes_can_be_toggled_and_rebuilds_geometry() {
     let greedy = tesselator.get_output_geometry_delta().unwrap();
     let greedy_triangle_count = triangle_count(&greedy);
 
-    tesselator.set_marching_cubes_enabled(true);
+    tesselator.configure(GreedyMeshTesselatorConfiguration {
+        voxel_size: 1,
+        marching_cubes_enabled: true,
+    });
     assert!(tesselator.marching_cubes_enabled());
     let smoothed = tesselator.get_output_geometry_delta().unwrap();
     let smoothed_triangle_count = triangle_count(&smoothed);
@@ -39,7 +45,10 @@ fn marching_cubes_can_be_toggled_and_rebuilds_geometry() {
     assert_ne!(smoothed_triangle_count, greedy_triangle_count);
     assert!(tesselator.get_output_geometry_delta().is_none());
 
-    tesselator.set_marching_cubes_enabled(false);
+    tesselator.configure(GreedyMeshTesselatorConfiguration {
+        voxel_size: 1,
+        marching_cubes_enabled: false,
+    });
     assert!(!tesselator.marching_cubes_enabled());
     assert!(tesselator.get_output_geometry_delta().is_some());
 }
@@ -47,7 +56,10 @@ fn marching_cubes_can_be_toggled_and_rebuilds_geometry() {
 #[test]
 fn marching_cubes_interpolates_surface_vertices() {
     let mut tesselator = tesselator_with_voxels(voxel_bit(0, 0, 0));
-    tesselator.set_marching_cubes_enabled(true);
+    tesselator.configure(GreedyMeshTesselatorConfiguration {
+        voxel_size: 1,
+        marching_cubes_enabled: true,
+    });
     let geometry = tesselator.get_output_geometry_delta().unwrap();
 
     let has_fractional_vertex = geometry
@@ -74,7 +86,10 @@ fn marching_cubes_handles_all_cube_corner_patterns() {
             }
         }
         let mut tesselator = tesselator_with_voxels(mask);
-        tesselator.set_marching_cubes_enabled(true);
+        tesselator.configure(GreedyMeshTesselatorConfiguration {
+            voxel_size: 1,
+            marching_cubes_enabled: true,
+        });
         let geometry = tesselator.get_output_geometry_delta().unwrap_or_default();
         assert!(
             geometry
@@ -97,7 +112,10 @@ fn marching_cubes_handles_all_cube_corner_patterns() {
 #[test]
 fn marching_cubes_updates_diagonal_chunks_after_boundary_changes() {
     let mut tesselator = tesselator_with_voxels(voxel_bit(1, 1, 0));
-    tesselator.set_marching_cubes_enabled(true);
+    tesselator.configure(GreedyMeshTesselatorConfiguration {
+        voxel_size: 1,
+        marching_cubes_enabled: true,
+    });
     tesselator.get_output_geometry_delta().unwrap();
 
     let updated_mask = voxel_bit(1, 1, 0) | voxel_bit(0, 0, 0);
