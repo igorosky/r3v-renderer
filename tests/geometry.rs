@@ -508,7 +508,10 @@ fn quad_map_and_triangles() {
     .map(|c| c as f32 * 0.5);
     let [first, second] = quad.triangles();
     assert_eq!([first.v0, first.v1, first.v2], [quad.v0, quad.v1, quad.v2]);
-    assert_eq!([second.v0, second.v1, second.v2], [quad.v0, quad.v2, quad.v3]);
+    assert_eq!(
+        [second.v0, second.v1, second.v2],
+        [quad.v0, quad.v2, quad.v3]
+    );
     for vertex in first.to_vertices().into_iter().chain(second.to_vertices()) {
         assert_eq!(vertex.position[2], 0.5);
         close3(vertex.normal, [0.0, 0.0, 1.0]);
