@@ -1,14 +1,21 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
 
+#[path = "marching_cubes.rs"]
+mod marching_cubes;
+use marching_cubes::{
+    MC_CUBE_CORNERS, MC_GRID_SIZE, MC_GRID_VOLUME, MC_PADDED_GRID_SIZE, MC_PADDED_GRID_VOLUME,
+    MC_X_SUM_VOLUME, MC_XY_SUM_VOLUME, polygonize_cube,
+};
+
 #[cfg(feature = "multi-threaded")]
 use rayon::prelude::*;
 
 use crate::{
     Tesselator,
     geometry::{
-        Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, QuadChunk, RealQuad,
-        Vector2D, Vector3D, VoxelNormal,
+        Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, RealTriangle, RealUnit,
+        TriangleChunk, Vector2D, Vector3D, VoxelNormal,
     },
 };
 
@@ -21,7 +28,6 @@ const CHUNK_SUBCHUNKS: Vector3D<usize> = Vector3D {
     z: CHUNK_WIDTH / SUBCHUNK_SIZE.z,
 };
 const CHUNK_RATIO: usize = CHUNK_SUBCHUNKS.x * CHUNK_SUBCHUNKS.y * CHUNK_SUBCHUNKS.z;
-
 type Columns<T> = [[[T; CHUNK_WIDTH]; CHUNK_WIDTH]; 3];
 type SolidColumns = Columns<u64>;
 
@@ -85,6 +91,34 @@ impl Chunk {
         self.subchunks[Self::subchunk_index(subchunk)]
     }
 
+    fn voxel(&self, local: Point<usize>) -> bool {
+        let subchunk = Point::from_fn(|axis| local[axis] / SUBCHUNK_SIZE[axis]);
+        let bit = PointI::voxel_bit(Point::from_fn(|axis| local[axis] % SUBCHUNK_SIZE[axis]));
+        self.subchunk_mask(subchunk) & (1 << bit) != 0
+    }
+
+    fn has_voxel_on_boundary(&self, boundary: [i8; 3]) -> bool {
+        for z in 0..CHUNK_WIDTH {
+            if boundary[2] != 0 && z != if boundary[2] < 0 { 0 } else { CHUNK_WIDTH - 1 } {
+                continue;
+            }
+            for y in 0..CHUNK_WIDTH {
+                if boundary[1] != 0 && y != if boundary[1] < 0 { 0 } else { CHUNK_WIDTH - 1 } {
+                    continue;
+                }
+                for x in 0..CHUNK_WIDTH {
+                    if boundary[0] != 0 && x != if boundary[0] < 0 { 0 } else { CHUNK_WIDTH - 1 } {
+                        continue;
+                    }
+                    if self.voxel(Point { x, y, z }) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     fn set_subchunk_mask(&mut self, subchunk: Point<usize>, mask: u32) {
         let previous = std::mem::replace(&mut self.subchunks[Self::subchunk_index(subchunk)], mask);
         self.solid_subchunks =
@@ -112,30 +146,91 @@ impl Chunk {
     }
 }
 
-pub struct GreedyMeshTesselatorConfiguration {
+pub struct CpuTesselatorConfiguration {
     pub voxel_size: f32,
+    pub marching_cubes_enabled: bool,
 }
 
-pub struct GreedyMeshTesselator {
-    config: Option<GreedyMeshTesselatorConfiguration>,
+pub struct CpuTesselator {
+    config: Option<CpuTesselatorConfiguration>,
     chunks: FxHashMap<DiscretePoint, Box<Chunk>>,
     dirty_queue: VecDeque<DiscretePoint>,
     in_queue: FxHashSet<DiscretePoint>,
+    marching_cubes_enabled: bool,
 }
 
-impl Default for GreedyMeshTesselator {
+impl Default for CpuTesselator {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl GreedyMeshTesselator {
+impl CpuTesselator {
     pub fn new() -> Self {
         Self {
             config: None,
             chunks: FxHashMap::default(),
             dirty_queue: VecDeque::new(),
             in_queue: FxHashSet::default(),
+            marching_cubes_enabled: false,
+        }
+    }
+
+    pub fn marching_cubes_enabled(&self) -> bool {
+        self.marching_cubes_enabled
+    }
+
+    pub fn set_marching_cubes_enabled(&mut self, enabled: bool) {
+        if self.marching_cubes_enabled == enabled {
+            return;
+        }
+        self.marching_cubes_enabled = enabled;
+        let mut dirty = Vec::new();
+        for (&chunk, stored) in &self.chunks {
+            dirty.push(chunk);
+            for z in -1..=1 {
+                for y in -1..=1 {
+                    for x in -1..=1 {
+                        if x == 0 && y == 0 && z == 0 {
+                            continue;
+                        }
+                        let boundary = [
+                            if x < 0 {
+                                -1
+                            } else if x > 0 {
+                                1
+                            } else {
+                                0
+                            },
+                            if y < 0 {
+                                -1
+                            } else if y > 0 {
+                                1
+                            } else {
+                                0
+                            },
+                            if z < 0 {
+                                -1
+                            } else if z > 0 {
+                                1
+                            } else {
+                                0
+                            },
+                        ];
+                        if !stored.has_voxel_on_boundary(boundary) {
+                            continue;
+                        }
+                        dirty.push(DiscretePoint {
+                            x: chunk.x + x * CHUNK_WIDTH as DiscreteUnit,
+                            y: chunk.y + y * CHUNK_WIDTH as DiscreteUnit,
+                            z: chunk.z + z * CHUNK_WIDTH as DiscreteUnit,
+                        });
+                    }
+                }
+            }
+        }
+        for chunk in dirty {
+            self.mark_dirty(chunk);
         }
     }
 
@@ -147,17 +242,36 @@ impl GreedyMeshTesselator {
 
     fn mark_subchunk_dirty(&mut self, chunk: DiscretePoint, subchunk: Point<usize>, changed: u32) {
         self.mark_dirty(chunk);
-        Axis::ALL
-            .iter()
-            .map(|axis| (axis, BOUNDARY_LAYERS[*axis as usize]))
-            .for_each(|(axis, [low_layer, high_layer])| {
-                if subchunk[*axis] == 0 && changed & low_layer != 0 {
-                    self.mark_dirty(Chunk::neighbour_of(chunk, *axis, -1));
+        let mut directions = [[0; 3]; 3];
+        let mut counts = [1; 3];
+        for axis in Axis::ALL {
+            let [low_layer, high_layer] = BOUNDARY_LAYERS[axis as usize];
+            if subchunk[axis] == 0 && changed & low_layer != 0 {
+                directions[axis as usize][counts[axis as usize]] = -1;
+                counts[axis as usize] += 1;
+            }
+            if subchunk[axis] == CHUNK_SUBCHUNKS[axis] - 1 && changed & high_layer != 0 {
+                directions[axis as usize][counts[axis as usize]] = 1;
+                counts[axis as usize] += 1;
+            }
+        }
+        for &z in &directions[2][..counts[2]] {
+            for &y in &directions[1][..counts[1]] {
+                for &x in &directions[0][..counts[0]] {
+                    if x == 0 && y == 0 && z == 0 {
+                        continue;
+                    }
+                    let changed_axes = (x != 0) as u8 + (y != 0) as u8 + (z != 0) as u8;
+                    if self.marching_cubes_enabled || changed_axes == 1 {
+                        self.mark_dirty(DiscretePoint {
+                            x: chunk.x + x * CHUNK_WIDTH as DiscreteUnit,
+                            y: chunk.y + y * CHUNK_WIDTH as DiscreteUnit,
+                            z: chunk.z + z * CHUNK_WIDTH as DiscreteUnit,
+                        });
+                    }
                 }
-                if subchunk[*axis] == CHUNK_SUBCHUNKS[*axis] - 1 && changed & high_layer != 0 {
-                    self.mark_dirty(Chunk::neighbour_of(chunk, *axis, 1));
-                }
-            });
+            }
+        }
     }
 
     fn solid_columns(&self, chunk: DiscretePoint) -> Box<SolidColumns> {
@@ -251,22 +365,176 @@ impl GreedyMeshTesselator {
         })
     }
 
-    fn tesselate_chunk(&self, chunk: DiscretePoint) -> Vec<RealQuad> {
+    fn tesselate_chunk(&self, chunk: DiscretePoint) -> Vec<RealTriangle> {
         let voxel_size = self
             .config
             .as_ref()
             .expect("Tesselator must be configured before generating output geometry")
             .voxel_size;
+        if self.marching_cubes_enabled {
+            return self.marching_cubes_chunk(chunk, voxel_size);
+        }
         self.chunk_quads(chunk)
             .map(|quad| quad.to_real(voxel_size))
+            .flat_map(|quad| quad.triangles())
             .collect()
+    }
+
+    fn marching_cubes_chunk(
+        &self,
+        chunk: DiscretePoint,
+        voxel_size: RealUnit,
+    ) -> Vec<RealTriangle> {
+        let mut field = [0u8; MC_GRID_VOLUME];
+        self.marching_cubes_field(chunk, &mut field);
+        let grid_index = |x: usize, y: usize, z: usize| (z * MC_GRID_SIZE + y) * MC_GRID_SIZE + x;
+        if !field.iter().any(|&value| value != 0) || field.iter().all(|&value| value != 0) {
+            return Vec::new();
+        }
+
+        let mut triangles = Vec::new();
+        for z in 0..CHUNK_WIDTH {
+            for y in 0..CHUNK_WIDTH {
+                for x in 0..CHUNK_WIDTH {
+                    let mut case_index = 0usize;
+                    let mut corner_values = [0u8; 8];
+                    for (corner, offset) in MC_CUBE_CORNERS.iter().enumerate() {
+                        let cx = x + offset[0];
+                        let cy = y + offset[1];
+                        let cz = z + offset[2];
+                        let value = field[grid_index(cx, cy, cz)];
+                        corner_values[corner] = value;
+                        if value != 0 {
+                            case_index |= 1 << corner;
+                        }
+                    }
+                    if case_index == 0 || case_index == u8::MAX as usize {
+                        continue;
+                    }
+
+                    let corners = MC_CUBE_CORNERS.map(|offset| {
+                        [
+                            (chunk.x + (x + offset[0]) as DiscreteUnit) as RealUnit,
+                            (chunk.y + (y + offset[1]) as DiscreteUnit) as RealUnit,
+                            (chunk.z + (z + offset[2]) as DiscreteUnit) as RealUnit,
+                        ]
+                    });
+                    let values = corner_values.map(|value| value as RealUnit);
+                    polygonize_cube(case_index, &corners, values, voxel_size, &mut triangles);
+                }
+            }
+        }
+        triangles
+    }
+
+    fn marching_cubes_field(&self, chunk: DiscretePoint, field: &mut [u8; MC_GRID_VOLUME]) {
+        let source_chunks: [Option<&Chunk>; 27] = std::array::from_fn(|index| {
+            let x = (index % 3) as DiscreteUnit - 1;
+            let y = ((index / 3) % 3) as DiscreteUnit - 1;
+            let z = (index / 9) as DiscreteUnit - 1;
+            self.chunks
+                .get(&DiscretePoint {
+                    x: chunk.x + x * CHUNK_WIDTH as DiscreteUnit,
+                    y: chunk.y + y * CHUNK_WIDTH as DiscreteUnit,
+                    z: chunk.z + z * CHUNK_WIDTH as DiscreteUnit,
+                })
+                .map(Box::as_ref)
+        });
+        let mut voxels = [0u8; MC_PADDED_GRID_VOLUME];
+        let padded_coordinate = |chunk_offset: usize, local: usize| match chunk_offset {
+            0 => (local == CHUNK_WIDTH - 1).then_some(0),
+            1 => Some(local + 1),
+            2 => (local == 0).then_some(MC_PADDED_GRID_SIZE - 1),
+            _ => unreachable!(),
+        };
+        for (source_index, source) in source_chunks.into_iter().enumerate() {
+            let Some(source) = source else {
+                continue;
+            };
+            let chunk_x = source_index % 3;
+            let chunk_y = source_index / 3 % 3;
+            let chunk_z = source_index / 9;
+            for (subchunk_index, &stored_mask) in source.subchunks.iter().enumerate() {
+                let subchunk_x = subchunk_index % CHUNK_SUBCHUNKS.x;
+                let subchunk_y = subchunk_index / CHUNK_SUBCHUNKS.x % CHUNK_SUBCHUNKS.y;
+                let subchunk_z = subchunk_index / (CHUNK_SUBCHUNKS.x * CHUNK_SUBCHUNKS.y);
+                let mut mask = stored_mask;
+                for (axis, chunk_offset, subchunk_coordinate) in [
+                    (0, chunk_x, subchunk_x),
+                    (1, chunk_y, subchunk_y),
+                    (2, chunk_z, subchunk_z),
+                ] {
+                    if chunk_offset == 1 {
+                        continue;
+                    }
+                    let is_before = chunk_offset == 0;
+                    let boundary_subchunk = if is_before {
+                        CHUNK_SUBCHUNKS.get(Axis::ALL[axis]) - 1
+                    } else {
+                        0
+                    };
+                    if subchunk_coordinate != boundary_subchunk {
+                        mask = 0;
+                        break;
+                    }
+                    mask &= BOUNDARY_LAYERS[axis][is_before as usize];
+                }
+                while mask != 0 {
+                    let bit = mask.trailing_zeros();
+                    mask &= mask - 1;
+                    let local = PointI::voxel_local(bit);
+                    let voxel_x = subchunk_x * SUBCHUNK_SIZE.x + local.x;
+                    let voxel_y = subchunk_y * SUBCHUNK_SIZE.y + local.y;
+                    let voxel_z = subchunk_z * SUBCHUNK_SIZE.z + local.z;
+                    let (Some(x), Some(y), Some(z)) = (
+                        padded_coordinate(chunk_x, voxel_x),
+                        padded_coordinate(chunk_y, voxel_y),
+                        padded_coordinate(chunk_z, voxel_z),
+                    ) else {
+                        continue;
+                    };
+                    voxels[(z * MC_PADDED_GRID_SIZE + y) * MC_PADDED_GRID_SIZE + x] = 1;
+                }
+            }
+        }
+
+        let mut x_sums = [0u8; MC_X_SUM_VOLUME];
+        for z in 0..MC_PADDED_GRID_SIZE {
+            for y in 0..MC_PADDED_GRID_SIZE {
+                for x in 0..MC_GRID_SIZE {
+                    let input = (z * MC_PADDED_GRID_SIZE + y) * MC_PADDED_GRID_SIZE + x;
+                    let output = (z * MC_PADDED_GRID_SIZE + y) * MC_GRID_SIZE + x;
+                    x_sums[output] = voxels[input] + voxels[input + 1];
+                }
+            }
+        }
+
+        let mut xy_sums = [0u8; MC_XY_SUM_VOLUME];
+        for z in 0..MC_PADDED_GRID_SIZE {
+            for y in 0..MC_GRID_SIZE {
+                for x in 0..MC_GRID_SIZE {
+                    let input = (z * MC_PADDED_GRID_SIZE + y) * MC_GRID_SIZE + x;
+                    let output = (z * MC_GRID_SIZE + y) * MC_GRID_SIZE + x;
+                    xy_sums[output] = x_sums[input] + x_sums[input + MC_GRID_SIZE];
+                }
+            }
+        }
+
+        for z in 0..MC_GRID_SIZE {
+            for y in 0..MC_GRID_SIZE {
+                for x in 0..MC_GRID_SIZE {
+                    let index = (z * MC_GRID_SIZE + y) * MC_GRID_SIZE + x;
+                    field[index] = xy_sums[index] + xy_sums[index + MC_GRID_SIZE * MC_GRID_SIZE];
+                }
+            }
+        }
     }
 }
 
-impl Tesselator for GreedyMeshTesselator {
-    type Configuration = GreedyMeshTesselatorConfiguration;
+impl Tesselator for CpuTesselator {
+    type Configuration = CpuTesselatorConfiguration;
     type InputGeometryDelta = Vec<PointI>;
-    type OutputGeometryDelta = Vec<QuadChunk>;
+    type OutputGeometryDelta = Vec<TriangleChunk>;
 
     fn update_input_geometry(&mut self, geometry_delta: &Self::InputGeometryDelta) {
         assert!(
@@ -321,15 +589,17 @@ impl Tesselator for GreedyMeshTesselator {
         #[cfg(not(feature = "multi-threaded"))]
         let dirty = dirty.into_iter();
         let output_delta = dirty
-            .map(|chunk| QuadChunk {
+            .map(|chunk| TriangleChunk {
                 index: chunk,
-                quads: self.tesselate_chunk(chunk),
+                triangles: self.tesselate_chunk(chunk),
             })
             .collect();
         Some(output_delta)
     }
 
     fn configure(&mut self, configuration: Self::Configuration) {
+        let marching_cubes_enabled = configuration.marching_cubes_enabled;
         self.config = Some(configuration);
+        self.set_marching_cubes_enabled(marching_cubes_enabled);
     }
 }

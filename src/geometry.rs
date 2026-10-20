@@ -543,7 +543,7 @@ impl From<[f32; 3]> for Vertex {
     }
 }
 
-pub struct QuadChunk {
+pub struct TriangleChunk {
     pub index: DiscretePoint,
-    pub quads: Vec<RealQuad>,
+    pub triangles: Vec<RealTriangle>,
 }

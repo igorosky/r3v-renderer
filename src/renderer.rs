@@ -224,8 +224,15 @@ impl WgpuAccelerated {
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
             .ok()?;
+        let required_limits = wgpu::Limits {
+            max_buffer_size: adapter.limits().max_buffer_size,
+            ..Default::default()
+        };
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                required_limits,
+                ..Default::default()
+            })
             .await
             .ok()?;
 
@@ -510,7 +517,7 @@ impl WgpuAccelerated {
 
 impl Renderer for WgpuAccelerated {
     type Configuration = WgpuAcceleratedConfiguration;
-    type GeometryDelta = Vec<geometry::QuadChunk>;
+    type GeometryDelta = Vec<geometry::TriangleChunk>;
 
     type AssetInstanceId = u64;
     type AssetDescription = stl::StlMesh;
@@ -657,14 +664,13 @@ impl Renderer for WgpuAccelerated {
         let device = &self.state.device;
         let queue = &self.state.queue;
         let mut vertices = Vec::new();
-        for geometry::QuadChunk { index, quads } in geometry_delta {
+        for geometry::TriangleChunk {
+            index,
+            triangles: quads,
+        } in geometry_delta
+        {
             vertices.clear();
-            vertices.extend(
-                quads
-                    .iter()
-                    .flat_map(|quad| quad.triangles())
-                    .flat_map(|triangle| triangle.to_vertices()),
-            );
+            vertices.extend(quads.iter().flat_map(|triangle| triangle.to_vertices()));
             self.vertex_arena.set_chunk(device, queue, index, &vertices);
         }
         self.vertex_arena.finish_update(device, queue);
