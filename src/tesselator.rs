@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-const SUBCHUNK_SIZE: Vector3D<usize> = Vector3D { x: 4, y: 4, z: 2 }; // corresponds to input geometry delta `PointI` bitfield
+pub(crate) const SUBCHUNK_SIZE: Vector3D<usize> = Vector3D { x: 4, y: 4, z: 2 }; // corresponds to input geometry delta `PointI` bitfield
 const CHUNK_WIDTH: usize = 16; // in voxels
 const CHUNK_MASK: u32 = u32::MAX >> (32 - CHUNK_WIDTH);
 const CHUNK_SUBCHUNKS: Vector3D<usize> = Vector3D {

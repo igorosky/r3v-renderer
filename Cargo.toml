@@ -3,6 +3,9 @@ name = "r3v-renderer"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
 anyhow = "1.0.104"
 bytemuck = "1.25.2"
@@ -18,7 +21,15 @@ urdf-rs = { version = "0.10.0" }
 wgpu = "30.0.1"
 winit = { version = "0.30", optional = true }
 
+[dev-dependencies]
+libtest-mimic = "0.8"
+
+[build-dependencies]
+cbindgen = { version = "0.29.4", optional = true }
+
 [features]
+c = ["dep:cbindgen"]
+cpp = ["dep:cbindgen"]
 demo = ["dep:image", "dep:winit", "dep:softbuffer", "multi-threaded"]
 multi-threaded = ["dep:rayon"]
 
@@ -26,3 +37,13 @@ multi-threaded = ["dep:rayon"]
 name = "r3v-renderer"
 path = "src/main.rs"
 required-features = ["demo"]
+
+[[test]]
+name = "c_bindings"
+harness = false
+required-features = ["c"]
+
+[[test]]
+name = "cpp_bindings"
+harness = false
+required-features = ["cpp"]

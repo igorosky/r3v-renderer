@@ -174,6 +174,7 @@ pub enum Winding {
     CounterClockwise,
 }
 
+#[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct Triangle<T> {
     pub v0: [T; 3],
@@ -246,6 +247,7 @@ impl RealTriangle {
     }
 }
 
+#[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct Quad<T> {
     pub v0: [T; 3],

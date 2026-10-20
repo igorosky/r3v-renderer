@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         # group: [core, c, python, js]
-        group: [core]
+        group: [core, c]
     steps:
       - uses: actions/checkout@v5
 
@@ -45,13 +45,12 @@ jobs:
           key: ${{ matrix.group }}
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      # Runners have no GPU: the wgpu tests run on lavapipe (Mesa's CPU
-      # Vulkan driver). Pinned to the noble release version: lavapipe from
-      # noble-updates (Mesa 25.2.8) segfaults inside the JIT compiled shader
-      # as soon as one dispatch has more than one point. Mesa 22.3 to 25.0
-      # and 26.2 pass.
+      # Runners have no GPU: the wgpu tests of every group (the binding
+      # suites render too) run on lavapipe (Mesa's CPU Vulkan driver).
+      # Pinned to the noble release version: lavapipe from noble-updates
+      # (Mesa 25.2.8) segfaults inside the JIT compiled shader as soon as one
+      # dispatch has more than one point. Mesa 22.3 to 25.0 and 26.2 pass.
       - name: Install lavapipe
-        if: matrix.group == 'core'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends --allow-downgrades \
@@ -67,6 +66,6 @@ jobs:
 
       - run: ./test.sh ${{ matrix.group }}
 
-      # - name: Generated headers are up to date
-      #   if: matrix.group == 'c'
-      #   run: git diff --exit-code -- bindings/
+      - name: Generated headers are up to date
+        if: matrix.group == 'c'
+        run: git diff --exit-code -- bindings/
