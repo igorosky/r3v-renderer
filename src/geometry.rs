@@ -82,6 +82,16 @@ pub struct Point<T> {
     pub z: T,
 }
 
+impl<T> From<Vector3D<T>> for Point<T> {
+    fn from(value: Vector3D<T>) -> Self {
+        Self {
+            x: value.x,
+            y: value.y,
+            z: value.z,
+        }
+    }
+}
+
 impl<T> Point<T> {
     pub fn to_array(&self) -> [T; 3]
     where
@@ -180,17 +190,6 @@ impl<T> Triangle<T> {
         }
     }
 
-    pub fn to_vertices(&self) -> [Vertex; 3]
-    where
-        T: Into<f32> + Copy,
-    {
-        [
-            Vertex::with_default_color(self.v0[0].into(), self.v0[1].into(), self.v0[2].into()),
-            Vertex::with_default_color(self.v1[0].into(), self.v1[1].into(), self.v1[2].into()),
-            Vertex::with_default_color(self.v2[0].into(), self.v2[1].into(), self.v2[2].into()),
-        ]
-    }
-
     pub fn reverse(self) -> Self {
         Self {
             v0: self.v0,
@@ -224,10 +223,140 @@ impl<T> Triangle<T> {
 pub type DiscreteTriangle = Triangle<DiscreteUnit>;
 pub type RealTriangle = Triangle<RealUnit>;
 
+impl RealTriangle {
+    pub fn normal(&self) -> Vector3D<f32> {
+        let v0: Vector3D<f32> = self.v0.into();
+        let v1: Vector3D<f32> = self.v1.into();
+        let v2: Vector3D<f32> = self.v2.into();
+        let normal = (v1 - v0).cross(v2 - v0);
+        let length = normal.dot(normal).sqrt();
+        if length == 0.0 {
+            return normal;
+        }
+        Vector3D {
+            x: normal.x / length,
+            y: normal.y / length,
+            z: normal.z / length,
+        }
+    }
+
+    pub fn to_vertices(&self) -> [Vertex; 3] {
+        let normal = self.normal();
+        [self.v0, self.v1, self.v2].map(|position| Vertex::from(position).with_normal(normal))
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Quad<T> {
+    pub v0: [T; 3],
+    pub v1: [T; 3],
+    pub v2: [T; 3],
+    pub v3: [T; 3],
+}
+
+impl<T> Quad<T> {
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Quad<U> {
+        Quad {
+            v0: self.v0.map(&mut f),
+            v1: self.v1.map(&mut f),
+            v2: self.v2.map(&mut f),
+            v3: self.v3.map(&mut f),
+        }
+    }
+}
+
+impl<T, U> Mul<U> for Quad<T>
+where
+    T: Mul<U, Output = T>,
+    U: Copy,
+{
+    type Output = Self;
+
+    fn mul(self, rhs: U) -> Self::Output {
+        self.map(|v| v * rhs)
+    }
+}
+
+pub type DiscreteQuad = Quad<DiscreteUnit>;
+pub type RealQuad = Quad<RealUnit>;
+
+impl DiscreteQuad {
+    pub fn voxel_face(
+        normal: VoxelNormal,
+        origin: DiscretePoint,
+        size: Vector2D<DiscreteUnit>,
+    ) -> Self {
+        let axis = normal.axis();
+        let (u, v) = axis.plane();
+        let corner = |du: DiscreteUnit, dv: DiscreteUnit| {
+            let mut corner = origin;
+            corner[axis] += normal.is_positive() as DiscreteUnit;
+            corner[u] += du * size.x;
+            corner[v] += dv * size.y;
+            corner.to_array()
+        };
+        let [a, b, c, d] = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
+        if normal.is_positive() {
+            Self {
+                v0: a,
+                v1: b,
+                v2: c,
+                v3: d,
+            }
+        } else {
+            Self {
+                v0: a,
+                v1: d,
+                v2: c,
+                v3: b,
+            }
+        }
+    }
+
+    pub fn to_real(&self, voxel_size: RealUnit) -> RealQuad {
+        self.map(|v| v as RealUnit * voxel_size)
+    }
+}
+
+impl RealQuad {
+    pub fn normal(&self) -> Vector3D<f32> {
+        Triangle {
+            v0: self.v0,
+            v1: self.v1,
+            v2: self.v2,
+        }
+        .normal()
+    }
+
+    pub fn triangles(&self) -> [RealTriangle; 2] {
+        [
+            Triangle {
+                v0: self.v0,
+                v1: self.v1,
+                v2: self.v2,
+            },
+            Triangle {
+                v0: self.v0,
+                v1: self.v2,
+                v2: self.v3,
+            },
+        ]
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Vector2D<T> {
     pub x: T,
     pub y: T,
+}
+
+impl<T> Vector2D<T> {
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Vector2D<U> {
+        Vector2D {
+            x: f(self.x),
+            y: f(self.y),
+        }
+    }
 }
 
 #[repr(C)]
@@ -258,6 +387,39 @@ impl<T> Vector3D<T> {
     {
         self.x * rhs.x + self.y * rhs.y + self.z * rhs.z
     }
+
+    pub fn unit(axis: Axis) -> Self
+    where
+        T: num_traits::One + num_traits::Zero,
+    {
+        match axis {
+            Axis::X => Self {
+                x: T::one(),
+                y: T::zero(),
+                z: T::zero(),
+            },
+            Axis::Y => Self {
+                x: T::zero(),
+                y: T::one(),
+                z: T::zero(),
+            },
+            Axis::Z => Self {
+                x: T::zero(),
+                y: T::zero(),
+                z: T::one(),
+            },
+        }
+    }
+}
+
+impl<T> Vector3D<T> {
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Vector3D<U> {
+        Vector3D {
+            x: f(self.x),
+            y: f(self.y),
+            z: f(self.z),
+        }
+    }
 }
 
 impl<T, V> From<V> for Vector3D<T>
@@ -270,13 +432,14 @@ where
     }
 }
 
-impl<T> Sub for Vector3D<T>
+impl<T, U> Sub<Vector3D<U>> for Vector3D<T>
 where
-    T: Sub<Output = T>,
+    T: Sub<U, Output = T>,
+    U: Copy,
 {
     type Output = Self;
 
-    fn sub(self, rhs: Self) -> Self::Output {
+    fn sub(self, rhs: Vector3D<U>) -> Self::Output {
         Self {
             x: self.x - rhs.x,
             y: self.y - rhs.y,
@@ -285,15 +448,18 @@ where
     }
 }
 
-impl<T, U> Into<Point<U>> for Vector3D<T>
+impl<T, U> Mul<U> for Vector3D<T>
 where
-    T: Into<U>,
+    T: Mul<U, Output = T>,
+    U: Copy,
 {
-    fn into(self) -> Point<U> {
-        Point {
-            x: self.x.into(),
-            y: self.y.into(),
-            z: self.z.into(),
+    type Output = Self;
+
+    fn mul(self, rhs: U) -> Self::Output {
+        Self {
+            x: self.x * rhs,
+            y: self.y * rhs,
+            z: self.z * rhs,
         }
     }
 }
@@ -338,70 +504,41 @@ unsafe impl bytemuck::Pod for Vector3D<f32> {}
 unsafe impl bytemuck::Pod for Quaternion<f32> {}
 unsafe impl bytemuck::Pod for Twist<f32> {}
 
-#[derive(Debug, Clone, Copy)]
-pub struct VoxelQuad<T> {
-    pub normal: VoxelNormal,
-    pub origin: Point<T>,
-    pub size: Vector2D<T>,
-}
-
-impl VoxelQuad<DiscreteUnit> {
-    pub fn triangles(&self) -> [DiscreteTriangle; 2] {
-        let axis = self.normal.axis();
-        let (u, v) = axis.plane();
-        let corner = |du: DiscreteUnit, dv: DiscreteUnit| {
-            let mut corner = self.origin;
-            corner[axis] += self.normal.is_positive() as DiscreteUnit;
-            corner[u] += du * self.size.x;
-            corner[v] += dv * self.size.y;
-            corner.to_array()
-        };
-        let [a, b, c, d] = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
-        if self.normal.is_positive() {
-            [
-                Triangle {
-                    v0: a,
-                    v1: b,
-                    v2: c,
-                },
-                Triangle {
-                    v0: a,
-                    v1: c,
-                    v2: d,
-                },
-            ]
-        } else {
-            [
-                Triangle {
-                    v0: a,
-                    v1: c,
-                    v2: b,
-                },
-                Triangle {
-                    v0: a,
-                    v1: d,
-                    v2: c,
-                },
-            ]
-        }
-    }
-}
-
-pub type DiscreteQuad = VoxelQuad<DiscreteUnit>;
-pub type RealQuad = VoxelQuad<RealUnit>;
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub color: [f32; 3],
+    pub normal: [f32; 3],
 }
 
 impl Vertex {
-    pub fn with_default_color(x: f32, y: f32, z: f32) -> Self {
+    pub const DEFAULT_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
+
+    pub fn with_normal(self, normal: Vector3D<f32>) -> Self {
         Self {
-            position: [x, y, z],
-            color: [1.0, 1.0, 1.0],
+            normal: [normal.x, normal.y, normal.z],
+            ..self
+        }
+    }
+}
+
+impl From<Point<f32>> for Vertex {
+    fn from(point: Point<f32>) -> Self {
+        Self {
+            position: point.to_array(),
+            color: Self::DEFAULT_COLOR,
+            normal: [0.0; 3],
+        }
+    }
+}
+
+impl From<[f32; 3]> for Vertex {
+    fn from(position: [f32; 3]) -> Self {
+        Self {
+            position,
+            color: Self::DEFAULT_COLOR,
+            normal: [0.0; 3],
         }
     }
 }

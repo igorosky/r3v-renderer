@@ -9,14 +9,23 @@ if [[ -n "${CI:-}" ]]; then
     locked=(--locked)
 fi
 
+failures=()
+
 run() {
+    local status=0
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         echo "::group::$*"
-        "$@"
+        "$@" || status=$?
         echo "::endgroup::"
     else
         echo "==> $*"
-        "$@"
+        "$@" || status=$?
+    fi
+    if ((status != 0)); then
+        failures+=("$*")
+        if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+            echo "::error::failed: $*"
+        fi
     fi
 }
 
@@ -29,7 +38,7 @@ clippy() {
 cargo_test() {
     local features=$1
     shift
-    run cargo test "${locked[@]}" --no-default-features --features="$features" "$@"
+    run cargo test "${locked[@]}" --no-fail-fast --no-default-features --features="$features" "$@"
 }
 
 group_core() {
@@ -111,3 +120,9 @@ for group in "${groups[@]}"; do
             ;;
     esac
 done
+
+if ((${#failures[@]} != 0)); then
+    echo "failed steps:" >&2
+    printf '  %s\n' "${failures[@]}" >&2
+    exit 1
+fi

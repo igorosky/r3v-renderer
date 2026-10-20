@@ -249,14 +249,18 @@ fn joint_transform(joint: &urdf::UrdfJoint, value: f32) -> RealTwist {
             },
             rotational: tuple_to_quaternion(axis_angle_to_quaternion(axis, value)),
         },
-        "prismatic" => RealTwist {
-            linear: Vector3D {
-                x: axis.x * value,
-                y: axis.y * value,
-                z: axis.z * value,
-            },
-            rotational: tuple_to_quaternion(quaternion_identity()),
-        },
+        "prismatic" => {
+            let length = (axis.x * axis.x + axis.y * axis.y + axis.z * axis.z).sqrt();
+            let distance = if length == 0.0 { 0.0 } else { value / length };
+            RealTwist {
+                linear: Vector3D {
+                    x: axis.x * distance,
+                    y: axis.y * distance,
+                    z: axis.z * distance,
+                },
+                rotational: tuple_to_quaternion(quaternion_identity()),
+            }
+        }
         _ => identity_twist(),
     };
     compose_twists(origin, motion)

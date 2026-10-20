@@ -242,3 +242,237 @@ impl VertexArena {
         self.draws_dirty = true;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use super::*;
+    use crate::wgpu_utils::test_support::TestGpu;
+
+    fn index(i: i32) -> DiscretePoint {
+        DiscretePoint {
+            x: i * 16,
+            y: -i * 16,
+            z: 0,
+        }
+    }
+
+    fn vertices(chunk: i32, version: u32, triangles: usize) -> Vec<Vertex> {
+        (0..triangles * 3)
+            .map(|i| Vertex {
+                position: [chunk as f32, version as f32, i as f32],
+                color: [1.0, 0.5, 0.25],
+                normal: [0.0, 1.0, 0.0],
+            })
+            .collect()
+    }
+
+    struct Harness {
+        gpu: TestGpu,
+        arena: VertexArena,
+        expected: HashMap<DiscretePoint, Vec<Vertex>>,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let gpu = TestGpu::new();
+            let arena = VertexArena::new(&gpu.device);
+            Self {
+                gpu,
+                arena,
+                expected: HashMap::new(),
+            }
+        }
+
+        fn set(&mut self, chunk: i32, version: u32, triangles: usize) {
+            let data = vertices(chunk, version, triangles);
+            self.arena
+                .set_chunk(&self.gpu.device, &self.gpu.queue, index(chunk), &data);
+            if data.is_empty() {
+                self.expected.remove(&index(chunk));
+            } else {
+                self.expected.insert(index(chunk), data);
+            }
+        }
+
+        fn remove(&mut self, chunk: i32) {
+            self.arena.remove_chunk(index(chunk));
+            self.expected.remove(&index(chunk));
+        }
+
+        /// Finishes the update and checks that the indirect draws read from the GPU draw
+        /// exactly the expected chunks: one draw per chunk, covering exactly its vertices,
+        /// with no two draws sharing vertices.
+        #[track_caller]
+        fn finish_and_check(&mut self) {
+            self.arena.finish_update(&self.gpu.device, &self.gpu.queue);
+            let draw_count = self.arena.draw_count() as usize;
+            assert_eq!(draw_count, self.expected.len());
+
+            let draw_bytes = self.gpu.read_buffer(self.arena.draw_buffer());
+            let draws: &[DrawIndirectArgs] =
+                bytemuck::cast_slice(&draw_bytes[..draw_count * DRAW_ARGS_STRIDE as usize]);
+            let vertex_bytes = self.gpu.read_buffer(self.arena.vertex_buffer());
+            let gpu_vertices: &[Vertex] = bytemuck::cast_slice(&vertex_bytes);
+
+            let mut used_vertices = HashSet::new();
+            let mut matched = HashSet::new();
+            for draw in draws {
+                assert_eq!(draw.instance_count, 1);
+                let first = draw.first_vertex as usize;
+                let count = draw.vertex_count as usize;
+                assert!(
+                    first + count <= gpu_vertices.len(),
+                    "draw reads past vertex buffer"
+                );
+                for vertex in first..first + count {
+                    assert!(used_vertices.insert(vertex), "vertex {vertex} drawn twice");
+                }
+                let drawn = &gpu_vertices[first..first + count];
+                let owner = self
+                    .expected
+                    .iter()
+                    .find(|(_, expected)| {
+                        bytemuck::cast_slice::<Vertex, u8>(expected)
+                            == bytemuck::cast_slice::<Vertex, u8>(drawn)
+                    })
+                    .map(|(index, _)| *index)
+                    .unwrap_or_else(|| panic!("draw {draw:?} does not match any chunk"));
+                assert!(matched.insert(owner), "chunk {owner:?} drawn twice");
+            }
+        }
+    }
+
+    #[test]
+    fn new_arena_draws_nothing() {
+        let mut harness = Harness::new();
+        harness.finish_and_check();
+        assert_eq!(harness.arena.draw_count(), 0);
+    }
+
+    #[test]
+    fn chunks_are_drawn() {
+        let mut harness = Harness::new();
+        harness.set(0, 0, 1);
+        harness.finish_and_check();
+        harness.set(1, 0, 3);
+        harness.set(2, 0, 64);
+        harness.set(3, 0, 65);
+        harness.finish_and_check();
+    }
+
+    #[test]
+    fn updating_a_chunk_replaces_its_vertices() {
+        let mut harness = Harness::new();
+        harness.set(0, 0, 10);
+        harness.set(1, 0, 10);
+        harness.finish_and_check();
+        // Shrink, same size, grow a little and grow a lot.
+        for (version, triangles) in [(1, 4), (2, 4), (3, 12), (4, 500), (5, 1)] {
+            harness.set(0, version, triangles);
+            harness.finish_and_check();
+        }
+    }
+
+    #[test]
+    fn several_updates_before_finish() {
+        let mut harness = Harness::new();
+        harness.set(0, 0, 10);
+        harness.set(0, 1, 100);
+        harness.set(1, 0, 5);
+        harness.remove(1);
+        harness.set(1, 1, 7);
+        harness.finish_and_check();
+    }
+
+    #[test]
+    fn removing_chunks_in_any_position() {
+        let mut harness = Harness::new();
+        for chunk in 0..6 {
+            harness.set(chunk, 0, chunk as usize + 1);
+        }
+        harness.finish_and_check();
+        for chunk in [0, 5, 2, 3, 1, 4] {
+            harness.remove(chunk);
+            harness.finish_and_check();
+        }
+    }
+
+    #[test]
+    fn empty_vertices_remove_the_chunk() {
+        let mut harness = Harness::new();
+        harness.set(0, 0, 3);
+        harness.set(1, 0, 3);
+        harness.finish_and_check();
+        harness.set(0, 1, 0);
+        harness.finish_and_check();
+        // Removing again, or removing something never added, is a no-op.
+        harness.set(0, 2, 0);
+        harness.remove(0);
+        harness.remove(42);
+        harness.finish_and_check();
+        // A removed chunk can come back.
+        harness.set(0, 3, 2);
+        harness.finish_and_check();
+    }
+
+    #[test]
+    fn space_is_reused_and_compacted_after_removals() {
+        let mut harness = Harness::new();
+        for chunk in 0..40 {
+            harness.set(chunk, 0, 50);
+        }
+        harness.finish_and_check();
+        for chunk in (0..40).filter(|c| c % 4 != 0) {
+            harness.remove(chunk);
+        }
+        harness.finish_and_check();
+        for chunk in 40..60 {
+            harness.set(chunk, 0, 30);
+        }
+        harness.finish_and_check();
+    }
+
+    #[test]
+    fn more_chunks_than_initial_draw_capacity() {
+        let mut harness = Harness::new();
+        for chunk in 0..(INITIAL_DRAW_CAPACITY as i32 * 3 + 5) {
+            harness.set(chunk, 0, 1);
+        }
+        harness.finish_and_check();
+    }
+
+    #[test]
+    fn more_vertices_than_initial_capacity() {
+        let mut harness = Harness::new();
+        let triangles = INITIAL_VERTEX_CAPACITY / 3 / 3;
+        for chunk in 0..5 {
+            harness.set(chunk, 0, triangles);
+            harness.finish_and_check();
+        }
+    }
+
+    #[test]
+    fn randomized_operations() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+        let mut harness = Harness::new();
+        for round in 0..30 {
+            for _ in 0..next(20) + 1 {
+                let chunk = next(40) as i32;
+                match next(5) {
+                    0 => harness.remove(chunk),
+                    1 => harness.set(chunk, round, 0),
+                    _ => harness.set(chunk, round, next(300) as usize + 1),
+                }
+            }
+            harness.finish_and_check();
+        }
+    }
+}

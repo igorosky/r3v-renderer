@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use crate::wgpu_utils::*;
 use crate::{Renderer, camera, geometry, stl, vertex_arena::VertexArena};
 
@@ -13,8 +15,9 @@ struct WgpuAcceleratedState {
     pub environment_pipeline: wgpu::RenderPipeline,
     pub asset_pipeline: wgpu::RenderPipeline,
     pub pixel_size: u32,
-    pub camera_buffer: wgpu::Buffer,
+    pub camera_uniform_buffer: wgpu::Buffer,
     pub camera_bind_group: wgpu::BindGroup,
+    pub colormap_bind_group: wgpu::BindGroup,
 }
 
 struct RenderTargets {
@@ -49,7 +52,19 @@ struct Assets {
     transform_capacity: usize,
     transforms: Vec<geometry::RealTwist>,
     transforms_dirty: bool,
+    visible: Vec<bool>,
     assets: Vec<Asset>,
+}
+
+fn visible_runs(visible: &[bool], first: u32) -> impl Iterator<Item = Range<u32>> + '_ {
+    visible
+        .chunk_by(|a, b| a == b)
+        .scan(first, |start, run| {
+            let range = *start..*start + run.len() as u32;
+            *start = range.end;
+            Some(run[0].then_some(range))
+        })
+        .flatten()
 }
 
 fn create_asset_transform_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
@@ -74,6 +89,7 @@ impl Assets {
             transform_capacity: INITIAL_ASSET_TRANSFORM_CAPACITY,
             transforms: Vec::new(),
             transforms_dirty: false,
+            visible: Vec::new(),
             assets: Vec::new(),
         }
     }
@@ -102,6 +118,7 @@ impl Assets {
             instances,
         ));
         self.transforms_dirty = true;
+        self.visible.extend(std::iter::repeat_n(true, instances));
         self.assets.push(Asset {
             vertex_offset: self.vertex_count as u32,
             vertex_count: vertices.len() as u32,
@@ -119,6 +136,18 @@ impl Assets {
         }
         *current = transform;
         self.transforms_dirty = true;
+    }
+
+    fn set_visible(&mut self, instance: usize, visible: bool) {
+        self.visible[instance] = visible;
+    }
+
+    fn visible_instances(&self, asset: &Asset) -> impl Iterator<Item = Range<u32>> + '_ {
+        let first = asset.first_instance as usize;
+        visible_runs(
+            &self.visible[first..first + asset.instance_count as usize],
+            asset.first_instance,
+        )
     }
 
     fn flush_transforms(&mut self, queue: &wgpu::Queue) {
@@ -208,7 +237,7 @@ impl WgpuAccelerated {
             .ok()?;
 
         // Camera
-        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let camera_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Camera Buffer"),
             size: std::mem::size_of::<camera::CameraUniform>() as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -233,8 +262,56 @@ impl WgpuAccelerated {
             layout: &camera_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: camera_buffer.as_entire_binding(),
+                resource: camera_uniform_buffer.as_entire_binding(),
             }],
+        });
+
+        // Colormap
+        let colormap_texture = create_turbo_colormap_texture(&device, &queue);
+        let colormap_texture_view =
+            colormap_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let colormap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Colormap Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let colormap_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Colormap Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D1,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let colormap_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Colormap Bind Group"),
+            layout: &colormap_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&colormap_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&colormap_sampler),
+                },
+            ],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -242,6 +319,15 @@ impl WgpuAccelerated {
             bind_group_layouts: &[Some(&camera_bind_group_layout)],
             immediate_size: 0,
         });
+        let environment_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Environment Pipeline Layout"),
+                bind_group_layouts: &[
+                    Some(&camera_bind_group_layout),
+                    Some(&colormap_bind_group_layout),
+                ],
+                immediate_size: 0,
+            });
 
         // Environment shader
         let environment_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -252,7 +338,7 @@ impl WgpuAccelerated {
         // Environment pipeline
         let environment_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Environment Render Pipeline"),
-            layout: Some(&pipeline_layout),
+            layout: Some(&environment_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &environment_shader,
                 entry_point: Some("vs_main"),
@@ -308,8 +394,8 @@ impl WgpuAccelerated {
                             as wgpu::BufferAddress,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &wgpu::vertex_attr_array![
-                            2 => Float32x3, // linear.x, linear.y, linear.z
-                            3 => Float32x4, // rotational.x, rotational.y, rotational.z, rotational.w
+                            3 => Float32x3, // linear.x, linear.y, linear.z
+                            4 => Float32x4, // rotational.x, rotational.y, rotational.z, rotational.w
                         ],
                     }),
                 ],
@@ -349,8 +435,9 @@ impl WgpuAccelerated {
             environment_pipeline,
             asset_pipeline,
             pixel_size: std::mem::size_of::<[u8; 4]>() as u32,
-            camera_buffer,
+            camera_uniform_buffer,
             camera_bind_group,
+            colormap_bind_group,
         };
 
         Some(Self {
@@ -436,11 +523,13 @@ impl Renderer for WgpuAccelerated {
     type AssetDescription = stl::StlMesh;
     type AssetTransform = geometry::RealTwist;
 
+    type CameraState = camera::CameraState;
+
     fn configure(&mut self, configuration: Self::Configuration) {
         self.active_configuration = Some(configuration);
     }
 
-    fn render(&mut self, camera_uniform: &camera::CameraUniform, output: &mut [u8]) {
+    fn render(&mut self, camera_state: &Self::CameraState, output: &mut [u8]) {
         let config = self
             .active_configuration
             .expect("Renderer is not configured.");
@@ -488,9 +577,9 @@ impl Renderer for WgpuAccelerated {
             output.fill(0);
         }
         self.state.queue.write_buffer(
-            &self.state.camera_buffer,
+            &self.state.camera_uniform_buffer,
             0,
-            bytemuck::cast_slice(&[*camera_uniform]),
+            bytemuck::bytes_of::<camera::CameraUniform>(&camera_state.into()),
         );
         let mut encoder =
             self.state
@@ -526,6 +615,7 @@ impl Renderer for WgpuAccelerated {
             if draw_count > 0 {
                 render_pass.set_pipeline(&self.state.environment_pipeline);
                 render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
+                render_pass.set_bind_group(1, &self.state.colormap_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.vertex_arena.vertex_buffer().slice(..));
                 render_pass.multi_draw_indirect(self.vertex_arena.draw_buffer(), 0, draw_count);
             }
@@ -535,10 +625,12 @@ impl Renderer for WgpuAccelerated {
                 render_pass.set_vertex_buffer(0, self.assets.vertex_buffer.slice(..));
                 render_pass.set_vertex_buffer(1, self.assets.transform_buffer.slice(..));
                 for asset in &self.assets.assets {
-                    render_pass.draw(
-                        asset.vertex_offset..asset.vertex_offset + asset.vertex_count,
-                        asset.first_instance..asset.first_instance + asset.instance_count,
-                    );
+                    for instances in self.assets.visible_instances(asset) {
+                        render_pass.draw(
+                            asset.vertex_offset..asset.vertex_offset + asset.vertex_count,
+                            instances,
+                        );
+                    }
                 }
             }
         }
@@ -572,27 +664,13 @@ impl Renderer for WgpuAccelerated {
         let device = &self.state.device;
         let queue = &self.state.queue;
         let mut vertices = Vec::new();
-        for geometry::TriangleChunk { index, triangles } in geometry_delta {
+        for geometry::TriangleChunk {
+            index,
+            triangles: quads,
+        } in geometry_delta
+        {
             vertices.clear();
-            vertices.extend(triangles.into_iter().flat_map(|triangle| {
-                [
-                    geometry::Vertex::with_default_color(
-                        triangle.v0[0],
-                        triangle.v0[1],
-                        triangle.v0[2],
-                    ),
-                    geometry::Vertex::with_default_color(
-                        triangle.v1[0],
-                        triangle.v1[1],
-                        triangle.v1[2],
-                    ),
-                    geometry::Vertex::with_default_color(
-                        triangle.v2[0],
-                        triangle.v2[1],
-                        triangle.v2[2],
-                    ),
-                ]
-            }));
+            vertices.extend(quads.iter().flat_map(|triangle| triangle.to_vertices()));
             self.vertex_arena.set_chunk(device, queue, index, &vertices);
         }
         self.vertex_arena.finish_update(device, queue);
@@ -621,5 +699,41 @@ impl Renderer for WgpuAccelerated {
         transform: Self::AssetTransform,
     ) {
         self.assets.set_transform(instance_id as usize, transform);
+    }
+
+    fn set_asset_visibility(&mut self, instance_id: Self::AssetInstanceId, visible: bool) {
+        self.assets.set_visible(instance_id as usize, visible);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visible_runs;
+
+    fn runs(visible: &[bool], first: u32) -> Vec<(u32, u32)> {
+        visible_runs(visible, first)
+            .map(|range| (range.start, range.end))
+            .collect()
+    }
+
+    #[test]
+    fn all_visible_is_one_run() {
+        assert_eq!(runs(&[true; 5], 10), [(10, 15)]);
+    }
+
+    #[test]
+    fn all_hidden_or_empty_draws_nothing() {
+        assert!(runs(&[false; 5], 10).is_empty());
+        assert!(runs(&[], 10).is_empty());
+    }
+
+    #[test]
+    fn hidden_instances_split_runs() {
+        assert_eq!(
+            runs(&[true, false, false, true, true, false, true], 3),
+            [(3, 4), (6, 8), (9, 10)]
+        );
+        assert_eq!(runs(&[false, true, true], 0), [(1, 3)]);
+        assert_eq!(runs(&[true, true, false], 0), [(0, 2)]);
     }
 }

@@ -10,6 +10,7 @@ use r3v_renderer::{
     tesselator::{GreedyMeshTesselator, GreedyMeshTesselatorConfiguration},
     urdf,
 };
+use rayon::prelude::*;
 use std::{
     array,
     collections::{HashMap, HashSet},
@@ -33,6 +34,9 @@ const INITIAL_HEIGHT: u32 = 800;
 
 // Brick layout used by GreedyMeshTesselator: 4x4x2 voxels packed into a u32,
 // bit = lx | ly << 2 | lz << 4.
+/// World metres per voxel edge; the world grid below is laid out in voxels.
+const VOXEL_SIZE: f32 = 0.2;
+
 const BRICK_X: i32 = 4;
 const BRICK_Y: i32 = 4;
 const BRICK_Z: i32 = 2;
@@ -65,19 +69,23 @@ const TREE_CELL: i32 = 16;
 
 /// Loaded when no URDF path is passed on the command line.
 const DEFAULT_ROBOT_URDF: &str = "assets/scorpio8.urdf.xacro";
-/// Voxels per URDF metre.
-const ROBOT_SCALE: f32 = 20.0;
+/// World metres per URDF metre.
+const ROBOT_SCALE: f32 = 1.0;
 const ROBOT_SITE_RADIUS: f32 = 24.0;
 const ROBOT_JOINT_SPEED: f32 = 0.8;
 /// Sweep amplitude, in radians, for continuous joints that carry other links (rockers, wrists).
 const ROBOT_CONTINUOUS_SWEEP: f32 = 0.4;
-const ROBOT_FOCUS_DISTANCE: f32 = 70.0;
+/// In metres.
+const ROBOT_FOCUS_DISTANCE: f32 = 3.5;
+/// Joint mounting the manipulator on the rover: every link below it belongs to the arm.
+const ROBOT_ARM_MOUNT_JOINT: &str = "mani_base_offset_joint";
 
-const CAMERA_DISTANCE: f32 = 160.0;
-const CAMERA_MIN_DISTANCE: f32 = 2.0;
-const CAMERA_MAX_DISTANCE: f32 = 900.0;
-const CAMERA_NEAR: f32 = 0.5;
-const CAMERA_FAR: f32 = 2000.0;
+// Camera framing is relative to the voxel world, so it follows VOXEL_SIZE.
+const CAMERA_DISTANCE: f32 = 160.0 * VOXEL_SIZE;
+const CAMERA_MIN_DISTANCE: f32 = 0.1;
+const CAMERA_MAX_DISTANCE: f32 = 900.0 * VOXEL_SIZE;
+const CAMERA_NEAR: f32 = 0.01;
+const CAMERA_FAR: f32 = 2000.0 * VOXEL_SIZE;
 const AUTO_ORBIT_SPEED: f32 = 0.15;
 const MOUSE_ROTATE_SPEED: f32 = 0.005;
 const MOUSE_PAN_SPEED: f32 = 0.0015;
@@ -100,9 +108,10 @@ Controls:
   Arrow keys        orbit
   Shift             move faster
   O                 toggle auto-orbit
-  M                 toggle marching-cubes terrain smoothing
+  C                 toggle marching-cubes terrain smoothing
   R                 reset camera
   F                 focus camera on the robot
+  M                 add/remove the robot arm
   P                 save snapshot
   Esc               quit";
 
@@ -156,16 +165,16 @@ struct Demo {
     stats_since: Instant,
     overlay_text: String,
 
-    triangle_count: usize,
+    quad_count: usize,
     chunk_count: usize,
     snapshot_index: u32,
 }
 
 fn initial_camera() -> OrbitCamera {
     let center = cgmath::Point3::new(
-        WORLD_X as f32 / 2.0,
-        WORLD_Y as f32 / 4.0,
-        WORLD_Z as f32 / 2.0,
+        WORLD_X as f32 / 2.0 * VOXEL_SIZE,
+        WORLD_Y as f32 / 4.0 * VOXEL_SIZE,
+        WORLD_Z as f32 / 2.0 * VOXEL_SIZE,
     );
     OrbitCamera::new(center, CAMERA_DISTANCE, 30.0, 30.0).with_clip_planes(CAMERA_NEAR, CAMERA_FAR)
 }
@@ -192,7 +201,9 @@ impl Demo {
             world.lakes.len(),
         );
         let mut tesselator = GreedyMeshTesselator::new();
-        tesselator.configure(GreedyMeshTesselatorConfiguration { voxel_size: 1 });
+        tesselator.configure(GreedyMeshTesselatorConfiguration {
+            voxel_size: VOXEL_SIZE,
+        });
         let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
         let robot = match RobotScene::load(urdf_path, robot_placement(&world), &mut renderer) {
             Ok(robot) => Some(robot),
@@ -221,7 +232,7 @@ impl Demo {
             stats_frames: 0,
             stats_since: now,
             overlay_text: String::new(),
-            triangle_count: 0,
+            quad_count: 0,
             chunk_count: 0,
             snapshot_index: 0,
         }
@@ -258,7 +269,7 @@ impl Demo {
         self.tesselator.update_input_geometry(&brick_delta);
         if let Some(geometry_delta) = self.tesselator.get_output_geometry_delta() {
             for delta in &geometry_delta {
-                self.triangle_count += delta.triangles.len();
+                self.quad_count += delta.triangles.len();
                 self.chunk_count += !delta.triangles.is_empty() as usize;
             }
             self.renderer.update_geometry(geometry_delta);
@@ -271,9 +282,8 @@ impl Demo {
 
         self.update_camera(dt);
         let aspect_ratio = self.width as f32 / self.height as f32;
-        let camera_uniform = self.camera.get_uniform(aspect_ratio);
-        self.renderer
-            .render(&camera_uniform, &mut self.pixel_buffer);
+        let camera_state = self.camera.get_state(aspect_ratio);
+        self.renderer.render(&camera_state, &mut self.pixel_buffer);
 
         self.update_stats(now);
         draw_text(
@@ -308,17 +318,19 @@ impl Demo {
         if forward != 0.0 || strafe != 0.0 || lift != 0.0 {
             self.auto_orbit = false;
             // Movement is relative to the horizontal view direction, so W never digs into the ground.
-            let (sin, cos) = self.camera.yaw.sin_cos();
-            let ahead = Vector3::new(-sin, 0.0, -cos);
-            let right = Vector3::new(cos, 0.0, -sin);
+            let view_forward = self.camera.forward();
+            let ahead = Vector3::new(view_forward.x, 0.0, view_forward.z).normalize();
+            let right = ahead.cross(Vector3::unit_y());
             let speed = MOVE_SPEED
-                * self.camera.distance.max(20.0)
+                * self.camera.distance.max(20.0 * VOXEL_SIZE)
                 * if fast { FAST_MULTIPLIER } else { 1.0 };
             let target = &mut self.camera.target;
             *target += (ahead * forward + right * strafe + Vector3::unit_y() * lift) * speed * dt;
-            target.x = target.x.clamp(-(WORLD_X as f32), 2.0 * WORLD_X as f32);
-            target.y = target.y.clamp(-(WORLD_Y as f32), 4.0 * WORLD_Y as f32);
-            target.z = target.z.clamp(-(WORLD_Z as f32), 2.0 * WORLD_Z as f32);
+            let [world_x, world_y, world_z] =
+                [WORLD_X, WORLD_Y, WORLD_Z].map(|extent| extent as f32 * VOXEL_SIZE);
+            target.x = target.x.clamp(-world_x, 2.0 * world_x);
+            target.y = target.y.clamp(-world_y, 4.0 * world_y);
+            target.z = target.z.clamp(-world_z, 2.0 * world_z);
             self.camera.new_uniform_available = true;
         }
     }
@@ -353,12 +365,17 @@ impl Demo {
             KeyCode::Escape => event_loop.exit(),
             KeyCode::KeyP => self.save_snapshot(),
             KeyCode::KeyO => self.auto_orbit = !self.auto_orbit,
-            KeyCode::KeyM => self
+            KeyCode::KeyC => self
                 .tesselator
                 .set_marching_cubes_enabled(!self.tesselator.marching_cubes_enabled()),
             KeyCode::KeyR => {
                 self.camera = initial_camera();
                 self.auto_orbit = true;
+            }
+            KeyCode::KeyM => {
+                if let Some(robot) = &mut self.robot {
+                    robot.toggle_arm(&mut self.renderer);
+                }
             }
             KeyCode::KeyF => {
                 if let Some(target) = self.robot.as_ref().and_then(RobotScene::focus_point) {
@@ -388,11 +405,11 @@ impl Demo {
         self.overlay_text = format!("{:.0} FPS {:.1}MS {}", fps, frame_ms, smoothing);
         if let Some(window) = &self.window {
             window.set_title(&format!(
-                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} - {} triangles re-meshed, {} chunks updated",
-                fps, frame_ms, smoothing, self.triangle_count, self.chunk_count,
+                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated",
+                fps, frame_ms, self.quad_count, self.chunk_count,
             ));
         }
-        self.triangle_count = 0;
+        self.quad_count = 0;
         self.chunk_count = 0;
         self.stats_frames = 0;
         self.stats_since = now;
@@ -503,7 +520,8 @@ impl ApplicationHandler for Demo {
 fn robot_placement(world: &World) -> Placement {
     let [x, z] = world.robot_site.unwrap_or([WORLD_X / 2, WORLD_Z / 2]);
     Placement {
-        translation: Vector3::new(x as f32 + 0.5, world.height_at(x, z) as f32, z as f32 + 0.5),
+        translation: Vector3::new(x as f32 + 0.5, world.height_at(x, z) as f32, z as f32 + 0.5)
+            * VOXEL_SIZE,
         rotation: cgmath::Quaternion::from_angle_x(cgmath::Deg(-90.0)),
         scale: ROBOT_SCALE,
     }
@@ -562,6 +580,9 @@ struct RobotScene {
     joint_positions: HashMap<String, f32>,
     /// Renderer instance for each visual, keyed like `RobotTransforms::visuals`.
     instances: Vec<((String, usize), u64)>,
+    /// Renderer instances of the visuals on the arm's links.
+    arm_instances: Vec<u64>,
+    arm_attached: bool,
     focus_link: Option<String>,
 }
 
@@ -626,7 +647,7 @@ impl RobotScene {
             .enumerate()
             .filter_map(|(index, joint)| {
                 // This joint is a mounting adjustment, not an animated articulation.
-                if joint.name == "mani_base_offset_joint" {
+                if joint.name == ROBOT_ARM_MOUNT_JOINT {
                     return None;
                 }
                 let phase = index as f32 * 0.7;
@@ -653,6 +674,13 @@ impl RobotScene {
             })
             .collect::<Vec<_>>();
 
+        let arm_links = arm_links(&description);
+        let arm_instances = instances
+            .iter()
+            .filter(|((link, _), _)| arm_links.contains(link.as_str()))
+            .map(|(_, instance)| *instance)
+            .collect();
+
         let focus_link = description
             .links
             .iter()
@@ -674,8 +702,21 @@ impl RobotScene {
             joints,
             joint_positions: HashMap::new(),
             instances,
+            arm_instances,
+            arm_attached: true,
             focus_link,
         })
+    }
+
+    fn toggle_arm(&mut self, renderer: &mut WgpuAccelerated) {
+        if self.arm_instances.is_empty() {
+            println!("Robot has no arm (no '{ROBOT_ARM_MOUNT_JOINT}' joint with visuals)");
+            return;
+        }
+        self.arm_attached = !self.arm_attached;
+        for &instance in &self.arm_instances {
+            renderer.set_asset_visibility(instance, self.arm_attached);
+        }
     }
 
     fn update(&mut self, t: f32, renderer: &mut WgpuAccelerated) {
@@ -712,6 +753,29 @@ impl RobotScene {
             z: world.z,
         })
     }
+}
+
+/// Links below the arm mount joint, i.e. the whole manipulator.
+fn arm_links(description: &urdf::UrdfRobot) -> HashSet<&str> {
+    let mut links = HashSet::new();
+    let mut pending = description
+        .joints
+        .iter()
+        .filter(|joint| joint.name == ROBOT_ARM_MOUNT_JOINT)
+        .map(|joint| joint.child.as_str())
+        .collect::<Vec<_>>();
+    while let Some(link) = pending.pop() {
+        if links.insert(link) {
+            pending.extend(
+                description
+                    .joints
+                    .iter()
+                    .filter(|joint| joint.parent == link)
+                    .map(|joint| joint.child.as_str()),
+            );
+        }
+    }
+    links
 }
 
 /// `urdf::read_file` resolves `package://<name>/...` only when an ancestor directory is called
@@ -1367,8 +1431,16 @@ impl World {
         for &index in &previous {
             self.dynamic_bricks[index] = 0;
         }
-        for shape in &shapes {
-            self.rasterize(shape);
+        // Shapes rasterize in parallel against the static world; the merge is cheap and serial.
+        let masks: Vec<Vec<(usize, u32)>> = shapes
+            .par_iter()
+            .map(|shape| self.rasterize(shape))
+            .collect();
+        for (index, mask) in masks.into_iter().flatten() {
+            if self.dynamic_bricks[index] == 0 {
+                self.dynamic_touched.push(index);
+            }
+            self.dynamic_bricks[index] |= mask;
         }
 
         let mask = |index: usize| self.static_bricks[index] | self.dynamic_bricks[index];
@@ -1392,51 +1464,52 @@ impl World {
         delta
     }
 
-    /// Adds the voxels inside `shape` that are not already filled to `dynamic_bricks`.
-    fn rasterize(&mut self, shape: &Shape) {
+    /// Returns the voxels inside `shape` that are not static, as masks per touched brick.
+    fn rasterize(&self, shape: &Shape) -> Vec<(usize, u32)> {
         let (min, max) = shape.bounds();
         let (min, max) = (
             clamp_voxel(min.map(|c| c.floor() as i32)),
             clamp_voxel(max.map(|c| c.ceil() as i32)),
         );
         let (bmin, bmax) = (brick_of(min), brick_of(max));
-        for bz in bmin[2]..=bmax[2] {
-            for by in bmin[1]..=bmax[1] {
-                for bx in bmin[0]..=bmax[0] {
-                    let index = Self::brick_index(bx, by, bz);
-                    let origin = [bx * BRICK_X, by * BRICK_Y, bz * BRICK_Z];
-                    let filled = self.static_bricks[index] | self.dynamic_bricks[index];
-                    let (lo, hi) = (
-                        array::from_fn::<_, 3, _>(|axis| (min[axis] - origin[axis]).max(0)),
-                        array::from_fn::<_, 3, _>(|axis| {
-                            (max[axis] - origin[axis]).min([BRICK_X, BRICK_Y, BRICK_Z][axis] - 1)
-                        }),
-                    );
-                    let mut mask = 0;
-                    for lz in lo[2]..=hi[2] {
-                        for ly in lo[1]..=hi[1] {
-                            for lx in lo[0]..=hi[0] {
-                                let bit = voxel_bit(lx, ly, lz);
-                                if filled & bit != 0 {
-                                    continue;
-                                }
-                                let p = [0, 1, 2]
-                                    .map(|axis| (origin[axis] + [lx, ly, lz][axis]) as f32 + 0.5);
-                                if shape.contains(p) {
-                                    mask |= bit;
+        // Split by brick slab too, so one large shape (a lake) does not serialize the frame.
+        (bmin[2]..=bmax[2])
+            .into_par_iter()
+            .flat_map_iter(|bz| {
+                (bmin[1]..=bmax[1]).flat_map(move |by| {
+                    (bmin[0]..=bmax[0]).filter_map(move |bx| {
+                        let index = Self::brick_index(bx, by, bz);
+                        let origin = [bx * BRICK_X, by * BRICK_Y, bz * BRICK_Z];
+                        let filled = self.static_bricks[index];
+                        let (lo, hi) = (
+                            array::from_fn::<_, 3, _>(|axis| (min[axis] - origin[axis]).max(0)),
+                            array::from_fn::<_, 3, _>(|axis| {
+                                (max[axis] - origin[axis])
+                                    .min([BRICK_X, BRICK_Y, BRICK_Z][axis] - 1)
+                            }),
+                        );
+                        let mut mask = 0;
+                        for lz in lo[2]..=hi[2] {
+                            for ly in lo[1]..=hi[1] {
+                                for lx in lo[0]..=hi[0] {
+                                    let bit = voxel_bit(lx, ly, lz);
+                                    if filled & bit != 0 {
+                                        continue;
+                                    }
+                                    let p = [0, 1, 2].map(|axis| {
+                                        (origin[axis] + [lx, ly, lz][axis]) as f32 + 0.5
+                                    });
+                                    if shape.contains(p) {
+                                        mask |= bit;
+                                    }
                                 }
                             }
                         }
-                    }
-                    if mask != 0 {
-                        if self.dynamic_bricks[index] == 0 {
-                            self.dynamic_touched.push(index);
-                        }
-                        self.dynamic_bricks[index] |= mask;
-                    }
-                }
-            }
-        }
+                        (mask != 0).then_some((index, mask))
+                    })
+                })
+            })
+            .collect()
     }
 }
 

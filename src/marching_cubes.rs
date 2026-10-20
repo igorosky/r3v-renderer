@@ -1,4 +1,4 @@
-use crate::geometry::{DiscreteUnit, RealTriangle, RealUnit};
+use crate::geometry::{RealTriangle, RealUnit};
 
 use super::CHUNK_WIDTH;
 
@@ -321,7 +321,7 @@ pub(super) fn polygonize_cube(
     case_index: usize,
     corners: &[[RealUnit; 3]; 8],
     values: [RealUnit; 8],
-    voxel_size: DiscreteUnit,
+    voxel_size: RealUnit,
     triangles: &mut Vec<RealTriangle>,
 ) {
     let edge_mask = MC_EDGE_MASKS[case_index];
@@ -340,7 +340,7 @@ pub(super) fn polygonize_cube(
         });
     }
 
-    let scale = voxel_size as RealUnit;
+    let scale = voxel_size;
     let mut edges = &MC_TRIANGLE_EDGES[case_index][..];
     while let [a, b, c, rest @ ..] = edges {
         if *a < 0 {

@@ -6,6 +6,7 @@ pub mod stl;
 pub mod tesselator;
 pub mod urdf;
 
+mod turbo_colormap;
 mod vertex_arena;
 mod wgpu_utils;
 
@@ -21,7 +22,7 @@ pub trait Camera {
     fn zoom(&mut self, delta_distance: f32);
     fn pan(&mut self, delta_x: f32, delta_y: f32);
 
-    fn get_uniform(&self, aspect_ratio: f32) -> camera::CameraUniform;
+    fn get_state(&self, aspect_ratio: f32) -> camera::CameraState;
 }
 
 pub trait Robot {
@@ -52,6 +53,8 @@ pub trait Renderer {
     type AssetDescription;
     type AssetTransform;
 
+    type CameraState;
+
     fn configure(&mut self, configuration: Self::Configuration);
     fn update_geometry(&mut self, geometry_delta: Self::GeometryDelta);
     fn upload_asset(
@@ -64,5 +67,6 @@ pub trait Renderer {
         instance_id: Self::AssetInstanceId,
         transform: Self::AssetTransform,
     );
-    fn render(&mut self, camera_uniform: &camera::CameraUniform, output: &mut [u8]);
+    fn set_asset_visibility(&mut self, instance_id: Self::AssetInstanceId, visible: bool);
+    fn render(&mut self, camera_state: &Self::CameraState, output: &mut [u8]);
 }

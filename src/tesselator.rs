@@ -15,7 +15,7 @@ use crate::{
     Tesselator,
     geometry::{
         Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, RealTriangle, RealUnit,
-        TriangleChunk, Vector2D, Vector3D, VoxelNormal, VoxelQuad,
+        TriangleChunk, Vector2D, Vector3D, VoxelNormal,
     },
 };
 
@@ -147,7 +147,7 @@ impl Chunk {
 }
 
 pub struct GreedyMeshTesselatorConfiguration {
-    pub voxel_size: u16,
+    pub voxel_size: f32,
 }
 
 pub struct GreedyMeshTesselator {
@@ -275,7 +275,7 @@ impl GreedyMeshTesselator {
 
     fn solid_columns(&self, chunk: DiscretePoint) -> Box<SolidColumns> {
         let mut solid = Box::new([[[0u64; CHUNK_WIDTH]; CHUNK_WIDTH]; 3]);
-        let own = self.chunks.get(&chunk);
+        let curr: Option<&Box<Chunk>> = self.chunks.get(&chunk);
         for normal in Axis::ALL {
             let below = self.chunks.get(&Chunk::neighbour_of(chunk, normal, -1));
             let above = self.chunks.get(&Chunk::neighbour_of(chunk, normal, 1));
@@ -285,7 +285,7 @@ impl GreedyMeshTesselator {
                     let column = |chunk: Option<&Box<Chunk>>| {
                         chunk.map_or(0, |chunk| chunk.columns[normal][r][c] as u64)
                     };
-                    solid[normal][r][c] = column(own) << 1
+                    solid[normal][r][c] = column(curr) << 1
                         | column(below) >> (CHUNK_WIDTH - 1) & 1
                         | (column(above) & 1) << (CHUNK_WIDTH + 1);
                 }
@@ -358,11 +358,7 @@ impl GreedyMeshTesselator {
                     origin[axis] += layer as DiscreteUnit;
                     origin[column] += start.x;
                     origin[row] += start.y;
-                    VoxelQuad {
-                        normal,
-                        origin,
-                        size,
-                    }
+                    DiscreteQuad::voxel_face(normal, origin, size)
                 })
             })
         })
@@ -373,20 +369,20 @@ impl GreedyMeshTesselator {
             .config
             .as_ref()
             .expect("Tesselator must be configured before generating output geometry")
-            .voxel_size as DiscreteUnit;
+            .voxel_size;
         if self.marching_cubes_enabled {
             return self.marching_cubes_chunk(chunk, voxel_size);
         }
         self.chunk_quads(chunk)
+            .map(|quad| quad.to_real(voxel_size))
             .flat_map(|quad| quad.triangles())
-            .map(|triangle| triangle.map(|coordinate| (coordinate * voxel_size) as RealUnit))
             .collect()
     }
 
     fn marching_cubes_chunk(
         &self,
         chunk: DiscretePoint,
-        voxel_size: DiscreteUnit,
+        voxel_size: RealUnit,
     ) -> Vec<RealTriangle> {
         let mut field = [0u8; MC_GRID_VOLUME];
         self.marching_cubes_field(chunk, &mut field);

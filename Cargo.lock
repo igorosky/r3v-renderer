@@ -1991,6 +1991,7 @@ dependencies = [
  "cgmath",
  "image",
  "pollster",
+ "quick-xml 0.39.4",
  "rayon",
  "rustc-hash 2.1.3",
  "softbuffer",
