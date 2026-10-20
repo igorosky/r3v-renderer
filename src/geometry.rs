@@ -328,10 +328,19 @@ impl RealQuad {
         .normal()
     }
 
-    pub fn to_vertices(&self) -> [Vertex; 4] {
-        let normal = self.normal();
-        [self.v0, self.v1, self.v2, self.v3]
-            .map(|position| Vertex::from(position).with_normal(normal))
+    pub fn triangles(&self) -> [RealTriangle; 2] {
+        [
+            Triangle {
+                v0: self.v0,
+                v1: self.v1,
+                v2: self.v2,
+            },
+            Triangle {
+                v0: self.v0,
+                v1: self.v2,
+                v2: self.v3,
+            },
+        ]
     }
 }
 

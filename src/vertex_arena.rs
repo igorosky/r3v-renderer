@@ -1,5 +1,5 @@
 use rustc_hash::FxHashMap;
-use wgpu::util::DrawIndexedIndirectArgs;
+use wgpu::util::DrawIndirectArgs;
 
 use crate::geometry::{DiscretePoint, Vertex};
 use crate::wgpu_utils::*;
@@ -7,7 +7,6 @@ use crate::wgpu_utils::*;
 const MIN_CLASS_SHIFT: u32 = 6;
 const INITIAL_VERTEX_CAPACITY: usize = 1 << 16;
 const INITIAL_DRAW_CAPACITY: usize = 64;
-const INITIAL_QUAD_CAPACITY: usize = 1 << 12;
 
 struct ChunkAlloc {
     offset: u32,
@@ -18,8 +17,6 @@ struct ChunkAlloc {
 
 pub(crate) struct VertexArena {
     vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    quad_capacity: usize,
     vertex_capacity: usize,
     high_water: u32,
     free_lists: Vec<Vec<u32>>,
@@ -27,7 +24,7 @@ pub(crate) struct VertexArena {
 
     chunks: FxHashMap<DiscretePoint, ChunkAlloc>,
 
-    draws: Vec<DrawIndexedIndirectArgs>,
+    draws: Vec<DrawIndirectArgs>,
     draw_owners: Vec<DiscretePoint>,
     draw_buffer: wgpu::Buffer,
     draw_capacity: usize,
@@ -47,8 +44,6 @@ impl VertexArena {
         Self {
             vertex_buffer: create_vertex_buffer(device, INITIAL_VERTEX_CAPACITY),
             vertex_capacity: INITIAL_VERTEX_CAPACITY,
-            index_buffer: create_quad_index_buffer(device, INITIAL_QUAD_CAPACITY),
-            quad_capacity: INITIAL_QUAD_CAPACITY,
             high_water: 0,
             free_lists: Vec::new(),
             free_slots: 0,
@@ -63,10 +58,6 @@ impl VertexArena {
 
     pub fn vertex_buffer(&self) -> &wgpu::Buffer {
         &self.vertex_buffer
-    }
-
-    pub fn index_buffer(&self) -> &wgpu::Buffer {
-        &self.index_buffer
     }
 
     pub fn draw_buffer(&self) -> &wgpu::Buffer {
@@ -88,13 +79,7 @@ impl VertexArena {
             self.remove_chunk(index);
             return;
         }
-        debug_assert!(vertices.len().is_multiple_of(QUAD_VERTICES as usize));
         let count = vertices.len() as u32;
-        let quads = (count / QUAD_VERTICES) as usize;
-        if quads > self.quad_capacity {
-            self.quad_capacity = quads.next_power_of_two();
-            self.index_buffer = create_quad_index_buffer(device, self.quad_capacity);
-        }
         if let Some(alloc) = self.chunks.get_mut(&index)
             && count <= alloc.capacity
         {
@@ -104,7 +89,7 @@ impl VertexArena {
                 alloc.offset as wgpu::BufferAddress * VERTEX_STRIDE,
                 bytemuck::cast_slice(vertices),
             );
-            self.draws[alloc.draw_slot].index_count = count / QUAD_VERTICES * QUAD_INDICES;
+            self.draws[alloc.draw_slot].vertex_count = count;
             self.draws_dirty = true;
             return;
         }
@@ -119,11 +104,10 @@ impl VertexArena {
             bytemuck::cast_slice(vertices),
         );
 
-        let args = DrawIndexedIndirectArgs {
-            index_count: count / QUAD_VERTICES * QUAD_INDICES,
+        let args = DrawIndirectArgs {
+            vertex_count: count,
             instance_count: 1,
-            first_index: 0,
-            base_vertex: offset as i32,
+            first_vertex: offset,
             first_instance: 0,
         };
         match self.chunks.get_mut(&index) {
@@ -246,7 +230,7 @@ impl VertexArena {
             );
             alloc.offset = high_water;
             alloc.capacity = size_class(alloc.count);
-            self.draws[alloc.draw_slot].base_vertex = high_water as i32;
+            self.draws[alloc.draw_slot].first_vertex = high_water;
             high_water += alloc.capacity;
         }
         queue.submit(Some(encoder.finish()));
@@ -274,10 +258,8 @@ mod tests {
         }
     }
 
-    /// `quads` quads of vertices tagged with the chunk and a version, so every upload is
-    /// distinguishable in the vertex buffer.
-    fn vertices(chunk: i32, version: u32, quads: usize) -> Vec<Vertex> {
-        (0..quads * QUAD_VERTICES as usize)
+    fn vertices(chunk: i32, version: u32, triangles: usize) -> Vec<Vertex> {
+        (0..triangles * 3)
             .map(|i| Vertex {
                 position: [chunk as f32, version as f32, i as f32],
                 color: [1.0, 0.5, 0.25],
@@ -286,7 +268,6 @@ mod tests {
             .collect()
     }
 
-    /// Arena plus the content it is expected to draw.
     struct Harness {
         gpu: TestGpu,
         arena: VertexArena,
@@ -304,8 +285,8 @@ mod tests {
             }
         }
 
-        fn set(&mut self, chunk: i32, version: u32, quads: usize) {
-            let data = vertices(chunk, version, quads);
+        fn set(&mut self, chunk: i32, version: u32, triangles: usize) {
+            let data = vertices(chunk, version, triangles);
             self.arena
                 .set_chunk(&self.gpu.device, &self.gpu.queue, index(chunk), &data);
             if data.is_empty() {
@@ -330,10 +311,8 @@ mod tests {
             assert_eq!(draw_count, self.expected.len());
 
             let draw_bytes = self.gpu.read_buffer(self.arena.draw_buffer());
-            let draws: &[DrawIndexedIndirectArgs] =
+            let draws: &[DrawIndirectArgs] =
                 bytemuck::cast_slice(&draw_bytes[..draw_count * DRAW_ARGS_STRIDE as usize]);
-            let index_bytes = self.gpu.read_buffer(self.arena.index_buffer());
-            let indices: &[u32] = bytemuck::cast_slice(&index_bytes);
             let vertex_bytes = self.gpu.read_buffer(self.arena.vertex_buffer());
             let gpu_vertices: &[Vertex] = bytemuck::cast_slice(&vertex_bytes);
 
@@ -341,29 +320,22 @@ mod tests {
             let mut matched = HashSet::new();
             for draw in draws {
                 assert_eq!(draw.instance_count, 1);
-                let first = draw.first_index as usize;
-                let count = draw.index_count as usize;
+                let first = draw.first_vertex as usize;
+                let count = draw.vertex_count as usize;
                 assert!(
-                    first + count <= indices.len(),
-                    "draw reads past index buffer"
+                    first + count <= gpu_vertices.len(),
+                    "draw reads past vertex buffer"
                 );
-                let mut referenced: Vec<usize> = indices[first..first + count]
-                    .iter()
-                    .map(|&i| (draw.base_vertex as i64 + i as i64) as usize)
-                    .collect();
-                referenced.sort();
-                referenced.dedup();
-                assert!(*referenced.last().unwrap() < gpu_vertices.len());
-                for &vertex in &referenced {
+                for vertex in first..first + count {
                     assert!(used_vertices.insert(vertex), "vertex {vertex} drawn twice");
                 }
-                let drawn: Vec<Vertex> = referenced.iter().map(|&i| gpu_vertices[i]).collect();
+                let drawn = &gpu_vertices[first..first + count];
                 let owner = self
                     .expected
                     .iter()
                     .find(|(_, expected)| {
                         bytemuck::cast_slice::<Vertex, u8>(expected)
-                            == bytemuck::cast_slice::<Vertex, u8>(&drawn)
+                            == bytemuck::cast_slice::<Vertex, u8>(drawn)
                     })
                     .map(|(index, _)| *index)
                     .unwrap_or_else(|| panic!("draw {draw:?} does not match any chunk"));
@@ -397,8 +369,8 @@ mod tests {
         harness.set(1, 0, 10);
         harness.finish_and_check();
         // Shrink, same size, grow a little and grow a lot.
-        for (version, quads) in [(1, 4), (2, 4), (3, 12), (4, 500), (5, 1)] {
-            harness.set(0, version, quads);
+        for (version, triangles) in [(1, 4), (2, 4), (3, 12), (4, 500), (5, 1)] {
+            harness.set(0, version, triangles);
             harness.finish_and_check();
         }
     }
@@ -474,21 +446,11 @@ mod tests {
     #[test]
     fn more_vertices_than_initial_capacity() {
         let mut harness = Harness::new();
-        let quads = INITIAL_VERTEX_CAPACITY / QUAD_VERTICES as usize / 3;
+        let triangles = INITIAL_VERTEX_CAPACITY / 3 / 3;
         for chunk in 0..5 {
-            harness.set(chunk, 0, quads);
+            harness.set(chunk, 0, triangles);
             harness.finish_and_check();
         }
-    }
-
-    #[test]
-    fn chunk_larger_than_initial_index_capacity() {
-        let mut harness = Harness::new();
-        harness.set(0, 0, 2);
-        harness.set(1, 0, INITIAL_QUAD_CAPACITY + 1);
-        harness.finish_and_check();
-        harness.set(2, 0, INITIAL_QUAD_CAPACITY * 3);
-        harness.finish_and_check();
     }
 
     #[test]
