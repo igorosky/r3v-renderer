@@ -2,9 +2,9 @@
 //! struct itself: methods taking `&self` take it by value, methods taking
 //! `&mut self` a pointer.
 
-use crate::{Camera, camera::OrbitCamera};
+use crate::{Camera, bindings::checked, camera::OrbitCamera};
 
-use super::{Error, R3vCameraState, R3vStatus, R3vVec3, arg_mut, status};
+use super::{R3vCameraState, R3vStatus, R3vVec3, arg_mut, status};
 
 /// Camera circling `target` (`camera::OrbitCamera`). Change it through the
 /// `r3v_orbit_camera_*` functions or by writing the fields directly.
@@ -165,20 +165,7 @@ pub extern "C" fn r3v_orbit_camera_get_state(
 ) -> R3vStatus {
     status(|| {
         let out = unsafe { arg_mut(out, "out") }?;
-        // The projection asserts these
-        let positive = |value: f32| value.is_finite() && value > 0.0;
-        if !positive(aspect_ratio) {
-            return Err(Error::invalid_argument(format!(
-                "aspect ratio must be positive, got {aspect_ratio}"
-            )));
-        }
-        if !positive(camera.near) || !camera.far.is_finite() || camera.far <= camera.near {
-            return Err(Error::invalid_argument(format!(
-                "clip planes need 0 < near < far, got near {} and far {}",
-                camera.near, camera.far
-            )));
-        }
-        *out = OrbitCamera::from(camera).get_state(aspect_ratio).into();
+        *out = checked::camera_state(&camera.into(), aspect_ratio)?.into();
         Ok(())
     })
 }

@@ -1,5 +1,5 @@
-//! Shared parts of the C and C++ test drivers: compiling programs against the
-//! generated headers and the cdylib of this test run, and running them.
+//! Shared parts of the binding test drivers: finding the cdylib of this test
+//! run, compiling C and C++ programs against it and running programs.
 #![allow(dead_code)]
 
 use std::{
@@ -33,17 +33,28 @@ pub fn temp_exe(name: &str) -> PathBuf {
     path.into()
 }
 
-/// `target/<profile>/deps`: where rustc writes the cdylib for this test run.
-fn lib_dir() -> PathBuf {
+/// The cdylib rustc wrote for this test run, in `target/<profile>/deps`. The
+/// copy in `target/<profile>` is only refreshed by `cargo build`.
+pub fn lib_path() -> PathBuf {
     let lib_name = format!("{}r3v_renderer{}", consts::DLL_PREFIX, consts::DLL_SUFFIX);
     let exe = env::current_exe().expect("test binary path");
-    let dir = exe.parent().expect("test binary has a parent directory");
+    let lib = exe
+        .parent()
+        .expect("test binary has a parent directory")
+        .join(&lib_name);
     assert!(
-        dir.join(&lib_name).is_file(),
-        "{lib_name} not found next to {}; build with `--features c` or `--features cpp`",
+        lib.is_file(),
+        "{lib_name} not found next to {}; build with a binding feature",
         exe.display()
     );
-    dir.to_path_buf()
+    lib
+}
+
+fn lib_dir() -> PathBuf {
+    lib_path()
+        .parent()
+        .expect("library has a parent directory")
+        .to_path_buf()
 }
 
 /// Compiles `sources` into `exe` with the compiler from `compiler_var` (or

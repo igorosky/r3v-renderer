@@ -16,6 +16,7 @@ use std::{
     ptr,
 };
 
+use super::checked::{self, ErrorKind};
 use crate::geometry;
 
 mod camera;
@@ -75,10 +76,6 @@ impl Error {
         Self::new(R3vStatus::R3V_INVALID_ARGUMENT, message)
     }
 
-    fn not_configured(message: impl Into<String>) -> Self {
-        Self::new(R3vStatus::R3V_NOT_CONFIGURED, message)
-    }
-
     fn out_of_range(message: impl Into<String>) -> Self {
         Self::new(R3vStatus::R3V_OUT_OF_RANGE, message)
     }
@@ -96,6 +93,18 @@ impl Error {
         let message = CString::new(self.message.replace('\0', "\\0")).unwrap_or_default();
         LAST_ERROR.with(|last| *last.borrow_mut() = message);
         self.status
+    }
+}
+
+impl From<checked::Error> for Error {
+    fn from(error: checked::Error) -> Self {
+        let status = match error.kind {
+            ErrorKind::InvalidArgument => R3vStatus::R3V_INVALID_ARGUMENT,
+            ErrorKind::NotConfigured => R3vStatus::R3V_NOT_CONFIGURED,
+            ErrorKind::OutOfRange => R3vStatus::R3V_OUT_OF_RANGE,
+            ErrorKind::Failed => R3vStatus::R3V_FAILED,
+        };
+        Self::new(status, error.message)
     }
 }
 

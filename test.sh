@@ -76,22 +76,22 @@ group_c() {
     cargo_test "cpp" --test cpp_bindings
 }
 
-# group_python() {
-#     local features
-#     local sets=(
-#         "python"
-#         "python,single_threaded"
-#         "python,multi_threaded"
-#         "python,single_threaded,multi_threaded"
-#     )
-#     for features in "${sets[@]}"; do
-#         clippy "$features"
-#     done
-#     for features in "${sets[@]}"; do
-#         cargo_test "$features" --test python_bindings
-#     done
-# }
-#
+# Needs python3 (or PYO3_PYTHON), and a GPU for the renderer cases (a
+# software Vulkan one such as lavapipe works).
+group_python() {
+    local features
+    local sets=(
+        "python"
+        "python,multi-threaded"
+    )
+    for features in "${sets[@]}"; do
+        clippy "$features"
+    done
+    for features in "${sets[@]}"; do
+        cargo_test "$features" --test python_bindings
+    done
+}
+
 # group_js() {
 #     local features
 #     local sets=(
@@ -110,16 +110,16 @@ group_c() {
 groups=("$@")
 if [[ ${#groups[@]} -eq 0 ]]; then
     # groups=(core c python js)
-    groups=(core c)
+    groups=(core c python)
 fi
 
 for group in "${groups[@]}"; do
     case "$group" in
         # core | c | python | js) "group_$group" ;;
-        core | c) "group_$group" ;;
+        core | c | python) "group_$group" ;;
         *)
             # echo "unknown group: $group (expected core, c, python or js)" >&2
-            echo "unknown group: $group (expected core or c)" >&2
+            echo "unknown group: $group (expected core, c or python)" >&2
             exit 1
             ;;
     esac

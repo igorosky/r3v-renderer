@@ -60,3 +60,40 @@ if (delta != NULL) {
 ### Tests
 
 `./test.sh c` runs the C test suite (`tests/c`), the example and a C++ test (`tests/cpp`). They need a C and a C++ compiler and a GPU; a software Vulkan driver such as lavapipe works.
+
+## Python
+
+Build the extension module with the `python` feature, which can not be combined with `c` or `cpp`:
+
+```bash
+cargo build --release --features python
+```
+
+Python imports the library from `target/release` as the module `r3v_renderer` once it is renamed: `libr3v_renderer.so` (or `.dylib` on macOS) becomes `r3v_renderer.so`, and its directory has to be on the module search path. There are no stubs for the module yet.
+
+The classes have the names of the C types without `R3v`. For example, `OrbitCamera`, `GreedyMeshTesselator`, `WgpuRenderer`, `StlMesh`, `UrdfDescription` and `UrdfRobot` work like their Rust counterparts. Their docstrings describe every method.
+
+- **Data.** Blocks of voxels, triangles and quads are lists of objects, as in r3v-voxelizer. Rendered frames are the exception: `WgpuRenderer.render` writes them to a writable buffer of bytes, such as a `bytearray` or a numpy `uint8` array.
+- **Errors.** Errors are exceptions:
+  - `ValueError` for invalid arguments; nothing is changed when one is raised.
+  - `IndexError` for unknown instance ids.
+  - `RuntimeError` when a component is used before `configure`, or when a file can not be read or there is no GPU.
+- **Optional values.** Optional values are `None`. For example, `get_output_geometry_delta()` returns `None` when nothing changed, and a URDF visual without a material has `material` set to `None`.
+- **Threads.** The GPU work and the tesselation run without the GIL, so other Python threads keep running meanwhile.
+- **Frames.** Frames follow the same rules as in C (see Conventions above).
+
+`GreedyMeshTesselator.update_input_geometry` takes the output of r3v-voxelizer's `add_points` in compress mode as it is. It accepts any iterable of objects with `x()`, `y()`, `z()` and `i()` methods:
+
+```python
+tesselator.update_input_geometry(voxelizer.add_points(sensor, points))
+delta = tesselator.get_output_geometry_delta()
+if delta is not None:
+    renderer.update_geometry(delta)
+
+frame = bytearray(width * height * 4)
+renderer.render(camera.get_state(width / height), frame)
+```
+
+[examples/python/voxels_to_ppm.py](examples/python/voxels_to_ppm.py) is the Python version of the C example.
+
+`./test.sh python` runs the Python test suite (`tests/python`) and the example. They need `python3` (or the interpreter given in `PYO3_PYTHON`) and a GPU.

@@ -3,11 +3,7 @@
 
 use std::ptr;
 
-use crate::{
-    Tesselator,
-    geometry::{PointI, QuadChunk},
-    tesselator::{GreedyMeshTesselator, GreedyMeshTesselatorConfiguration, SUBCHUNK_SIZE},
-};
+use crate::{bindings::checked::CheckedTesselator, geometry::QuadChunk};
 
 use super::{
     Error, R3vPoint3I, R3vPointI, R3vQuad, R3vStatus, arg, arg_mut, drop_handle, new_handle,
@@ -15,23 +11,7 @@ use super::{
 };
 
 /// Turns blocks of voxels into quads (`tesselator::GreedyMeshTesselator`).
-pub struct R3vGreedyMeshTesselator {
-    tesselator: GreedyMeshTesselator,
-    // The tesselator asserts it is configured
-    configured: bool,
-}
-
-impl R3vGreedyMeshTesselator {
-    fn check_configured(&self) -> super::Result<()> {
-        if self.configured {
-            Ok(())
-        } else {
-            Err(Error::not_configured(
-                "configure the tesselator before passing geometry through it",
-            ))
-        }
-    }
-}
+pub struct R3vGreedyMeshTesselator(CheckedTesselator);
 
 /// `tesselator::GreedyMeshTesselatorConfiguration`.
 #[repr(C)]
@@ -61,12 +41,7 @@ pub struct R3vQuadChunk {
 /// `GreedyMeshTesselator::new`. Configure it before use.
 #[unsafe(no_mangle)]
 pub extern "C" fn r3v_greedy_mesh_tesselator_create() -> *mut R3vGreedyMeshTesselator {
-    new_handle(|| {
-        Ok(R3vGreedyMeshTesselator {
-            tesselator: GreedyMeshTesselator::new(),
-            configured: false,
-        })
-    })
+    new_handle(|| Ok(R3vGreedyMeshTesselator(CheckedTesselator::new())))
 }
 
 /// `Tesselator::configure`. `voxel_size` has to be positive.
@@ -77,17 +52,7 @@ pub extern "C" fn r3v_greedy_mesh_tesselator_configure(
 ) -> R3vStatus {
     status(|| {
         let tesselator = unsafe { arg_mut(tesselator, "tesselator") }?;
-        let voxel_size = configuration.voxel_size;
-        if !(voxel_size.is_finite() && voxel_size > 0.0) {
-            return Err(Error::invalid_argument(format!(
-                "voxel size must be positive, got {voxel_size}"
-            )));
-        }
-        tesselator
-            .tesselator
-            .configure(GreedyMeshTesselatorConfiguration { voxel_size });
-        tesselator.configured = true;
-        Ok(())
+        Ok(tesselator.0.configure(configuration.voxel_size)?)
     })
 }
 
@@ -105,22 +70,8 @@ pub extern "C" fn r3v_greedy_mesh_tesselator_update_input_geometry(
     status(|| {
         let tesselator = unsafe { arg_mut(tesselator, "tesselator") }?;
         let blocks = unsafe { slice_arg(blocks, count, "blocks") }?;
-        tesselator.check_configured()?;
-        // The tesselator only checks this in debug builds
-        let size = SUBCHUNK_SIZE.map(|size| size as i32);
-        if let Some((k, block)) = blocks.iter().enumerate().find(|(_, block)| {
-            block.x.rem_euclid(size.x) != 0
-                || block.y.rem_euclid(size.y) != 0
-                || block.z.rem_euclid(size.z) != 0
-        }) {
-            return Err(Error::invalid_argument(format!(
-                "blocks[{k}] at ({}, {}, {}) is not aligned to the {}x{}x{} block grid",
-                block.x, block.y, block.z, size.x, size.y, size.z
-            )));
-        }
-        let delta: Vec<PointI> = blocks.iter().map(|&block| block.into()).collect();
-        tesselator.tesselator.update_input_geometry(&delta);
-        Ok(())
+        let blocks = blocks.iter().map(|&block| block.into()).collect();
+        Ok(tesselator.0.update_input_geometry(blocks)?)
     })
 }
 
@@ -135,8 +86,7 @@ pub extern "C" fn r3v_greedy_mesh_tesselator_get_output_geometry_delta(
         let out = unsafe { arg_mut(out, "out") }?;
         *out = ptr::null_mut();
         let tesselator = unsafe { arg_mut(tesselator, "tesselator") }?;
-        tesselator.check_configured()?;
-        if let Some(delta) = tesselator.tesselator.get_output_geometry_delta() {
+        if let Some(delta) = tesselator.0.get_output_geometry_delta()? {
             *out = Box::into_raw(Box::new(R3vGeometryDelta(delta)));
         }
         Ok(())

@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         # group: [core, c, python, js]
-        group: [core, c]
+        group: [core, c, python]
     steps:
       - uses: actions/checkout@v5
 
