@@ -225,7 +225,10 @@ struct Harness {
 impl Harness {
     fn new(voxel_size: f32) -> Self {
         let mut tesselator = GreedyMeshTesselator::new();
-        tesselator.configure(GreedyMeshTesselatorConfiguration { voxel_size });
+        tesselator.configure(GreedyMeshTesselatorConfiguration {
+            voxel_size,
+            marching_cubes_enabled: false,
+        });
         Self {
             tesselator,
             world: World::default(),
@@ -512,7 +515,10 @@ fn randomized_edits_match_reference() {
 #[test]
 fn no_delta_without_changes() {
     let mut tesselator = GreedyMeshTesselator::new();
-    tesselator.configure(GreedyMeshTesselatorConfiguration { voxel_size: 1.0 });
+    tesselator.configure(GreedyMeshTesselatorConfiguration {
+        voxel_size: 1.0,
+        marching_cubes_enabled: false,
+    });
     assert!(tesselator.get_output_geometry_delta().is_none());
 
     tesselator.update_input_geometry(&vec![]);
@@ -567,8 +573,14 @@ fn last_update_of_a_brick_in_one_batch_wins() {
 #[test]
 fn reconfiguring_voxel_size_applies_to_later_output() {
     let mut tesselator = GreedyMeshTesselator::default();
-    tesselator.configure(GreedyMeshTesselatorConfiguration { voxel_size: 1.0 });
-    tesselator.configure(GreedyMeshTesselatorConfiguration { voxel_size: 3.0 });
+    tesselator.configure(GreedyMeshTesselatorConfiguration {
+        voxel_size: 1.0,
+        marching_cubes_enabled: false,
+    });
+    tesselator.configure(GreedyMeshTesselatorConfiguration {
+        voxel_size: 3.0,
+        marching_cubes_enabled: false,
+    });
     tesselator.update_input_geometry(&vec![brick([0, 0, 0], bit([1, 0, 0]))]);
     let mut mesh = Mesh::new(3.0);
     mesh.apply(tesselator.get_output_geometry_delta().unwrap());
@@ -593,7 +605,10 @@ fn output_before_configure_panics() {
 
 fn marching_cubes_tesselator(mask: u32) -> GreedyMeshTesselator {
     let mut tesselator = GreedyMeshTesselator::new();
-    tesselator.configure(GreedyMeshTesselatorConfiguration { voxel_size: 1.0 });
+    tesselator.configure(GreedyMeshTesselatorConfiguration {
+        voxel_size: 1.0,
+        marching_cubes_enabled: false,
+    });
     tesselator.update_input_geometry(&vec![brick([0, 0, 0], mask)]);
     tesselator
 }
@@ -608,7 +623,10 @@ fn marching_cubes_can_be_toggled_and_rebuilds_geometry() {
     let greedy = tesselator.get_output_geometry_delta().unwrap();
     let greedy_triangle_count = triangle_count(&greedy);
 
-    tesselator.set_marching_cubes_enabled(true);
+    tesselator.configure(GreedyMeshTesselatorConfiguration {
+        voxel_size: 1.0,
+        marching_cubes_enabled: true,
+    });
     assert!(tesselator.marching_cubes_enabled());
     let smoothed = tesselator.get_output_geometry_delta().unwrap();
     let smoothed_triangle_count = triangle_count(&smoothed);
@@ -616,7 +634,10 @@ fn marching_cubes_can_be_toggled_and_rebuilds_geometry() {
     assert_ne!(smoothed_triangle_count, greedy_triangle_count);
     assert!(tesselator.get_output_geometry_delta().is_none());
 
-    tesselator.set_marching_cubes_enabled(false);
+    tesselator.configure(GreedyMeshTesselatorConfiguration {
+        voxel_size: 1.0,
+        marching_cubes_enabled: false,
+    });
     assert!(!tesselator.marching_cubes_enabled());
     assert!(tesselator.get_output_geometry_delta().is_some());
 }
@@ -640,7 +661,10 @@ fn marching_cubes_interpolates_surface_vertices() {
 fn marching_cubes_is_scaled_by_fractional_voxel_size() {
     let voxel_size = 0.2;
     let mut tesselator = GreedyMeshTesselator::new();
-    tesselator.configure(GreedyMeshTesselatorConfiguration { voxel_size });
+    tesselator.configure(GreedyMeshTesselatorConfiguration {
+        voxel_size,
+        marching_cubes_enabled: false,
+    });
     tesselator.update_input_geometry(&vec![brick([4, -8, 2], FULL)]);
     tesselator.set_marching_cubes_enabled(true);
     let geometry = tesselator.get_output_geometry_delta().unwrap();

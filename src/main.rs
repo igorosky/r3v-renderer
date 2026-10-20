@@ -203,6 +203,7 @@ impl Demo {
         let mut tesselator = GreedyMeshTesselator::new();
         tesselator.configure(GreedyMeshTesselatorConfiguration {
             voxel_size: VOXEL_SIZE,
+            marching_cubes_enabled: false,
         });
         let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
         let robot = match RobotScene::load(urdf_path, robot_placement(&world), &mut renderer) {

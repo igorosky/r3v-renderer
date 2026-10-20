@@ -148,6 +148,7 @@ impl Chunk {
 
 pub struct GreedyMeshTesselatorConfiguration {
     pub voxel_size: f32,
+    pub marching_cubes_enabled: bool,
 }
 
 pub struct GreedyMeshTesselator {
@@ -597,6 +598,8 @@ impl Tesselator for GreedyMeshTesselator {
     }
 
     fn configure(&mut self, configuration: Self::Configuration) {
+        let marching_cubes_enabled = configuration.marching_cubes_enabled;
         self.config = Some(configuration);
+        self.set_marching_cubes_enabled(marching_cubes_enabled);
     }
 }
