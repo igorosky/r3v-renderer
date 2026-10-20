@@ -97,3 +97,52 @@ renderer.render(camera.get_state(width / height), frame)
 [examples/python/voxels_to_ppm.py](examples/python/voxels_to_ppm.py) is the Python version of the C example.
 
 `./test.sh python` runs the Python test suite (`tests/python`) and the example. They need `python3` (or the interpreter given in `PYO3_PYTHON`) and a GPU.
+
+## JavaScript
+
+Build the module for the web with wasm-pack and the `js` feature, which can not be combined with `c`, `cpp`, `python` or `multi-threaded`:
+
+```bash
+wasm-pack build --release --target web --features js
+```
+
+wasm-pack writes the module `r3v_renderer`, with TypeScript types, to `pkg`. Rendering needs WebGPU.
+
+The classes and methods have the same names as in Python, and the TypeScript types document every method. JavaScript differs in these points:
+
+- **Async.** `WgpuRenderer.create()` takes the place of the constructor and returns a Promise; `render` returns one too. Until it settles the renderer is busy: other calls throw and another `render` rejects.
+- **Data in.** Arguments are read by property name, so the classes and plain objects work alike. For example, `update_input_geometry` takes an array of anything with `x`, `y`, `z` and `i`, `set_asset_transform` takes `{linear, rotational}` and `configure` takes `{width, height}`. Vectors are arrays of numbers.
+- **Data out.** Quads (`GeometryDelta.chunk(i)`), URDF descriptions (`links`, `joints`, `materials`) and robot transforms are plain objects and arrays, made anew on every read. `structuredClone`, `postMessage` and `JSON.stringify` keep them, unlike objects of the classes, whose data stays in wasm memory. `RobotTransforms.visuals` is keyed by link name, then by visual index.
+- **Errors.** Errors are exceptions, or rejections for `create`, `render` and `render_rgba`:
+  - `TypeError` for an argument of the wrong type.
+  - `RangeError` for an invalid value or an unknown instance id; nothing is changed when one is thrown.
+  - `Error` when a component is used before `configure` or while it renders, or when parsing fails or there is no WebGPU.
+- **Numbers.** Instance ids, counts and the coordinates of blocks have to be integers, otherwise a `RangeError` is thrown. Integer arguments of constructors and integer properties of the classes are converted the way wasm-bindgen converts every integer, as in r3v-voxelizer: `-1` passed as an unsigned value becomes `4294967295` and `1.9` becomes `1`.
+- **Optional values.** Methods return `undefined` when there is nothing, for example `get_output_geometry_delta()` when nothing changed. Plain data has `null` for a missing part, such as a URDF visual without a material.
+- **Files.** There is no file system, so there is no `read_file`. `StlMesh.read_bytes` takes the contents of an STL file and `UrdfDescription.read_str` those of a URDF file.
+- **Memory.** Objects of the classes are freed when they are garbage collected, or right away with `free()` (or `using`).
+- **Frames.** Frames follow the same rules as in C (see Conventions above). `render_rgba` gives RGBA instead of BGRA, as `ImageData` takes it.
+
+`GreedyMeshTesselator.update_input_geometry` takes the output of r3v-voxelizer's `add_points` in compress mode as it is:
+
+```js
+import init, * as rr from "./pkg/r3v_renderer.js";
+await init();
+
+const renderer = await rr.WgpuRenderer.create();
+renderer.configure({ width, height });
+
+tesselator.update_input_geometry(voxelizer.add_points(sensor, points));
+const delta = tesselator.get_output_geometry_delta();
+if (delta !== undefined) {
+    renderer.update_geometry(delta);
+}
+
+const frame = new Uint8ClampedArray(width * height * 4);
+await renderer.render_rgba(camera.get_state(width / height), frame);
+context.putImageData(new ImageData(frame, width, height), 0, 0);
+```
+
+[examples/js/voxels_to_ppm.mjs](examples/js/voxels_to_ppm.mjs) is the JavaScript version of the C example, for Node.js. Node.js has no WebGPU; the example takes it from the `webgpu` package (Dawn), as its header comment shows.
+
+`./test.sh js` runs the JavaScript test suite (`tests/js`) and the example in Node.js. They need wasm-pack, the `wasm32-unknown-unknown` target, Node.js, the `webgpu` package (`npm ci` in `tests/js`) and a GPU.

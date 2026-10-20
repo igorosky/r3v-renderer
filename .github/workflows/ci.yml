@@ -30,15 +30,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # group: [core, c, python, js]
-        group: [core, c, python]
+        group: [core, c, python, js]
     steps:
       - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-          # targets: ${{ matrix.group == 'js' && 'wasm32-unknown-unknown' || '' }}
+          targets: ${{ matrix.group == 'js' && 'wasm32-unknown-unknown' || '' }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -58,11 +57,22 @@ jobs:
           icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json)
           echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
 
-      # - name: Install wasm-pack
-      #   if: matrix.group == 'js'
-      #   uses: taiki-e/install-action@v2
-      #   with:
-      #     tool: wasm-pack
+      - name: Install wasm-pack
+        if: matrix.group == 'js'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      # Node.js has no WebGPU: the JS tests take Dawn from the `webgpu` package
+      # (tests/js/package.json)
+      - uses: actions/setup-node@v5
+        if: matrix.group == 'js'
+        with:
+          node-version: 24
+
+      - name: Install the webgpu package
+        if: matrix.group == 'js'
+        run: npm ci --prefix tests/js
 
       - run: ./test.sh ${{ matrix.group }}
 

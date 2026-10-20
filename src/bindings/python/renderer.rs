@@ -86,7 +86,7 @@ impl PyWgpuRenderer {
         instances: usize,
     ) -> PyResult<Vec<u64>> {
         let mesh = mesh.0.clone();
-        Ok(py.detach(|| self.renderer.upload_asset(mesh, instances))?)
+        Ok(py.detach(|| self.renderer.upload_asset(mesh, instances as u64))?)
     }
 
     /// `Renderer::set_asset_transform`. `IndexError` for an id that was never

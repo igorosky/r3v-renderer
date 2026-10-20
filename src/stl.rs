@@ -1,4 +1,7 @@
-use std::path::Path;
+use std::{
+    io::{Read, Seek},
+    path::Path,
+};
 
 use crate::geometry::{self, RealTriangle};
 
@@ -10,9 +13,19 @@ pub struct StlMesh {
 pub fn read_file(path: &Path) -> Result<StlMesh, String> {
     let file = std::fs::File::open(path)
         .map_err(|err| format!("Failed to read STL '{}': {err}", path.display()))?;
-    let mut reader = std::io::BufReader::new(file);
-    let parsed = stl_io::read_stl(&mut reader)
-        .map_err(|err| format!("stl_io failed to parse STL '{}': {err}", path.display()))?;
+    read(&mut std::io::BufReader::new(file))
+        .map_err(|err| format!("stl_io failed to parse STL '{}': {err}", path.display()))
+}
+
+/// [`read_file`] for the contents of a file, e.g. where there is no file
+/// system.
+pub fn read_bytes(bytes: &[u8]) -> Result<StlMesh, String> {
+    read(&mut std::io::Cursor::new(bytes))
+        .map_err(|err| format!("stl_io failed to parse STL: {err}"))
+}
+
+fn read(reader: &mut (impl Read + Seek)) -> std::io::Result<StlMesh> {
+    let parsed = stl_io::read_stl(reader)?;
     let triangles = parsed
         .faces
         .into_iter()

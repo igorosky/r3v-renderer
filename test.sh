@@ -92,34 +92,26 @@ group_python() {
     done
 }
 
-# group_js() {
-#     local features
-#     local sets=(
-#         "js"
-#         "js,single_threaded"
-#     )
-#     for features in "${sets[@]}"; do
-#         clippy "$features"
-#         clippy "$features" --target wasm32-unknown-unknown
-#     done
-#     for features in "${sets[@]}"; do
-#         cargo_test "$features" --test js_bindings
-#     done
-# }
+# Needs wasm-pack, the wasm32-unknown-unknown target, Node.js and the
+# `webgpu` package (`npm ci` in tests/js), and a GPU for the renderer cases (a
+# software Vulkan one such as lavapipe works). `multi-threaded` can not be
+# built for JS.
+group_js() {
+    clippy "js"
+    clippy "js" --target wasm32-unknown-unknown
+    cargo_test "js" --test js_bindings
+}
 
 groups=("$@")
 if [[ ${#groups[@]} -eq 0 ]]; then
-    # groups=(core c python js)
-    groups=(core c python)
+    groups=(core c python js)
 fi
 
 for group in "${groups[@]}"; do
     case "$group" in
-        # core | c | python | js) "group_$group" ;;
-        core | c | python) "group_$group" ;;
+        core | c | python | js) "group_$group" ;;
         *)
-            # echo "unknown group: $group (expected core, c, python or js)" >&2
-            echo "unknown group: $group (expected core, c or python)" >&2
+            echo "unknown group: $group (expected core, c, python or js)" >&2
             exit 1
             ;;
     esac

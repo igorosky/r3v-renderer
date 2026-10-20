@@ -74,9 +74,9 @@ pub extern "C" fn r3v_wgpu_renderer_upload_asset(
         let renderer = unsafe { arg_mut(renderer, "renderer") }?;
         let mesh = unsafe { arg(mesh, "mesh") }?;
         // Before `out_ids` is looked at: its length is only that big
-        renderer.0.check_upload(&mesh.0, instances)?;
+        renderer.0.check_upload(&mesh.0, instances as u64)?;
         let out_ids = unsafe { slice_arg_mut(out_ids, instances, "out_ids") }?;
-        let ids = renderer.0.upload_asset(mesh.0.clone(), instances)?;
+        let ids = renderer.0.upload_asset(mesh.0.clone(), instances as u64)?;
         out_ids.copy_from_slice(&ids);
         Ok(())
     })

@@ -142,9 +142,19 @@ pub(crate) struct CheckedRenderer {
 }
 
 impl CheckedRenderer {
+    #[cfg(any(feature = "c", feature = "cpp", feature = "python"))]
     pub(crate) fn new() -> Result<Self> {
-        let renderer = WgpuAccelerated::new()
-            .ok_or_else(|| Error::failed("no GPU adapter or device is available"))?;
+        Self::from_renderer(WgpuAccelerated::new())
+    }
+
+    #[cfg(feature = "js")]
+    pub(crate) async fn new_async() -> Result<Self> {
+        Self::from_renderer(WgpuAccelerated::new_async().await)
+    }
+
+    fn from_renderer(renderer: Option<WgpuAccelerated>) -> Result<Self> {
+        let renderer =
+            renderer.ok_or_else(|| Error::failed("no GPU adapter or device is available"))?;
         Ok(Self {
             renderer,
             configuration: None,
@@ -172,11 +182,11 @@ impl CheckedRenderer {
 
     /// Checks that `instances` more instances of `mesh` fit, before anything
     /// is uploaded.
-    pub(crate) fn check_upload(&self, mesh: &StlMesh, instances: usize) -> Result<()> {
+    pub(crate) fn check_upload(&self, mesh: &StlMesh, instances: u64) -> Result<()> {
         // The renderer keeps vertex and instance offsets in u32
         let fits = self
             .instance_count
-            .checked_add(instances as u64)
+            .checked_add(instances)
             .is_some_and(|count| count <= u64::from(u32::MAX));
         if !fits {
             return Err(Error::invalid_argument(format!(
@@ -193,10 +203,11 @@ impl CheckedRenderer {
         Ok(())
     }
 
-    pub(crate) fn upload_asset(&mut self, mesh: StlMesh, instances: usize) -> Result<Vec<u64>> {
+    pub(crate) fn upload_asset(&mut self, mesh: StlMesh, instances: u64) -> Result<Vec<u64>> {
         self.check_upload(&mesh, instances)?;
-        let ids = self.renderer.upload_asset(mesh, instances);
-        self.instance_count += instances as u64;
+        // Checked to fit in u32
+        let ids = self.renderer.upload_asset(mesh, instances as usize);
+        self.instance_count += instances;
         Ok(ids)
     }
 
@@ -239,7 +250,7 @@ impl CheckedRenderer {
         Ok(width as usize * height as usize * PIXEL_SIZE)
     }
 
-    pub(crate) fn render(&mut self, camera_state: &CameraState, out: &mut [u8]) -> Result<()> {
+    fn check_frame_buffer(&self, out: &[u8]) -> Result<()> {
         let frame_len = self.frame_len()?;
         if out.len() < frame_len {
             return Err(Error::invalid_argument(format!(
@@ -247,7 +258,24 @@ impl CheckedRenderer {
                 out.len()
             )));
         }
+        Ok(())
+    }
+
+    #[cfg(any(feature = "c", feature = "cpp", feature = "python"))]
+    pub(crate) fn render(&mut self, camera_state: &CameraState, out: &mut [u8]) -> Result<()> {
+        self.check_frame_buffer(out)?;
         self.renderer.render(camera_state, out);
+        Ok(())
+    }
+
+    #[cfg(feature = "js")]
+    pub(crate) async fn render_async(
+        &mut self,
+        camera_state: &CameraState,
+        out: &mut [u8],
+    ) -> Result<()> {
+        self.check_frame_buffer(out)?;
+        self.renderer.render_async(camera_state, out).await;
         Ok(())
     }
 }
