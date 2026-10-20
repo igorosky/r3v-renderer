@@ -204,46 +204,6 @@ impl From<&geometry::RealTriangle> for PyTriangle {
     }
 }
 
-/// Quad (`geometry::RealQuad`), counter-clockwise when seen from its front
-/// side.
-#[pyclass(
-    module = "r3v_renderer",
-    name = "Quad",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct PyQuad {
-    v0: Vec3,
-    v1: Vec3,
-    v2: Vec3,
-    v3: Vec3,
-}
-
-#[pymethods]
-impl PyQuad {
-    fn __repr__(&self) -> String {
-        format!(
-            "Quad({:?}, {:?}, {:?}, {:?})",
-            self.v0, self.v1, self.v2, self.v3
-        )
-    }
-}
-
-impl From<&geometry::RealQuad> for PyQuad {
-    fn from(q: &geometry::RealQuad) -> Self {
-        let v = |[x, y, z]: [f32; 3]| (x, y, z);
-        Self {
-            v0: v(q.v0),
-            v1: v(q.v1),
-            v2: v(q.v2),
-            v3: v(q.v3),
-        }
-    }
-}
-
 /// What the renderer needs to know about a camera (`camera::CameraState`).
 /// `view_proj` is projection times view, column-major: `view_proj[column][row]`.
 #[pyclass(
@@ -307,7 +267,7 @@ impl From<PyCameraState> for CameraState {
 mod r3v_renderer {
     #[pymodule_export]
     use super::{
-        PyCameraState, PyPointI, PyQuad, PyTriangle, PyTwist,
+        PyCameraState, PyPointI, PyTriangle, PyTwist,
         camera::PyOrbitCamera,
         renderer::{PyWgpuRenderer, PyWgpuRendererConfiguration},
         robot::{
@@ -317,8 +277,7 @@ mod r3v_renderer {
         },
         stl::PyStlMesh,
         tesselator::{
-            PyGeometryDelta, PyGreedyMeshTesselator, PyGreedyMeshTesselatorConfiguration,
-            PyQuadChunk,
+            PyCpuTesselator, PyCpuTesselatorConfiguration, PyGeometryDelta, PyTriangleChunk,
         },
     };
 }

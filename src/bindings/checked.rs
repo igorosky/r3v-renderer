@@ -5,10 +5,10 @@
 use crate::{
     Camera, Renderer, Tesselator,
     camera::{CameraState, OrbitCamera},
-    geometry::{PointI, QuadChunk, RealTwist},
+    geometry::{PointI, RealTwist, TriangleChunk},
     renderer::{WgpuAccelerated, WgpuAcceleratedConfiguration},
     stl::StlMesh,
-    tesselator::{GreedyMeshTesselator, GreedyMeshTesselatorConfiguration, SUBCHUNK_SIZE},
+    tesselator::{CpuTesselator, CpuTesselatorConfiguration, SUBCHUNK_SIZE},
 };
 
 /// Bytes per pixel of a rendered frame.
@@ -70,16 +70,16 @@ pub(crate) fn camera_state(camera: &OrbitCamera, aspect_ratio: f32) -> Result<Ca
     Ok(camera.get_state(aspect_ratio))
 }
 
-/// `GreedyMeshTesselator`, which asserts it is configured.
+/// `CpuTesselator`, which asserts it is configured.
 pub(crate) struct CheckedTesselator {
-    tesselator: GreedyMeshTesselator,
+    tesselator: CpuTesselator,
     configured: bool,
 }
 
 impl CheckedTesselator {
     pub(crate) fn new() -> Self {
         Self {
-            tesselator: GreedyMeshTesselator::new(),
+            tesselator: CpuTesselator::new(),
             configured: false,
         }
     }
@@ -95,16 +95,30 @@ impl CheckedTesselator {
         }
     }
 
-    pub(crate) fn configure(&mut self, voxel_size: f32) -> Result<()> {
+    pub(crate) fn configure(
+        &mut self,
+        voxel_size: f32,
+        marching_cubes_enabled: bool,
+    ) -> Result<()> {
         if !(voxel_size.is_finite() && voxel_size > 0.0) {
             return Err(Error::invalid_argument(format!(
                 "voxel size must be positive, got {voxel_size}"
             )));
         }
-        self.tesselator
-            .configure(GreedyMeshTesselatorConfiguration { voxel_size });
+        self.tesselator.configure(CpuTesselatorConfiguration {
+            voxel_size,
+            marching_cubes_enabled,
+        });
         self.configured = true;
         Ok(())
+    }
+
+    pub(crate) fn marching_cubes_enabled(&self) -> bool {
+        self.tesselator.marching_cubes_enabled()
+    }
+
+    pub(crate) fn set_marching_cubes_enabled(&mut self, enabled: bool) {
+        self.tesselator.set_marching_cubes_enabled(enabled);
     }
 
     /// Applies none of the blocks when one is not aligned to the block grid,
@@ -126,7 +140,7 @@ impl CheckedTesselator {
         Ok(())
     }
 
-    pub(crate) fn get_output_geometry_delta(&mut self) -> Result<Option<Vec<QuadChunk>>> {
+    pub(crate) fn get_output_geometry_delta(&mut self) -> Result<Option<Vec<TriangleChunk>>> {
         self.check_configured()?;
         Ok(self.tesselator.get_output_geometry_delta())
     }
@@ -176,7 +190,7 @@ impl CheckedRenderer {
         Ok(())
     }
 
-    pub(crate) fn update_geometry(&mut self, delta: Vec<QuadChunk>) {
+    pub(crate) fn update_geometry(&mut self, delta: Vec<TriangleChunk>) {
         self.renderer.update_geometry(delta);
     }
 

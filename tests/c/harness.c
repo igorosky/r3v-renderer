@@ -73,16 +73,16 @@ R3vWgpuRenderer *make_renderer(uint32_t width, uint32_t height) {
     return renderer;
 }
 
-R3vGreedyMeshTesselator *add_block(R3vWgpuRenderer *renderer, float voxel_size, int32_t x,
-                                   int32_t y, int32_t z) {
-    R3vGreedyMeshTesselator *tesselator = r3v_greedy_mesh_tesselator_create();
+R3vCpuTesselator *add_block(R3vWgpuRenderer *renderer, float voxel_size, int32_t x, int32_t y,
+                            int32_t z) {
+    R3vCpuTesselator *tesselator = r3v_cpu_tesselator_create();
     CHECK(tesselator != NULL);
-    R3vGreedyMeshTesselatorConfiguration configuration = {voxel_size};
-    CHECK_OK(r3v_greedy_mesh_tesselator_configure(tesselator, configuration));
+    R3vCpuTesselatorConfiguration configuration = {voxel_size, false};
+    CHECK_OK(r3v_cpu_tesselator_configure(tesselator, configuration));
     R3vPointI block = {x, y, z, UINT32_MAX};
-    CHECK_OK(r3v_greedy_mesh_tesselator_update_input_geometry(tesselator, &block, 1));
+    CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, &block, 1));
     R3vGeometryDelta *delta = NULL;
-    CHECK_OK(r3v_greedy_mesh_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
     CHECK(delta != NULL);
     CHECK_OK(r3v_wgpu_renderer_update_geometry(renderer, delta));
     return tesselator;

@@ -27,8 +27,8 @@ const STEPS = 8;
  * renderer: step i is i / 2 + 1 blocks high (Y is up) and 4 blocks deep. The
  * blocks could just as well come from r3v-voxelizer in compress mode. */
 function addStairs(renderer) {
-    const tesselator = new rr.GreedyMeshTesselator();
-    tesselator.configure(new rr.GreedyMeshTesselatorConfiguration(0.25));
+    const tesselator = new rr.CpuTesselator();
+    tesselator.configure(new rr.CpuTesselatorConfiguration(0.25));
     const blocks = [];
     for (let step = 0; step < STEPS; step++) {
         for (let level = 0; level <= Math.floor(step / 2); level++) {

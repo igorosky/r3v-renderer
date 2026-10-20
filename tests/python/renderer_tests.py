@@ -82,8 +82,8 @@ def project(state, point):
 # ------------------------------------------------------------ Python API
 
 CLASSES = [
-    "CameraState", "GeometryDelta", "GreedyMeshTesselator", "GreedyMeshTesselatorConfiguration", "OrbitCamera",
-    "PointI", "Quad", "QuadChunk", "RobotTransforms", "StlMesh", "Triangle", "Twist", "UrdfBox", "UrdfCapsule",
+    "CameraState", "CpuTesselator", "CpuTesselatorConfiguration", "GeometryDelta", "OrbitCamera", "PointI",
+    "RobotTransforms", "StlMesh", "Triangle", "TriangleChunk", "Twist", "UrdfBox", "UrdfCapsule",
     "UrdfColor", "UrdfCylinder", "UrdfDescription", "UrdfJoint", "UrdfJointLimit", "UrdfLink", "UrdfMaterial",
     "UrdfMesh", "UrdfOrigin", "UrdfRobot", "UrdfSphere", "UrdfVisual", "WgpuRenderer", "WgpuRendererConfiguration",
 ]
@@ -249,9 +249,12 @@ def value_classes_have_properties():
     triangle.v2 = (0, 2, 0)
     check(triangle == rr.Triangle((0, 0, 0), (1, 0, 0), (0, 2, 0)))
 
-    configuration = rr.GreedyMeshTesselatorConfiguration(0.5)
+    configuration = rr.CpuTesselatorConfiguration(0.5)
+    check(not configuration.marching_cubes_enabled)
     configuration.voxel_size = 0.25
-    check(configuration == rr.GreedyMeshTesselatorConfiguration(voxel_size=0.25))
+    configuration.marching_cubes_enabled = True
+    check(configuration == rr.CpuTesselatorConfiguration(voxel_size=0.25, marching_cubes_enabled=True))
+    check(repr(configuration) == "CpuTesselatorConfiguration(voxel_size=0.25, marching_cubes_enabled=True)")
     configuration = rr.WgpuRendererConfiguration(width=640, height=480)
     check((configuration.width, configuration.height) == (640, 480))
     with raises(OverflowError):
@@ -265,7 +268,7 @@ def value_classes_have_properties():
 
 
 def output_classes_can_not_be_created():
-    for cls in (rr.Quad, rr.QuadChunk, rr.GeometryDelta, rr.RobotTransforms, rr.UrdfDescription, rr.UrdfRobot,
+    for cls in (rr.TriangleChunk, rr.GeometryDelta, rr.RobotTransforms, rr.UrdfDescription, rr.UrdfRobot,
                 rr.UrdfLink, rr.UrdfVisual, rr.UrdfMesh):
         with raises(TypeError):
             cls()
@@ -389,7 +392,7 @@ def stl_triangles_are_copies():
 
 
 def tesselator_requires_configure():
-    tesselator = rr.GreedyMeshTesselator()
+    tesselator = rr.CpuTesselator()
     with raises(RuntimeError, "configure"):
         tesselator.update_input_geometry([rr.PointI(0, 0, 0, 1)])
     with raises(RuntimeError, "configure"):
@@ -397,10 +400,10 @@ def tesselator_requires_configure():
 
 
 def tesselator_checks_voxel_size():
-    tesselator = rr.GreedyMeshTesselator()
+    tesselator = rr.CpuTesselator()
     for voxel_size in (0, -1, math.nan, math.inf):
         with raises(ValueError, "voxel size"):
-            tesselator.configure(rr.GreedyMeshTesselatorConfiguration(voxel_size))
+            tesselator.configure(rr.CpuTesselatorConfiguration(voxel_size))
     with raises(RuntimeError):
         tesselator.update_input_geometry([])
 
@@ -424,12 +427,14 @@ def tesselator_full_block_is_a_box():
     check(repr(delta) == "GeometryDelta(<1 chunks>)")
     chunk = delta[0]
     check(chunk.index == (0, 0, 0))
-    check(len(chunk.quads) == 6)
+    # Two triangles for each of the six faces.
+    check(len(chunk.triangles) == 12)
+    check(all(isinstance(triangle, rr.Triangle) for triangle in chunk.triangles))
     # Voxels 4..8 x 4..8 x 2..4 at 0.5 world units each.
     lo, hi = (2, 2, 1), (4, 4, 2)
-    for quad in chunk.quads:
-        for corner in (quad.v0, quad.v1, quad.v2, quad.v3):
-            check(all(lo[a] - 1e-4 <= corner[a] <= hi[a] + 1e-4 for a in range(3)), f"{quad}")
+    for triangle in chunk.triangles:
+        for corner in (triangle.v0, triangle.v1, triangle.v2):
+            check(all(lo[a] - 1e-4 <= corner[a] <= hi[a] + 1e-4 for a in range(3)), f"{triangle}")
     check(delta[-1].index == chunk.index)
     check([c.index for c in delta] == [(0, 0, 0)])
     with raises(IndexError, "chunk 1"):
@@ -442,11 +447,38 @@ def tesselator_full_block_is_a_box():
     tesselator.update_input_geometry([block])
     check(tesselator.get_output_geometry_delta() is None)
 
-    # Clearing it leaves the chunk without quads.
+    # Clearing it leaves the chunk without triangles.
     block.set_i(0)
     tesselator.update_input_geometry([block])
     delta = tesselator.get_output_geometry_delta()
-    check([len(c.quads) for c in delta] == [0])
+    check([len(c.triangles) for c in delta] == [0])
+
+
+def tesselator_toggles_marching_cubes():
+    tesselator = make_tesselator(1.0)
+    check(not tesselator.marching_cubes_enabled())
+    tesselator.update_input_geometry([rr.PointI(4, 4, 2, U32_MAX)])
+    check([len(c.triangles) for c in tesselator.get_output_geometry_delta()] == [12])
+
+    # Switching it on tesselates the chunk again, smoothed: marching cubes puts
+    # vertices between voxel corners.
+    tesselator.set_marching_cubes_enabled(True)
+    check(tesselator.marching_cubes_enabled())
+    delta = tesselator.get_output_geometry_delta()
+    check(len(delta) == 1)
+    triangles = delta[0].triangles
+    check(len(triangles) not in (0, 12), f"{len(triangles)} triangles")
+    corners = [c for t in triangles for v in (t.v0, t.v1, t.v2) for c in v]
+    check(any(c != math.floor(c) for c in corners))
+    tesselator.set_marching_cubes_enabled(True)
+    check(tesselator.get_output_geometry_delta() is None)
+
+    # The configuration switches it too.
+    tesselator.configure(rr.CpuTesselatorConfiguration(1.0, marching_cubes_enabled=False))
+    check(not tesselator.marching_cubes_enabled())
+    check([len(c.triangles) for c in tesselator.get_output_geometry_delta()] == [12])
+    with raises(TypeError):
+        tesselator.set_marching_cubes_enabled("yes")
 
 
 def tesselator_takes_voxelizer_points():
@@ -456,7 +488,7 @@ def tesselator_takes_voxelizer_points():
     tesselator.update_input_geometry(blocks)
     delta = tesselator.get_output_geometry_delta()
     # Two blocks side by side make one box.
-    check([len(c.quads) for c in delta] == [6])
+    check([len(c.triangles) for c in delta] == [12])
     tesselator.update_input_geometry(())
     check(tesselator.get_output_geometry_delta() is None)
 
@@ -741,6 +773,7 @@ TEST_CASES = [
     tesselator_checks_voxel_size,
     tesselator_rejects_unaligned_blocks,
     tesselator_full_block_is_a_box,
+    tesselator_toggles_marching_cubes,
     tesselator_takes_voxelizer_points,
     tesselator_rejects_other_objects,
     renderer_configure_checks_size,

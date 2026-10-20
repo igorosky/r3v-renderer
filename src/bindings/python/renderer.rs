@@ -64,7 +64,7 @@ impl PyWgpuRenderer {
             .configure(configuration.width, configuration.height)?)
     }
 
-    /// `Renderer::update_geometry`: replaces the quads of every chunk in
+    /// `Renderer::update_geometry`: replaces the triangles of every chunk in
     /// `delta`, which can not be used afterwards.
     fn update_geometry(
         &mut self,

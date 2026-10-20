@@ -1,5 +1,5 @@
-//! `tesselator::GreedyMeshTesselator` (trait `Tesselator`) and its output,
-//! `Vec<QuadChunk>`.
+//! `tesselator::CpuTesselator` (trait `Tesselator`) and its output,
+//! `Vec<TriangleChunk>`.
 
 use pyo3::{
     exceptions::{PyAttributeError, PyIndexError, PyTypeError, PyValueError},
@@ -8,44 +8,55 @@ use pyo3::{
 
 use crate::{
     bindings::checked::CheckedTesselator,
-    geometry::{PointI, QuadChunk},
+    geometry::{PointI, TriangleChunk},
 };
 
-use super::{PyPointI, PyQuad};
+use super::{PyPointI, PyTriangle};
 
-/// `tesselator::GreedyMeshTesselatorConfiguration`: `voxel_size` is the edge
-/// length of a voxel in world units.
+/// `tesselator::CpuTesselatorConfiguration`: `voxel_size` is the edge length
+/// of a voxel in world units, `marching_cubes_enabled` smooths the surface
+/// with marching cubes instead of meshing the voxel faces.
 #[pyclass(
     module = "r3v_renderer",
-    name = "GreedyMeshTesselatorConfiguration",
+    name = "CpuTesselatorConfiguration",
     from_py_object,
     eq,
     get_all,
     set_all
 )]
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct PyGreedyMeshTesselatorConfiguration {
+pub(super) struct PyCpuTesselatorConfiguration {
     voxel_size: f32,
+    marching_cubes_enabled: bool,
 }
 
 #[pymethods]
-impl PyGreedyMeshTesselatorConfiguration {
+impl PyCpuTesselatorConfiguration {
     #[new]
-    fn new(voxel_size: f32) -> Self {
-        Self { voxel_size }
+    #[pyo3(signature = (voxel_size, marching_cubes_enabled = false))]
+    fn new(voxel_size: f32, marching_cubes_enabled: bool) -> Self {
+        Self {
+            voxel_size,
+            marching_cubes_enabled,
+        }
     }
     fn __repr__(&self) -> String {
         format!(
-            "GreedyMeshTesselatorConfiguration(voxel_size={:?})",
-            self.voxel_size
+            "CpuTesselatorConfiguration(voxel_size={:?}, marching_cubes_enabled={})",
+            self.voxel_size,
+            if self.marching_cubes_enabled {
+                "True"
+            } else {
+                "False"
+            }
         )
     }
 }
 
-/// Turns blocks of voxels into quads (`tesselator::GreedyMeshTesselator`).
+/// Turns blocks of voxels into triangles (`tesselator::CpuTesselator`).
 /// Configure it before use.
-#[pyclass(module = "r3v_renderer", name = "GreedyMeshTesselator")]
-pub(super) struct PyGreedyMeshTesselator(CheckedTesselator);
+#[pyclass(module = "r3v_renderer", name = "CpuTesselator")]
+pub(super) struct PyCpuTesselator(CheckedTesselator);
 
 /// `blocks` as `PointI`s: `r3v_renderer.PointI`s, or anything else with
 /// `x()`, `y()`, `z()` and `i()` methods, e.g. `r3v_voxelizer.PointI`.
@@ -84,16 +95,31 @@ fn extract_blocks(blocks: &Bound<'_, PyAny>) -> PyResult<Vec<PointI>> {
 }
 
 #[pymethods]
-impl PyGreedyMeshTesselator {
-    /// `GreedyMeshTesselator::new`.
+impl PyCpuTesselator {
+    /// `CpuTesselator::new`, with marching cubes disabled.
     #[new]
     fn new() -> Self {
         Self(CheckedTesselator::new())
     }
 
     /// `Tesselator::configure`. `ValueError` unless `voxel_size` is positive.
-    fn configure(&mut self, configuration: PyGreedyMeshTesselatorConfiguration) -> PyResult<()> {
-        Ok(self.0.configure(configuration.voxel_size)?)
+    fn configure(&mut self, configuration: PyCpuTesselatorConfiguration) -> PyResult<()> {
+        Ok(self.0.configure(
+            configuration.voxel_size,
+            configuration.marching_cubes_enabled,
+        )?)
+    }
+
+    /// `CpuTesselator::marching_cubes_enabled`.
+    fn marching_cubes_enabled(&self) -> bool {
+        self.0.marching_cubes_enabled()
+    }
+
+    /// `CpuTesselator::set_marching_cubes_enabled`: a change re-tesselates
+    /// every chunk with voxels, and the chunks next to them, on the next
+    /// `get_output_geometry_delta`.
+    fn set_marching_cubes_enabled(&mut self, enabled: bool) {
+        self.0.set_marching_cubes_enabled(enabled);
     }
 
     /// `Tesselator::update_input_geometry`: every block replaces the mask the
@@ -116,20 +142,20 @@ impl PyGreedyMeshTesselator {
     }
 }
 
-/// Quads of every chunk that changed (`Vec<QuadChunk>`): a sequence of
-/// `QuadChunk`s. `WgpuRenderer.update_geometry` takes the chunks out of it,
-/// using it afterwards raises `ValueError`.
+/// Triangles of every chunk that changed (`Vec<TriangleChunk>`): a sequence
+/// of `TriangleChunk`s. `WgpuRenderer.update_geometry` takes the chunks out of
+/// it, using it afterwards raises `ValueError`.
 #[pyclass(module = "r3v_renderer", name = "GeometryDelta")]
-pub(super) struct PyGeometryDelta(Option<Vec<QuadChunk>>);
+pub(super) struct PyGeometryDelta(Option<Vec<TriangleChunk>>);
 
 impl PyGeometryDelta {
-    fn chunks(&self) -> PyResult<&Vec<QuadChunk>> {
+    fn chunks(&self) -> PyResult<&Vec<TriangleChunk>> {
         self.0.as_ref().ok_or_else(|| {
             PyValueError::new_err("the delta was passed to WgpuRenderer.update_geometry")
         })
     }
 
-    pub(super) fn take(&mut self) -> PyResult<Vec<QuadChunk>> {
+    pub(super) fn take(&mut self) -> PyResult<Vec<TriangleChunk>> {
         self.chunks()?;
         Ok(self.0.take().unwrap_or_default())
     }
@@ -141,7 +167,7 @@ impl PyGeometryDelta {
         Ok(self.chunks()?.len())
     }
 
-    fn __getitem__(&self, index: isize) -> PyResult<PyQuadChunk> {
+    fn __getitem__(&self, index: isize) -> PyResult<PyTriangleChunk> {
         let chunks = self.chunks()?;
         let chunk = usize::try_from(index)
             .ok()
@@ -154,9 +180,9 @@ impl PyGeometryDelta {
                 ))
             })?;
         let index = chunk.index;
-        Ok(PyQuadChunk {
+        Ok(PyTriangleChunk {
             index: (index.x, index.y, index.z),
-            quads: chunk.quads.iter().map(Into::into).collect(),
+            triangles: chunk.triangles.iter().map(Into::into).collect(),
         })
     }
 
@@ -168,22 +194,23 @@ impl PyGeometryDelta {
     }
 }
 
-/// All quads of one chunk of 16x16x16 voxels (`geometry::QuadChunk`): `index`
-/// is the origin of the chunk in voxels, `quads` are in world units. They
-/// replace what the chunk had before; no quads means it is empty now.
-#[pyclass(module = "r3v_renderer", name = "QuadChunk", frozen, get_all)]
-pub(super) struct PyQuadChunk {
+/// All triangles of one chunk of 16x16x16 voxels (`geometry::TriangleChunk`):
+/// `index` is the origin of the chunk in voxels, `triangles` are in world
+/// units. They replace what the chunk had before; no triangles means it is
+/// empty now.
+#[pyclass(module = "r3v_renderer", name = "TriangleChunk", frozen, get_all)]
+pub(super) struct PyTriangleChunk {
     index: (i32, i32, i32),
-    quads: Vec<PyQuad>,
+    triangles: Vec<PyTriangle>,
 }
 
 #[pymethods]
-impl PyQuadChunk {
+impl PyTriangleChunk {
     fn __repr__(&self) -> String {
         format!(
-            "QuadChunk(index={:?}, quads=<{} quads>)",
+            "TriangleChunk(index={:?}, triangles=<{} triangles>)",
             self.index,
-            self.quads.len()
+            self.triangles.len()
         )
     }
 }

@@ -35,12 +35,12 @@ int main() {
     r3v_urdf_robot_drop(robot);
     r3v_urdf_description_drop(description);
 
-    R3vGreedyMeshTesselator *tesselator = r3v_greedy_mesh_tesselator_create();
-    CHECK_OK(r3v_greedy_mesh_tesselator_configure(tesselator, R3vGreedyMeshTesselatorConfiguration{1.0f}));
+    R3vCpuTesselator *tesselator = r3v_cpu_tesselator_create();
+    CHECK_OK(r3v_cpu_tesselator_configure(tesselator, R3vCpuTesselatorConfiguration{1.0f, false}));
     const R3vPointI block{4, 4, 2, 0xFFFFFFFFu};
-    CHECK_OK(r3v_greedy_mesh_tesselator_update_input_geometry(tesselator, &block, 1));
+    CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, &block, 1));
     R3vGeometryDelta *delta = nullptr;
-    CHECK_OK(r3v_greedy_mesh_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
     CHECK(r3v_geometry_delta_chunk_count(delta) == 1);
 
     const uint32_t width = 16, height = 16;
@@ -66,6 +66,6 @@ int main() {
     CHECK(center[0] != 0 || center[1] != 0 || center[2] != 0);
 
     r3v_wgpu_renderer_drop(renderer);
-    r3v_greedy_mesh_tesselator_drop(tesselator);
+    r3v_cpu_tesselator_drop(tesselator);
     return 0;
 }

@@ -52,15 +52,16 @@ typedef enum R3vUrdfGeometryKind {
 } R3vUrdfGeometryKind;
 
 /**
- * Quads of every chunk that changed (`Vec<QuadChunk>`). Owned by the caller
- * until it is passed to `r3v_wgpu_renderer_update_geometry` or dropped.
+ * Turns blocks of voxels into triangles (`tesselator::CpuTesselator`).
  */
-typedef struct R3vGeometryDelta R3vGeometryDelta;
+typedef struct R3vCpuTesselator R3vCpuTesselator;
 
 /**
- * Turns blocks of voxels into quads (`tesselator::GreedyMeshTesselator`).
+ * Triangles of every chunk that changed (`Vec<TriangleChunk>`). Owned by the
+ * caller until it is passed to `r3v_wgpu_renderer_update_geometry` or
+ * dropped.
  */
-typedef struct R3vGreedyMeshTesselator R3vGreedyMeshTesselator;
+typedef struct R3vGeometryDelta R3vGeometryDelta;
 
 /**
  * Transforms of every link and visual for one set of joint positions
@@ -315,14 +316,19 @@ typedef struct R3vTriangle {
 } R3vTriangle;
 
 /**
- * `tesselator::GreedyMeshTesselatorConfiguration`.
+ * `tesselator::CpuTesselatorConfiguration`.
  */
-typedef struct R3vGreedyMeshTesselatorConfiguration {
+typedef struct R3vCpuTesselatorConfiguration {
   /**
    * Edge length of a voxel in world units.
    */
   float voxel_size;
-} R3vGreedyMeshTesselatorConfiguration;
+  /**
+   * Smooths the surface with marching cubes instead of meshing the voxel
+   * faces.
+   */
+  bool marching_cubes_enabled;
+} R3vCpuTesselatorConfiguration;
 
 /**
  * One 4x4x2 block of voxels (`geometry::PointI`): `x`, `y`, `z` are the
@@ -348,32 +354,22 @@ typedef struct R3vPoint3I {
 } R3vPoint3I;
 
 /**
- * Quad (`geometry::RealQuad`), counter-clockwise when seen from its front
- * side.
+ * All triangles of one chunk of 16x16x16 voxels (`geometry::TriangleChunk`).
+ * They replace what the chunk had before; no triangles means it is empty
+ * now.
  */
-typedef struct R3vQuad {
-  float v0[3];
-  float v1[3];
-  float v2[3];
-  float v3[3];
-} R3vQuad;
-
-/**
- * All quads of one chunk of 16x16x16 voxels (`geometry::QuadChunk`). They
- * replace what the chunk had before; no quads means it is empty now.
- */
-typedef struct R3vQuadChunk {
+typedef struct R3vTriangleChunk {
   /**
    * Origin of the chunk in voxels.
    */
   struct R3vPoint3I index;
   /**
-   * In world units. NULL when `quad_count` is 0, otherwise valid until the
-   * delta is dropped or passed on.
+   * In world units. NULL when `triangle_count` is 0, otherwise valid until
+   * the delta is dropped or passed on.
    */
-  const struct R3vQuad *quads;
-  size_t quad_count;
-} R3vQuadChunk;
+  const struct R3vTriangle *triangles;
+  size_t triangle_count;
+} R3vTriangleChunk;
 
 /**
  * Message of the last failure on the calling thread, NUL terminated and
@@ -459,8 +455,8 @@ enum R3vStatus r3v_wgpu_renderer_configure(struct R3vWgpuRenderer *renderer,
                                            struct R3vWgpuRendererConfiguration configuration);
 
 /**
- * `Renderer::update_geometry`: replaces the quads of every chunk in `delta`.
- * Takes ownership of `delta`, which is freed on failure too.
+ * `Renderer::update_geometry`: replaces the triangles of every chunk in
+ * `delta`. Takes ownership of `delta`, which is freed on failure too.
  */
 enum R3vStatus r3v_wgpu_renderer_update_geometry(struct R3vWgpuRenderer *renderer,
                                                  struct R3vGeometryDelta *delta);
@@ -675,15 +671,29 @@ struct R3vTriangle *r3v_stl_mesh_triangles(struct R3vStlMesh *mesh);
 void r3v_stl_mesh_drop(struct R3vStlMesh *mesh);
 
 /**
- * `GreedyMeshTesselator::new`. Configure it before use.
+ * `CpuTesselator::new`, with marching cubes disabled. Configure it before
+ * use.
  */
-struct R3vGreedyMeshTesselator *r3v_greedy_mesh_tesselator_create(void);
+struct R3vCpuTesselator *r3v_cpu_tesselator_create(void);
 
 /**
  * `Tesselator::configure`. `voxel_size` has to be positive.
  */
-enum R3vStatus r3v_greedy_mesh_tesselator_configure(struct R3vGreedyMeshTesselator *tesselator,
-                                                    struct R3vGreedyMeshTesselatorConfiguration configuration);
+enum R3vStatus r3v_cpu_tesselator_configure(struct R3vCpuTesselator *tesselator,
+                                            struct R3vCpuTesselatorConfiguration configuration);
+
+/**
+ * `CpuTesselator::marching_cubes_enabled`, false for NULL.
+ */
+bool r3v_cpu_tesselator_marching_cubes_enabled(const struct R3vCpuTesselator *tesselator);
+
+/**
+ * `CpuTesselator::set_marching_cubes_enabled`: a change re-tesselates every
+ * chunk with voxels, and the chunks next to them, on the next
+ * `r3v_cpu_tesselator_get_output_geometry_delta`.
+ */
+enum R3vStatus r3v_cpu_tesselator_set_marching_cubes_enabled(struct R3vCpuTesselator *tesselator,
+                                                             bool enabled);
 
 /**
  * `Tesselator::update_input_geometry`: every block replaces the mask the
@@ -692,21 +702,21 @@ enum R3vStatus r3v_greedy_mesh_tesselator_configure(struct R3vGreedyMeshTesselat
  * `R3V_INVALID_ARGUMENT` when a block is not aligned to the 4x4x2 grid (`x`
  * and `y` multiples of 4, `z` of 2); none of the blocks is applied then.
  */
-enum R3vStatus r3v_greedy_mesh_tesselator_update_input_geometry(struct R3vGreedyMeshTesselator *tesselator,
-                                                                const struct R3vPointI *blocks,
-                                                                size_t count);
+enum R3vStatus r3v_cpu_tesselator_update_input_geometry(struct R3vCpuTesselator *tesselator,
+                                                        const struct R3vPointI *blocks,
+                                                        size_t count);
 
 /**
  * `Tesselator::get_output_geometry_delta`: the chunks changed since the last
  * call, or NULL in `*out` when nothing changed.
  */
-enum R3vStatus r3v_greedy_mesh_tesselator_get_output_geometry_delta(struct R3vGreedyMeshTesselator *tesselator,
-                                                                    struct R3vGeometryDelta **out);
+enum R3vStatus r3v_cpu_tesselator_get_output_geometry_delta(struct R3vCpuTesselator *tesselator,
+                                                            struct R3vGeometryDelta **out);
 
 /**
  * Frees a tesselator. NULL is ignored.
  */
-void r3v_greedy_mesh_tesselator_drop(struct R3vGreedyMeshTesselator *tesselator);
+void r3v_cpu_tesselator_drop(struct R3vCpuTesselator *tesselator);
 
 /**
  * Number of chunks in the delta, 0 for NULL.
@@ -718,7 +728,7 @@ size_t r3v_geometry_delta_chunk_count(const struct R3vGeometryDelta *delta);
  */
 enum R3vStatus r3v_geometry_delta_chunk(const struct R3vGeometryDelta *delta,
                                         size_t chunk,
-                                        struct R3vQuadChunk *out);
+                                        struct R3vTriangleChunk *out);
 
 /**
  * Frees a delta that was not passed to `r3v_wgpu_renderer_update_geometry`.

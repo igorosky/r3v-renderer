@@ -83,8 +83,8 @@ export async function makeRenderer(width, height) {
 }
 
 export function makeTesselator(voxelSize) {
-    const tesselator = new rr.GreedyMeshTesselator();
-    tesselator.configure(new rr.GreedyMeshTesselatorConfiguration(voxelSize));
+    const tesselator = new rr.CpuTesselator();
+    tesselator.configure(new rr.CpuTesselatorConfiguration(voxelSize));
     return tesselator;
 }
 

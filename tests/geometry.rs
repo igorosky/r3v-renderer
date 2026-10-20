@@ -499,19 +499,20 @@ fn voxel_face_quad_is_a_rectangle_in_vertex_order() {
 }
 
 #[test]
-fn quad_map_and_to_vertices() {
+fn quad_map_and_triangles() {
     let quad = DiscreteQuad::voxel_face(
         VoxelNormal::Positive(Axis::Z),
         Point { x: 0, y: 0, z: 0 },
         Vector2D { x: 1, y: 1 },
     )
     .map(|c| c as f32 * 0.5);
-    let vertices = quad.to_vertices();
-    assert_eq!(vertices[0].position, quad.v0);
-    assert_eq!(vertices[1].position, quad.v1);
-    assert_eq!(vertices[2].position, quad.v2);
-    assert_eq!(vertices[3].position, quad.v3);
-    for vertex in vertices {
+    let [first, second] = quad.triangles();
+    assert_eq!([first.v0, first.v1, first.v2], [quad.v0, quad.v1, quad.v2]);
+    assert_eq!(
+        [second.v0, second.v1, second.v2],
+        [quad.v0, quad.v2, quad.v3]
+    );
+    for vertex in first.to_vertices().into_iter().chain(second.to_vertices()) {
         assert_eq!(vertex.position[2], 0.5);
         close3(vertex.normal, [0.0, 0.0, 1.0]);
         assert_eq!(vertex.color, Vertex::DEFAULT_COLOR);

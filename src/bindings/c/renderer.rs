@@ -44,8 +44,8 @@ pub extern "C" fn r3v_wgpu_renderer_configure(
     })
 }
 
-/// `Renderer::update_geometry`: replaces the quads of every chunk in `delta`.
-/// Takes ownership of `delta`, which is freed on failure too.
+/// `Renderer::update_geometry`: replaces the triangles of every chunk in
+/// `delta`. Takes ownership of `delta`, which is freed on failure too.
 #[unsafe(no_mangle)]
 pub extern "C" fn r3v_wgpu_renderer_update_geometry(
     renderer: *mut R3vWgpuRenderer,

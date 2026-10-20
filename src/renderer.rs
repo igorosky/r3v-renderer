@@ -224,8 +224,15 @@ impl WgpuAccelerated {
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
             .ok()?;
+        let required_limits = wgpu::Limits {
+            max_buffer_size: adapter.limits().max_buffer_size,
+            ..Default::default()
+        };
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                required_limits,
+                ..Default::default()
+            })
             .await
             .ok()?;
 
@@ -603,15 +610,7 @@ impl WgpuAccelerated {
                 render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
                 render_pass.set_bind_group(1, &self.state.colormap_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.vertex_arena.vertex_buffer().slice(..));
-                render_pass.set_index_buffer(
-                    self.vertex_arena.index_buffer().slice(..),
-                    wgpu::IndexFormat::Uint32,
-                );
-                render_pass.multi_draw_indexed_indirect(
-                    self.vertex_arena.draw_buffer(),
-                    0,
-                    draw_count,
-                );
+                render_pass.multi_draw_indirect(self.vertex_arena.draw_buffer(), 0, draw_count);
             }
             if !self.assets.is_empty() {
                 render_pass.set_pipeline(&self.state.asset_pipeline);
@@ -657,7 +656,7 @@ impl WgpuAccelerated {
 
 impl Renderer for WgpuAccelerated {
     type Configuration = WgpuAcceleratedConfiguration;
-    type GeometryDelta = Vec<geometry::QuadChunk>;
+    type GeometryDelta = Vec<geometry::TriangleChunk>;
 
     type AssetInstanceId = u64;
     type AssetDescription = stl::StlMesh;
@@ -677,9 +676,13 @@ impl Renderer for WgpuAccelerated {
         let device = &self.state.device;
         let queue = &self.state.queue;
         let mut vertices = Vec::new();
-        for geometry::QuadChunk { index, quads } in geometry_delta {
+        for geometry::TriangleChunk {
+            index,
+            triangles: quads,
+        } in geometry_delta
+        {
             vertices.clear();
-            vertices.extend(quads.iter().flat_map(|quad| quad.to_vertices()));
+            vertices.extend(quads.iter().flat_map(|triangle| triangle.to_vertices()));
             self.vertex_arena.set_chunk(device, queue, index, &vertices);
         }
         self.vertex_arena.finish_update(device, queue);

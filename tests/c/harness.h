@@ -71,8 +71,8 @@ R3vWgpuRenderer *make_renderer(uint32_t width, uint32_t height);
 
 /* A configured tesselator holding one full 4x4x2 block at voxel (x, y, z),
  * with the delta it produced passed to `renderer`. */
-R3vGreedyMeshTesselator *add_block(R3vWgpuRenderer *renderer, float voxel_size, int32_t x,
-                                   int32_t y, int32_t z);
+R3vCpuTesselator *add_block(R3vWgpuRenderer *renderer, float voxel_size, int32_t x, int32_t y,
+                            int32_t z);
 
 /* Renders twice, so `frame` (width * height BGRA pixels) shows the scene
  * as it is now: frames are read back one call late. */

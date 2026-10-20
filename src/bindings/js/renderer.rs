@@ -165,7 +165,7 @@ impl JsWgpuRenderer {
         self.with(|renderer| Ok(renderer.configure(width, height)?))
     }
 
-    /// `Renderer::update_geometry`: replaces the quads of every chunk in
+    /// `Renderer::update_geometry`: replaces the triangles of every chunk in
     /// `delta`, which can not be used afterwards.
     pub fn update_geometry(&self, delta: &mut JsGeometryDelta) -> Result<()> {
         self.with(|renderer| {

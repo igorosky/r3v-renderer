@@ -7,7 +7,7 @@ use r3v_renderer::{
     renderer::{self, WgpuAccelerated},
     robot::UrdfRobot,
     stl,
-    tesselator::{GreedyMeshTesselator, GreedyMeshTesselatorConfiguration},
+    tesselator::{CpuTesselator, CpuTesselatorConfiguration},
     urdf,
 };
 use rayon::prelude::*;
@@ -108,6 +108,7 @@ Controls:
   Arrow keys        orbit
   Shift             move faster
   O                 toggle auto-orbit
+  C                 toggle marching-cubes terrain smoothing
   R                 reset camera
   F                 focus camera on the robot
   M                 add/remove the robot arm
@@ -147,7 +148,7 @@ struct Demo {
 
     world: World,
     camera: OrbitCamera,
-    tesselator: GreedyMeshTesselator,
+    tesselator: CpuTesselator,
     renderer: WgpuAccelerated,
     robot: Option<RobotScene>,
 
@@ -199,9 +200,10 @@ impl Demo {
             world.piston_fields.len(),
             world.lakes.len(),
         );
-        let mut tesselator = GreedyMeshTesselator::new();
-        tesselator.configure(GreedyMeshTesselatorConfiguration {
+        let mut tesselator = CpuTesselator::new();
+        tesselator.configure(CpuTesselatorConfiguration {
             voxel_size: VOXEL_SIZE,
+            marching_cubes_enabled: false,
         });
         let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
         let robot = match RobotScene::load(urdf_path, robot_placement(&world), &mut renderer) {
@@ -268,8 +270,8 @@ impl Demo {
         self.tesselator.update_input_geometry(&brick_delta);
         if let Some(geometry_delta) = self.tesselator.get_output_geometry_delta() {
             for delta in &geometry_delta {
-                self.quad_count += delta.quads.len();
-                self.chunk_count += !delta.quads.is_empty() as usize;
+                self.quad_count += delta.triangles.len();
+                self.chunk_count += !delta.triangles.is_empty() as usize;
             }
             self.renderer.update_geometry(geometry_delta);
         }
@@ -364,6 +366,9 @@ impl Demo {
             KeyCode::Escape => event_loop.exit(),
             KeyCode::KeyP => self.save_snapshot(),
             KeyCode::KeyO => self.auto_orbit = !self.auto_orbit,
+            KeyCode::KeyC => self
+                .tesselator
+                .set_marching_cubes_enabled(!self.tesselator.marching_cubes_enabled()),
             KeyCode::KeyR => {
                 self.camera = initial_camera();
                 self.auto_orbit = true;
@@ -393,7 +398,12 @@ impl Demo {
         }
         let fps = self.stats_frames as f32 / elapsed;
         let frame_ms = 1000.0 / fps;
-        self.overlay_text = format!("{:.0} FPS {:.1}MS", fps, frame_ms);
+        let smoothing = if self.tesselator.marching_cubes_enabled() {
+            "MC ON"
+        } else {
+            "MC OFF"
+        };
+        self.overlay_text = format!("{:.0} FPS {:.1}MS {}", fps, frame_ms, smoothing);
         if let Some(window) = &self.window {
             window.set_title(&format!(
                 "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated",

@@ -247,7 +247,6 @@ impl RealTriangle {
     }
 }
 
-#[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct Quad<T> {
     pub v0: [T; 3],
@@ -330,10 +329,19 @@ impl RealQuad {
         .normal()
     }
 
-    pub fn to_vertices(&self) -> [Vertex; 4] {
-        let normal = self.normal();
-        [self.v0, self.v1, self.v2, self.v3]
-            .map(|position| Vertex::from(position).with_normal(normal))
+    pub fn triangles(&self) -> [RealTriangle; 2] {
+        [
+            Triangle {
+                v0: self.v0,
+                v1: self.v1,
+                v2: self.v2,
+            },
+            Triangle {
+                v0: self.v0,
+                v1: self.v2,
+                v2: self.v3,
+            },
+        ]
     }
 }
 
@@ -536,7 +544,7 @@ impl From<[f32; 3]> for Vertex {
     }
 }
 
-pub struct QuadChunk {
+pub struct TriangleChunk {
     pub index: DiscretePoint,
-    pub quads: Vec<RealQuad>,
+    pub triangles: Vec<RealTriangle>,
 }

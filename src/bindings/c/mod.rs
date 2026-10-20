@@ -291,17 +291,6 @@ pub struct R3vTriangle {
     pub v2: [f32; 3],
 }
 
-/// Quad (`geometry::RealQuad`), counter-clockwise when seen from its front
-/// side.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct R3vQuad {
-    pub v0: [f32; 3],
-    pub v1: [f32; 3],
-    pub v2: [f32; 3],
-    pub v3: [f32; 3],
-}
-
 /// What the renderer needs to know about a camera (`camera::CameraState`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -320,8 +309,6 @@ const _: () = {
     use std::mem::{align_of, size_of};
     assert!(size_of::<R3vTriangle>() == size_of::<geometry::RealTriangle>());
     assert!(align_of::<R3vTriangle>() == align_of::<geometry::RealTriangle>());
-    assert!(size_of::<R3vQuad>() == size_of::<geometry::RealQuad>());
-    assert!(align_of::<R3vQuad>() == align_of::<geometry::RealQuad>());
 };
 
 impl From<geometry::Vector3D<f32>> for R3vVec3 {
@@ -463,7 +450,7 @@ const _: () = {
     assert_send::<robot::R3vUrdfRobot>();
     assert_send::<crate::robot::RobotTransforms>();
     assert_send::<stl::R3vStlMesh>();
-    assert_send::<tesselator::R3vGreedyMeshTesselator>();
+    assert_send::<tesselator::R3vCpuTesselator>();
     assert_send::<tesselator::R3vGeometryDelta>();
 };
 

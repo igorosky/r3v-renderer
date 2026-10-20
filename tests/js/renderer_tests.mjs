@@ -100,8 +100,8 @@ function facingZ({ v0, v1, v2 }) {
 // ---------------------------------------------------------------- JS API
 
 const CLASSES = [
-    "CameraState", "GeometryDelta", "GreedyMeshTesselator", "GreedyMeshTesselatorConfiguration", "OrbitCamera",
-    "PointI", "RobotTransforms", "StlMesh", "Triangle", "Twist", "UrdfDescription", "UrdfRobot", "WgpuRenderer",
+    "CameraState", "CpuTesselator", "CpuTesselatorConfiguration", "GeometryDelta", "OrbitCamera", "PointI",
+    "RobotTransforms", "StlMesh", "Triangle", "Twist", "UrdfDescription", "UrdfRobot", "WgpuRenderer",
     "WgpuRendererConfiguration",
 ];
 
@@ -147,9 +147,12 @@ function value_classes_have_properties() {
     triangle.v2 = [0, 2, 0];
     check(same(triangle.v2, [0, 2, 0]));
 
-    const tesselatorConfiguration = new rr.GreedyMeshTesselatorConfiguration(0.5);
+    const tesselatorConfiguration = new rr.CpuTesselatorConfiguration(0.5);
+    check(tesselatorConfiguration.marching_cubes_enabled === false);
     tesselatorConfiguration.voxel_size = 0.25;
-    check(tesselatorConfiguration.voxel_size === 0.25);
+    tesselatorConfiguration.marching_cubes_enabled = true;
+    check(tesselatorConfiguration.voxel_size === 0.25 && tesselatorConfiguration.marching_cubes_enabled === true);
+    check(new rr.CpuTesselatorConfiguration(1, true).marching_cubes_enabled === true);
     const rendererConfiguration = new rr.WgpuRendererConfiguration(640, 480);
     check(same([rendererConfiguration.width, rendererConfiguration.height], [640, 480]));
 
@@ -317,15 +320,15 @@ async function stl_triangles_are_copies() {
 // ------------------------------------------------------------ tesselator
 
 async function tesselator_requires_configure() {
-    const tesselator = new rr.GreedyMeshTesselator();
+    const tesselator = new rr.CpuTesselator();
     await throws(() => tesselator.update_input_geometry([new rr.PointI(0, 0, 0, 1)]), Error, "configure");
     await throws(() => tesselator.get_output_geometry_delta(), Error, "configure");
 }
 
 async function tesselator_checks_voxel_size() {
-    const tesselator = new rr.GreedyMeshTesselator();
+    const tesselator = new rr.CpuTesselator();
     for (const voxelSize of [0, -1, NaN, Infinity]) {
-        await throws(() => tesselator.configure(new rr.GreedyMeshTesselatorConfiguration(voxelSize)), RangeError, "voxel size");
+        await throws(() => tesselator.configure(new rr.CpuTesselatorConfiguration(voxelSize)), RangeError, "voxel size");
     }
     await throws(() => tesselator.configure({}), TypeError, "configuration.voxel_size");
     await throws(() => tesselator.update_input_geometry([]), Error, "configure");
@@ -353,12 +356,15 @@ async function tesselator_full_block_is_a_box() {
     check(delta.length === 1);
     const chunk = delta.chunk(0);
     check(same(chunk.index, [0, 0, 0]));
-    check(chunk.quads.length === 6);
+    // Two triangles for each of the six faces, as plain objects.
+    check(chunk.triangles.length === 12);
+    check(Object.getPrototypeOf(chunk.triangles[0]) === Object.prototype);
+    check(same(structuredClone(chunk), chunk));
     // Voxels 4..8 x 4..8 x 2..4 at 0.5 world units each.
     const [lo, hi] = [[2, 2, 1], [4, 4, 2]];
-    for (const quad of chunk.quads) {
-        for (const corner of [quad.v0, quad.v1, quad.v2, quad.v3]) {
-            check([0, 1, 2].every((a) => lo[a] - 1e-4 <= corner[a] && corner[a] <= hi[a] + 1e-4), fmt(quad));
+    for (const triangle of chunk.triangles) {
+        for (const corner of [triangle.v0, triangle.v1, triangle.v2]) {
+            check([0, 1, 2].every((a) => lo[a] - 1e-4 <= corner[a] && corner[a] <= hi[a] + 1e-4), fmt(triangle));
         }
     }
     await throws(() => delta.chunk(1), RangeError, "chunk 1");
@@ -370,11 +376,40 @@ async function tesselator_full_block_is_a_box() {
     tesselator.update_input_geometry([block]);
     check(tesselator.get_output_geometry_delta() === undefined);
 
-    // Clearing it leaves the chunk without quads.
+    // Clearing it leaves the chunk without triangles.
     block.i = 0;
     tesselator.update_input_geometry([block]);
     const cleared = tesselator.get_output_geometry_delta();
-    check(cleared.length === 1 && cleared.chunk(0).quads.length === 0);
+    check(cleared.length === 1 && cleared.chunk(0).triangles.length === 0);
+}
+
+async function tesselator_toggles_marching_cubes() {
+    const tesselator = makeTesselator(1.0);
+    check(tesselator.marching_cubes_enabled() === false);
+    tesselator.update_input_geometry([new rr.PointI(4, 4, 2, U32_MAX)]);
+    check(tesselator.get_output_geometry_delta().chunk(0).triangles.length === 12);
+
+    // Switching it on tesselates the chunk again, smoothed: marching cubes puts
+    // vertices between voxel corners.
+    tesselator.set_marching_cubes_enabled(true);
+    check(tesselator.marching_cubes_enabled() === true);
+    const delta = tesselator.get_output_geometry_delta();
+    check(delta.length === 1);
+    const triangles = delta.chunk(0).triangles;
+    check(triangles.length !== 0 && triangles.length !== 12, `${triangles.length} triangles`);
+    const corners = triangles.flatMap((triangle) => [...triangle.v0, ...triangle.v1, ...triangle.v2]);
+    check(corners.some((corner) => corner !== Math.floor(corner)));
+    tesselator.set_marching_cubes_enabled(true);
+    check(tesselator.get_output_geometry_delta() === undefined);
+
+    // The configuration switches it too, off when left out.
+    tesselator.configure({ voxel_size: 1, marching_cubes_enabled: true });
+    check(tesselator.marching_cubes_enabled() === true);
+    tesselator.configure({ voxel_size: 1 });
+    check(tesselator.marching_cubes_enabled() === false);
+    check(tesselator.get_output_geometry_delta().chunk(0).triangles.length === 12);
+    await throws(() => tesselator.configure({ voxel_size: 1, marching_cubes_enabled: 1 }), TypeError,
+        "configuration.marching_cubes_enabled is not a boolean");
 }
 
 function tesselator_takes_voxelizer_points() {
@@ -389,7 +424,7 @@ function tesselator_takes_voxelizer_points() {
     const delta = tesselator.get_output_geometry_delta();
     // Four blocks side by side make one box, away from the chunk's sides
     // (blocks on a side touch the neighbouring chunk too).
-    check(delta.length === 1 && delta.chunk(0).quads.length === 6);
+    check(delta.length === 1 && delta.chunk(0).triangles.length === 12);
     tesselator.update_input_geometry([]);
     check(tesselator.get_output_geometry_delta() === undefined);
 }
@@ -757,6 +792,7 @@ const TEST_CASES = [
     tesselator_checks_voxel_size,
     tesselator_rejects_unaligned_blocks,
     tesselator_full_block_is_a_box,
+    tesselator_toggles_marching_cubes,
     tesselator_takes_voxelizer_points,
     tesselator_rejects_other_objects,
     renderer_configure_checks_size,

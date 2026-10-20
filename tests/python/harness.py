@@ -69,8 +69,8 @@ def make_renderer(width, height):
 
 
 def make_tesselator(voxel_size):
-    tesselator = rr.GreedyMeshTesselator()
-    tesselator.configure(rr.GreedyMeshTesselatorConfiguration(voxel_size))
+    tesselator = rr.CpuTesselator()
+    tesselator.configure(rr.CpuTesselatorConfiguration(voxel_size))
     return tesselator
 
 

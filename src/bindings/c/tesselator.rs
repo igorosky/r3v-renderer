@@ -1,58 +1,90 @@
-//! `tesselator::GreedyMeshTesselator` (trait `Tesselator`) and its output,
-//! `Vec<QuadChunk>`.
+//! `tesselator::CpuTesselator` (trait `Tesselator`) and its output,
+//! `Vec<TriangleChunk>`.
 
 use std::ptr;
 
-use crate::{bindings::checked::CheckedTesselator, geometry::QuadChunk};
+use crate::{bindings::checked::CheckedTesselator, geometry::TriangleChunk};
 
 use super::{
-    Error, R3vPoint3I, R3vPointI, R3vQuad, R3vStatus, arg, arg_mut, drop_handle, new_handle,
+    Error, R3vPoint3I, R3vPointI, R3vStatus, R3vTriangle, arg, arg_mut, drop_handle, new_handle,
     slice_arg, status,
 };
 
-/// Turns blocks of voxels into quads (`tesselator::GreedyMeshTesselator`).
-pub struct R3vGreedyMeshTesselator(CheckedTesselator);
+/// Turns blocks of voxels into triangles (`tesselator::CpuTesselator`).
+pub struct R3vCpuTesselator(CheckedTesselator);
 
-/// `tesselator::GreedyMeshTesselatorConfiguration`.
+/// `tesselator::CpuTesselatorConfiguration`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct R3vGreedyMeshTesselatorConfiguration {
+pub struct R3vCpuTesselatorConfiguration {
     /// Edge length of a voxel in world units.
     pub voxel_size: f32,
+    /// Smooths the surface with marching cubes instead of meshing the voxel
+    /// faces.
+    pub marching_cubes_enabled: bool,
 }
 
-/// Quads of every chunk that changed (`Vec<QuadChunk>`). Owned by the caller
-/// until it is passed to `r3v_wgpu_renderer_update_geometry` or dropped.
-pub struct R3vGeometryDelta(pub(super) Vec<QuadChunk>);
+/// Triangles of every chunk that changed (`Vec<TriangleChunk>`). Owned by the
+/// caller until it is passed to `r3v_wgpu_renderer_update_geometry` or
+/// dropped.
+pub struct R3vGeometryDelta(pub(super) Vec<TriangleChunk>);
 
-/// All quads of one chunk of 16x16x16 voxels (`geometry::QuadChunk`). They
-/// replace what the chunk had before; no quads means it is empty now.
+/// All triangles of one chunk of 16x16x16 voxels (`geometry::TriangleChunk`).
+/// They replace what the chunk had before; no triangles means it is empty
+/// now.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct R3vQuadChunk {
+pub struct R3vTriangleChunk {
     /// Origin of the chunk in voxels.
     pub index: R3vPoint3I,
-    /// In world units. NULL when `quad_count` is 0, otherwise valid until the
-    /// delta is dropped or passed on.
-    pub quads: *const R3vQuad,
-    pub quad_count: usize,
+    /// In world units. NULL when `triangle_count` is 0, otherwise valid until
+    /// the delta is dropped or passed on.
+    pub triangles: *const R3vTriangle,
+    pub triangle_count: usize,
 }
 
-/// `GreedyMeshTesselator::new`. Configure it before use.
+/// `CpuTesselator::new`, with marching cubes disabled. Configure it before
+/// use.
 #[unsafe(no_mangle)]
-pub extern "C" fn r3v_greedy_mesh_tesselator_create() -> *mut R3vGreedyMeshTesselator {
-    new_handle(|| Ok(R3vGreedyMeshTesselator(CheckedTesselator::new())))
+pub extern "C" fn r3v_cpu_tesselator_create() -> *mut R3vCpuTesselator {
+    new_handle(|| Ok(R3vCpuTesselator(CheckedTesselator::new())))
 }
 
 /// `Tesselator::configure`. `voxel_size` has to be positive.
 #[unsafe(no_mangle)]
-pub extern "C" fn r3v_greedy_mesh_tesselator_configure(
-    tesselator: *mut R3vGreedyMeshTesselator,
-    configuration: R3vGreedyMeshTesselatorConfiguration,
+pub extern "C" fn r3v_cpu_tesselator_configure(
+    tesselator: *mut R3vCpuTesselator,
+    configuration: R3vCpuTesselatorConfiguration,
 ) -> R3vStatus {
     status(|| {
         let tesselator = unsafe { arg_mut(tesselator, "tesselator") }?;
-        Ok(tesselator.0.configure(configuration.voxel_size)?)
+        Ok(tesselator.0.configure(
+            configuration.voxel_size,
+            configuration.marching_cubes_enabled,
+        )?)
+    })
+}
+
+/// `CpuTesselator::marching_cubes_enabled`, false for NULL.
+#[unsafe(no_mangle)]
+pub extern "C" fn r3v_cpu_tesselator_marching_cubes_enabled(
+    tesselator: *const R3vCpuTesselator,
+) -> bool {
+    unsafe { tesselator.as_ref() }.is_some_and(|tesselator| tesselator.0.marching_cubes_enabled())
+}
+
+/// `CpuTesselator::set_marching_cubes_enabled`: a change re-tesselates every
+/// chunk with voxels, and the chunks next to them, on the next
+/// `r3v_cpu_tesselator_get_output_geometry_delta`.
+#[unsafe(no_mangle)]
+pub extern "C" fn r3v_cpu_tesselator_set_marching_cubes_enabled(
+    tesselator: *mut R3vCpuTesselator,
+    enabled: bool,
+) -> R3vStatus {
+    status(|| {
+        let tesselator = unsafe { arg_mut(tesselator, "tesselator") }?;
+        tesselator.0.set_marching_cubes_enabled(enabled);
+        Ok(())
     })
 }
 
@@ -62,8 +94,8 @@ pub extern "C" fn r3v_greedy_mesh_tesselator_configure(
 /// `R3V_INVALID_ARGUMENT` when a block is not aligned to the 4x4x2 grid (`x`
 /// and `y` multiples of 4, `z` of 2); none of the blocks is applied then.
 #[unsafe(no_mangle)]
-pub extern "C" fn r3v_greedy_mesh_tesselator_update_input_geometry(
-    tesselator: *mut R3vGreedyMeshTesselator,
+pub extern "C" fn r3v_cpu_tesselator_update_input_geometry(
+    tesselator: *mut R3vCpuTesselator,
     blocks: *const R3vPointI,
     count: usize,
 ) -> R3vStatus {
@@ -78,8 +110,8 @@ pub extern "C" fn r3v_greedy_mesh_tesselator_update_input_geometry(
 /// `Tesselator::get_output_geometry_delta`: the chunks changed since the last
 /// call, or NULL in `*out` when nothing changed.
 #[unsafe(no_mangle)]
-pub extern "C" fn r3v_greedy_mesh_tesselator_get_output_geometry_delta(
-    tesselator: *mut R3vGreedyMeshTesselator,
+pub extern "C" fn r3v_cpu_tesselator_get_output_geometry_delta(
+    tesselator: *mut R3vCpuTesselator,
     out: *mut *mut R3vGeometryDelta,
 ) -> R3vStatus {
     status(|| {
@@ -95,7 +127,7 @@ pub extern "C" fn r3v_greedy_mesh_tesselator_get_output_geometry_delta(
 
 /// Frees a tesselator. NULL is ignored.
 #[unsafe(no_mangle)]
-pub extern "C" fn r3v_greedy_mesh_tesselator_drop(tesselator: *mut R3vGreedyMeshTesselator) {
+pub extern "C" fn r3v_cpu_tesselator_drop(tesselator: *mut R3vCpuTesselator) {
     unsafe { drop_handle(tesselator) }
 }
 
@@ -110,25 +142,25 @@ pub extern "C" fn r3v_geometry_delta_chunk_count(delta: *const R3vGeometryDelta)
 pub extern "C" fn r3v_geometry_delta_chunk(
     delta: *const R3vGeometryDelta,
     chunk: usize,
-    out: *mut R3vQuadChunk,
+    out: *mut R3vTriangleChunk,
 ) -> R3vStatus {
     status(|| {
         let delta = unsafe { arg(delta, "delta") }?;
         let out = unsafe { arg_mut(out, "out") }?;
-        let QuadChunk { index, quads } = delta.0.get(chunk).ok_or_else(|| {
+        let TriangleChunk { index, triangles } = delta.0.get(chunk).ok_or_else(|| {
             Error::out_of_range(format!(
                 "chunk {chunk} does not exist, the delta has {}",
                 delta.0.len()
             ))
         })?;
-        *out = R3vQuadChunk {
+        *out = R3vTriangleChunk {
             index: (*index).into(),
-            quads: if quads.is_empty() {
+            triangles: if triangles.is_empty() {
                 ptr::null()
             } else {
-                quads.as_ptr().cast()
+                triangles.as_ptr().cast()
             },
-            quad_count: quads.len(),
+            triangle_count: triangles.len(),
         };
         Ok(())
     })

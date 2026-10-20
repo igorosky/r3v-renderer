@@ -6,9 +6,10 @@
 //! What goes in is read by property name, so the classes of this module and
 //! plain objects with the same properties both work, e.g. r3v-voxelizer's
 //! `PointI`s or `{x, y, z, i}`. Vectors are arrays of numbers. Data that only
-//! comes out (quads, URDF descriptions, robot transforms) is plain objects
-//! and arrays, which `structuredClone`, `postMessage` and `JSON.stringify`
-//! keep; classes are for what has methods or is passed back in.
+//! comes out (triangle chunks, URDF descriptions, robot transforms) is plain
+//! objects and arrays, which `structuredClone`, `postMessage` and
+//! `JSON.stringify` keep; classes are for what has methods or is passed back
+//! in.
 //!
 //! Errors are exceptions, or rejections for the async methods: `TypeError`
 //! for an argument of the wrong type, `RangeError` for an invalid value
@@ -23,7 +24,7 @@ use wasm_bindgen::prelude::*;
 use super::checked::{self, ErrorKind};
 use crate::{
     camera::CameraState,
-    geometry::{self, PointI, QuadChunk, RealTriangle, RealTwist},
+    geometry::{self, PointI, RealTriangle, RealTwist, TriangleChunk},
 };
 
 mod camera;
@@ -45,17 +46,17 @@ export type Mat4 = [Vec4, Vec4, Vec4, Vec4];
 export interface PointILike { x: number; y: number; z: number; i: number }
 /** A `Twist`, or a plain object such as the twists of `RobotTransforms`. */
 export interface TwistLike { linear: Vec3; rotational: Vec4 }
-/** A `Triangle` or a plain object. */
+/** A `Triangle`, or a plain object such as the triangles of a
+ * `TriangleChunk`. */
 export interface TriangleLike { v0: Vec3; v1: Vec3; v2: Vec3 }
 /** A `CameraState` or a plain object. */
 export interface CameraStateLike { view_proj: Mat4; position: Vec3; forward: Vec3 }
 
-/** Quad in world units, counter-clockwise when seen from its front side. */
-export interface Quad { v0: Vec3; v1: Vec3; v2: Vec3; v3: Vec3 }
-/** All quads of one chunk of 16x16x16 voxels, whose origin in voxels is
- * `index`. They replace what the chunk had before, no quads means it is empty
- * now. */
-export interface QuadChunk { index: Vec3; quads: Quad[] }
+/** All triangles of one chunk of 16x16x16 voxels, whose origin in voxels is
+ * `index`. The triangles are in world units, counter-clockwise when seen from
+ * their front side. They replace what the chunk had before, no triangles
+ * means it is empty now. */
+export interface TriangleChunk { index: Vec3; triangles: TriangleLike[] }
 
 /** Position and orientation: `rpy` is roll, pitch and yaw in radians. */
 export interface UrdfOrigin { xyz: Vec3; rpy: Vec3 }
@@ -167,6 +168,21 @@ fn number(value: &JsValue, what: What) -> Result<f64> {
 fn f32_property(object: &JsValue, key: &str, what: What) -> Result<f32> {
     let value = property(object, key, what)?;
     Ok(number(&value, &|| format!("{}.{key}", what()))? as f32)
+}
+
+/// `object[key]` as a boolean, false when it is `undefined`.
+fn flag_property(object: &JsValue, key: &str, what: What) -> Result<bool> {
+    let value = property(object, key, what)?;
+    if value.is_undefined() {
+        return Ok(false);
+    }
+    value.as_bool().ok_or_else(|| {
+        type_error(format!(
+            "{}.{key} is not a boolean (got {})",
+            what(),
+            describe(&value)
+        ))
+    })
 }
 
 /// An integer number from `min` to `max`.
@@ -330,23 +346,22 @@ fn twist_object(twist: RealTwist) -> JsValue {
     .into()
 }
 
-fn quad_chunk_object(chunk: &QuadChunk) -> JsValue {
+fn triangle_chunk_object(chunk: &TriangleChunk) -> JsValue {
     let index = chunk.index;
-    let quads: Array = chunk
-        .quads
+    let triangles: Array = chunk
+        .triangles
         .iter()
-        .map(|quad| {
+        .map(|triangle| {
             object(&[
-                ("v0", numbers(&quad.v0).into()),
-                ("v1", numbers(&quad.v1).into()),
-                ("v2", numbers(&quad.v2).into()),
-                ("v3", numbers(&quad.v3).into()),
+                ("v0", numbers(&triangle.v0).into()),
+                ("v1", numbers(&triangle.v1).into()),
+                ("v2", numbers(&triangle.v2).into()),
             ])
         })
         .collect();
     object(&[
         ("index", numbers(&[index.x, index.y, index.z]).into()),
-        ("quads", quads.into()),
+        ("triangles", triangles.into()),
     ])
     .into()
 }

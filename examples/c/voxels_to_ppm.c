@@ -39,10 +39,10 @@ static void *check_handle(void *handle, const char *what) {
 /* Feeds a staircase of full 4x4x2 blocks through the tesselator into the
  * renderer: step i is i / 2 + 1 blocks high (Y is up) and 4 blocks deep. */
 static void add_stairs(R3vWgpuRenderer *renderer) {
-    R3vGreedyMeshTesselator *tesselator =
-        check_handle(r3v_greedy_mesh_tesselator_create(), "creating the tesselator");
-    R3vGreedyMeshTesselatorConfiguration configuration = {0.25f};
-    check(r3v_greedy_mesh_tesselator_configure(tesselator, configuration), "configure");
+    R3vCpuTesselator *tesselator =
+        check_handle(r3v_cpu_tesselator_create(), "creating the tesselator");
+    R3vCpuTesselatorConfiguration configuration = {0.25f, false};
+    check(r3v_cpu_tesselator_configure(tesselator, configuration), "configure");
 
     R3vPointI blocks[STEPS * (STEPS / 2) * 4];
     size_t count = 0;
@@ -54,17 +54,17 @@ static void add_stairs(R3vWgpuRenderer *renderer) {
             }
         }
     }
-    check(r3v_greedy_mesh_tesselator_update_input_geometry(tesselator, blocks, count),
+    check(r3v_cpu_tesselator_update_input_geometry(tesselator, blocks, count),
           "update_input_geometry");
 
     R3vGeometryDelta *delta = NULL;
-    check(r3v_greedy_mesh_tesselator_get_output_geometry_delta(tesselator, &delta),
+    check(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta),
           "get_output_geometry_delta");
     if (delta != NULL) {
         /* Takes the delta. */
         check(r3v_wgpu_renderer_update_geometry(renderer, delta), "update_geometry");
     }
-    r3v_greedy_mesh_tesselator_drop(tesselator);
+    r3v_cpu_tesselator_drop(tesselator);
 }
 
 /* Two instances of one triangle above the stairs. */

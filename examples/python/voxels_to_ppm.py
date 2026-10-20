@@ -22,8 +22,8 @@ def add_stairs(renderer):
     """Feeds a staircase of full 4x4x2 blocks through the tesselator into the
     renderer: step i is i // 2 + 1 blocks high (Y is up) and 4 blocks deep.
     The blocks could just as well come from r3v_voxelizer in compress mode."""
-    tesselator = rr.GreedyMeshTesselator()
-    tesselator.configure(rr.GreedyMeshTesselatorConfiguration(voxel_size=0.25))
+    tesselator = rr.CpuTesselator()
+    tesselator.configure(rr.CpuTesselatorConfiguration(voxel_size=0.25))
     tesselator.update_input_geometry(
         rr.PointI(4 * step, 4 * level, 2 * depth, 2**32 - 1)
         for step in range(STEPS)
