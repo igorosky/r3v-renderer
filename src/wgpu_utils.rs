@@ -1,10 +1,10 @@
-use wgpu::util::{DeviceExt, DrawIndexedIndirectArgs};
+use wgpu::util::{DeviceExt, DrawIndirectArgs};
 
 use crate::geometry::Vertex;
 use crate::turbo_colormap::TURBO_COLORMAP;
 
 pub const DRAW_ARGS_STRIDE: wgpu::BufferAddress =
-    std::mem::size_of::<DrawIndexedIndirectArgs>() as wgpu::BufferAddress;
+    std::mem::size_of::<DrawIndirectArgs>() as wgpu::BufferAddress;
 pub const VERTEX_STRIDE: wgpu::BufferAddress = std::mem::size_of::<Vertex>() as wgpu::BufferAddress;
 
 pub const BASIC_VERTEX_BUFFER_LAYOUT: wgpu::VertexBufferLayout = wgpu::VertexBufferLayout {
@@ -25,21 +25,6 @@ pub fn create_draw_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffe
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
-    })
-}
-
-pub const QUAD_VERTICES: u32 = 4;
-pub const QUAD_INDICES: u32 = 6;
-
-/// Index buffer splitting each run of four quad vertices into two triangles.
-pub fn create_quad_index_buffer(device: &wgpu::Device, quad_capacity: usize) -> wgpu::Buffer {
-    let indices = (0..quad_capacity as u32)
-        .flat_map(|quad| [0, 1, 2, 0, 2, 3].map(|index| quad * QUAD_VERTICES + index))
-        .collect::<Vec<u32>>();
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Quad Index Buffer"),
-        contents: bytemuck::cast_slice(&indices),
-        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_SRC,
     })
 }
 
@@ -154,9 +139,8 @@ mod tests {
         // position, color and normal: three vec3<f32>.
         assert_eq!(VERTEX_STRIDE, 36);
         assert_eq!(VERTEX_STRIDE, std::mem::size_of::<Vertex>() as u64);
-        // DrawIndexedIndirect: index_count, instance_count, first_index, base_vertex,
-        // first_instance.
-        assert_eq!(DRAW_ARGS_STRIDE, 5 * 4);
+        // DrawIndirect: vertex_count, instance_count, first_vertex, first_instance.
+        assert_eq!(DRAW_ARGS_STRIDE, 4 * 4);
     }
 
     #[test]
@@ -178,12 +162,6 @@ mod tests {
     }
 
     #[test]
-    fn quad_constants_describe_two_triangles() {
-        assert_eq!(QUAD_VERTICES, 4);
-        assert_eq!(QUAD_INDICES, 2 * 3);
-    }
-
-    #[test]
     fn buffers_have_requested_capacity_and_usage() {
         let gpu = TestGpu::new();
         for capacity in [1, 7, 1024] {
@@ -201,74 +179,6 @@ mod tests {
                 draws
                     .usage()
                     .contains(wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST)
-            );
-
-            let indices = create_quad_index_buffer(&gpu.device, capacity);
-            assert_eq!(indices.size(), capacity as u64 * QUAD_INDICES as u64 * 4);
-            assert!(indices.usage().contains(wgpu::BufferUsages::INDEX));
-        }
-    }
-
-    /// Each quad's vertices are listed in order around its outline (v0..v3). Its indices
-    /// must form two triangles that keep that winding and together cover the quad.
-    #[test]
-    fn quad_indices_split_each_quad_into_two_triangles() {
-        let gpu = TestGpu::new();
-        let quads = 300;
-        let buffer = create_quad_index_buffer(&gpu.device, quads);
-        let bytes = gpu.read_buffer(&buffer);
-        let indices: &[u32] = bytemuck::cast_slice(&bytes);
-        assert_eq!(indices.len(), quads * QUAD_INDICES as usize);
-
-        for (quad, indices) in indices
-            .as_chunks::<{ QUAD_INDICES as usize }>()
-            .0
-            .iter()
-            .enumerate()
-        {
-            let base = quad as u32 * QUAD_VERTICES;
-            let local: Vec<u32> = indices
-                .iter()
-                .map(|&index| {
-                    assert!(
-                        (base..base + QUAD_VERTICES).contains(&index),
-                        "quad {quad} references vertex {index}"
-                    );
-                    index - base
-                })
-                .collect();
-            let (first, second) = local.split_at(3);
-            for triangle in [first, second] {
-                let mut sorted = triangle.to_vec();
-                sorted.sort();
-                sorted.dedup();
-                assert_eq!(sorted.len(), 3, "degenerate triangle {triangle:?}");
-                // Same winding as the outline: walking the triangle goes once forward around
-                // the quad (a backwards triangle goes around twice).
-                let span: u32 = (0..3)
-                    .map(|i| (triangle[(i + 1) % 3] + QUAD_VERTICES - triangle[i]) % QUAD_VERTICES)
-                    .sum();
-                assert_eq!(
-                    span, QUAD_VERTICES,
-                    "triangle {triangle:?} is wound backwards"
-                );
-            }
-            // The triangles share exactly one diagonal and cover all four corners.
-            let shared = first.iter().filter(|i| second.contains(i)).count();
-            assert_eq!(shared, 2);
-            let mut all = local.clone();
-            all.sort();
-            all.dedup();
-            assert_eq!(all, [0, 1, 2, 3]);
-            let mut diagonal: Vec<u32> = first
-                .iter()
-                .copied()
-                .filter(|i| second.contains(i))
-                .collect();
-            diagonal.sort();
-            assert!(
-                diagonal == [0, 2] || diagonal == [1, 3],
-                "shared edge {diagonal:?} is not a diagonal"
             );
         }
     }
