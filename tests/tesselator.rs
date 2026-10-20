@@ -6,7 +6,7 @@ use common::Lcg;
 use r3v_renderer::{
     Tesselator,
     geometry::{DiscretePoint, PointI, RealQuad, RealTriangle, TriangleChunk},
-    tesselator::{GreedyMeshTesselator, GreedyMeshTesselatorConfiguration},
+    tesselator::{CpuTesselator, CpuTesselatorConfiguration},
 };
 
 const BRICK: [i32; 3] = [4, 4, 2];
@@ -217,15 +217,15 @@ fn quad_direction(quad: &RealQuad) -> usize {
 }
 
 struct Harness {
-    tesselator: GreedyMeshTesselator,
+    tesselator: CpuTesselator,
     world: World,
     mesh: Mesh,
 }
 
 impl Harness {
     fn new(voxel_size: f32) -> Self {
-        let mut tesselator = GreedyMeshTesselator::new();
-        tesselator.configure(GreedyMeshTesselatorConfiguration {
+        let mut tesselator = CpuTesselator::new();
+        tesselator.configure(CpuTesselatorConfiguration {
             voxel_size,
             marching_cubes_enabled: false,
         });
@@ -514,8 +514,8 @@ fn randomized_edits_match_reference() {
 
 #[test]
 fn no_delta_without_changes() {
-    let mut tesselator = GreedyMeshTesselator::new();
-    tesselator.configure(GreedyMeshTesselatorConfiguration {
+    let mut tesselator = CpuTesselator::new();
+    tesselator.configure(CpuTesselatorConfiguration {
         voxel_size: 1.0,
         marching_cubes_enabled: false,
     });
@@ -572,12 +572,12 @@ fn last_update_of_a_brick_in_one_batch_wins() {
 
 #[test]
 fn reconfiguring_voxel_size_applies_to_later_output() {
-    let mut tesselator = GreedyMeshTesselator::default();
-    tesselator.configure(GreedyMeshTesselatorConfiguration {
+    let mut tesselator = CpuTesselator::default();
+    tesselator.configure(CpuTesselatorConfiguration {
         voxel_size: 1.0,
         marching_cubes_enabled: false,
     });
-    tesselator.configure(GreedyMeshTesselatorConfiguration {
+    tesselator.configure(CpuTesselatorConfiguration {
         voxel_size: 3.0,
         marching_cubes_enabled: false,
     });
@@ -592,20 +592,20 @@ fn reconfiguring_voxel_size_applies_to_later_output() {
 #[test]
 #[should_panic]
 fn update_before_configure_panics() {
-    let mut tesselator = GreedyMeshTesselator::new();
+    let mut tesselator = CpuTesselator::new();
     tesselator.update_input_geometry(&vec![brick([0, 0, 0], FULL)]);
 }
 
 #[test]
 #[should_panic]
 fn output_before_configure_panics() {
-    let mut tesselator = GreedyMeshTesselator::new();
+    let mut tesselator = CpuTesselator::new();
     tesselator.get_output_geometry_delta();
 }
 
-fn marching_cubes_tesselator(mask: u32) -> GreedyMeshTesselator {
-    let mut tesselator = GreedyMeshTesselator::new();
-    tesselator.configure(GreedyMeshTesselatorConfiguration {
+fn marching_cubes_tesselator(mask: u32) -> CpuTesselator {
+    let mut tesselator = CpuTesselator::new();
+    tesselator.configure(CpuTesselatorConfiguration {
         voxel_size: 1.0,
         marching_cubes_enabled: false,
     });
@@ -623,7 +623,7 @@ fn marching_cubes_can_be_toggled_and_rebuilds_geometry() {
     let greedy = tesselator.get_output_geometry_delta().unwrap();
     let greedy_triangle_count = triangle_count(&greedy);
 
-    tesselator.configure(GreedyMeshTesselatorConfiguration {
+    tesselator.configure(CpuTesselatorConfiguration {
         voxel_size: 1.0,
         marching_cubes_enabled: true,
     });
@@ -634,7 +634,7 @@ fn marching_cubes_can_be_toggled_and_rebuilds_geometry() {
     assert_ne!(smoothed_triangle_count, greedy_triangle_count);
     assert!(tesselator.get_output_geometry_delta().is_none());
 
-    tesselator.configure(GreedyMeshTesselatorConfiguration {
+    tesselator.configure(CpuTesselatorConfiguration {
         voxel_size: 1.0,
         marching_cubes_enabled: false,
     });
@@ -660,8 +660,8 @@ fn marching_cubes_interpolates_surface_vertices() {
 #[test]
 fn marching_cubes_is_scaled_by_fractional_voxel_size() {
     let voxel_size = 0.2;
-    let mut tesselator = GreedyMeshTesselator::new();
-    tesselator.configure(GreedyMeshTesselatorConfiguration {
+    let mut tesselator = CpuTesselator::new();
+    tesselator.configure(CpuTesselatorConfiguration {
         voxel_size,
         marching_cubes_enabled: false,
     });

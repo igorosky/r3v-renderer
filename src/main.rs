@@ -7,7 +7,7 @@ use r3v_renderer::{
     renderer::{self, WgpuAccelerated},
     robot::UrdfRobot,
     stl,
-    tesselator::{GreedyMeshTesselator, GreedyMeshTesselatorConfiguration},
+    tesselator::{CpuTesselator, CpuTesselatorConfiguration},
     urdf,
 };
 use rayon::prelude::*;
@@ -148,7 +148,7 @@ struct Demo {
 
     world: World,
     camera: OrbitCamera,
-    tesselator: GreedyMeshTesselator,
+    tesselator: CpuTesselator,
     renderer: WgpuAccelerated,
     robot: Option<RobotScene>,
 
@@ -200,8 +200,8 @@ impl Demo {
             world.piston_fields.len(),
             world.lakes.len(),
         );
-        let mut tesselator = GreedyMeshTesselator::new();
-        tesselator.configure(GreedyMeshTesselatorConfiguration {
+        let mut tesselator = CpuTesselator::new();
+        tesselator.configure(CpuTesselatorConfiguration {
             voxel_size: VOXEL_SIZE,
             marching_cubes_enabled: false,
         });

@@ -146,26 +146,26 @@ impl Chunk {
     }
 }
 
-pub struct GreedyMeshTesselatorConfiguration {
+pub struct CpuTesselatorConfiguration {
     pub voxel_size: f32,
     pub marching_cubes_enabled: bool,
 }
 
-pub struct GreedyMeshTesselator {
-    config: Option<GreedyMeshTesselatorConfiguration>,
+pub struct CpuTesselator {
+    config: Option<CpuTesselatorConfiguration>,
     chunks: FxHashMap<DiscretePoint, Box<Chunk>>,
     dirty_queue: VecDeque<DiscretePoint>,
     in_queue: FxHashSet<DiscretePoint>,
     marching_cubes_enabled: bool,
 }
 
-impl Default for GreedyMeshTesselator {
+impl Default for CpuTesselator {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl GreedyMeshTesselator {
+impl CpuTesselator {
     pub fn new() -> Self {
         Self {
             config: None,
@@ -531,8 +531,8 @@ impl GreedyMeshTesselator {
     }
 }
 
-impl Tesselator for GreedyMeshTesselator {
-    type Configuration = GreedyMeshTesselatorConfiguration;
+impl Tesselator for CpuTesselator {
+    type Configuration = CpuTesselatorConfiguration;
     type InputGeometryDelta = Vec<PointI>;
     type OutputGeometryDelta = Vec<TriangleChunk>;
 
