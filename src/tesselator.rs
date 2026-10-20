@@ -1,6 +1,12 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
-use std::sync::LazyLock;
+
+#[path = "marching_cubes.rs"]
+mod marching_cubes;
+use marching_cubes::{
+    MC_CUBE_CORNERS, MC_GRID_SIZE, MC_GRID_VOLUME, MC_PADDED_GRID_SIZE, MC_PADDED_GRID_VOLUME,
+    MC_X_SUM_VOLUME, MC_XY_SUM_VOLUME, polygonize_cube,
+};
 
 #[cfg(feature = "multi-threaded")]
 use rayon::prelude::*;
@@ -22,56 +28,6 @@ const CHUNK_SUBCHUNKS: Vector3D<usize> = Vector3D {
     z: CHUNK_WIDTH / SUBCHUNK_SIZE.z,
 };
 const CHUNK_RATIO: usize = CHUNK_SUBCHUNKS.x * CHUNK_SUBCHUNKS.y * CHUNK_SUBCHUNKS.z;
-const MC_GRID_SIZE: usize = CHUNK_WIDTH + 1;
-const MC_PADDED_GRID_SIZE: usize = CHUNK_WIDTH + 2;
-const MC_GRID_VOLUME: usize = MC_GRID_SIZE * MC_GRID_SIZE * MC_GRID_SIZE;
-const MC_X_SUM_VOLUME: usize = MC_GRID_SIZE * MC_PADDED_GRID_SIZE * MC_PADDED_GRID_SIZE;
-const MC_XY_SUM_VOLUME: usize = MC_GRID_SIZE * MC_GRID_SIZE * MC_PADDED_GRID_SIZE;
-const MC_PADDED_GRID_VOLUME: usize =
-    MC_PADDED_GRID_SIZE * MC_PADDED_GRID_SIZE * MC_PADDED_GRID_SIZE;
-const MC_CUBE_CORNERS: [[usize; 3]; 8] = [
-    [0, 0, 0],
-    [1, 0, 0],
-    [1, 1, 0],
-    [0, 1, 0],
-    [0, 0, 1],
-    [1, 0, 1],
-    [1, 1, 1],
-    [0, 1, 1],
-];
-const MC_CUBE_EDGES: [[usize; 2]; 12] = [
-    [0, 1],
-    [1, 2],
-    [2, 3],
-    [3, 0],
-    [4, 5],
-    [5, 6],
-    [6, 7],
-    [7, 4],
-    [0, 4],
-    [1, 5],
-    [2, 6],
-    [3, 7],
-];
-const MC_CUBE_FACES: [([usize; 4], [usize; 4]); 6] = [
-    ([0, 1, 2, 3], [0, 1, 2, 3]),
-    ([4, 5, 6, 7], [4, 5, 6, 7]),
-    ([0, 1, 5, 4], [0, 9, 4, 8]),
-    ([3, 2, 6, 7], [2, 10, 6, 11]),
-    ([0, 3, 7, 4], [3, 11, 7, 8]),
-    ([1, 2, 6, 5], [1, 10, 5, 9]),
-];
-const MC_ISO_LEVEL: RealUnit = 0.5;
-const MC_TRIANGLE_TABLE_WIDTH: usize = 48;
-
-struct MarchingCubesLookup {
-    edge_masks: [u16; 256],
-    triangle_edges: [[i8; MC_TRIANGLE_TABLE_WIDTH]; 256],
-}
-
-static MARCHING_CUBES_LOOKUP: LazyLock<MarchingCubesLookup> =
-    LazyLock::new(MarchingCubesLookup::build);
-
 type Columns<T> = [[[T; CHUNK_WIDTH]; CHUNK_WIDTH]; 3];
 type SolidColumns = Columns<u64>;
 
@@ -575,193 +531,6 @@ impl GreedyMeshTesselator {
                 }
             }
         }
-    }
-}
-
-fn polygonize_cube(
-    case_index: usize,
-    corners: &[[RealUnit; 3]; 8],
-    values: [RealUnit; 8],
-    voxel_size: DiscreteUnit,
-    triangles: &mut Vec<RealTriangle>,
-) {
-    let lookup = &*MARCHING_CUBES_LOOKUP;
-    let edge_mask = lookup.edge_masks[case_index];
-    if edge_mask == 0 {
-        return;
-    }
-
-    let mut edge_vertices = [[0.0; 3]; 12];
-    for (edge, &[a, b]) in MC_CUBE_EDGES.iter().enumerate() {
-        if edge_mask & (1 << edge) == 0 {
-            continue;
-        }
-        let t = ((MC_ISO_LEVEL - values[a]) / (values[b] - values[a])).clamp(0.0, 1.0);
-        edge_vertices[edge] = std::array::from_fn(|axis| {
-            corners[a][axis] + (corners[b][axis] - corners[a][axis]) * t
-        });
-    }
-
-    let scale = voxel_size as RealUnit;
-    let mut edges = &lookup.triangle_edges[case_index][..];
-    while let [a, b, c, rest @ ..] = edges {
-        if *a < 0 {
-            break;
-        }
-        let vertex = |edge: i8| edge_vertices[edge as usize].map(|coordinate| coordinate * scale);
-        triangles.push(RealTriangle {
-            v0: vertex(*a),
-            v1: vertex(*b),
-            v2: vertex(*c),
-        });
-        edges = rest;
-    }
-}
-
-impl MarchingCubesLookup {
-    fn build() -> Self {
-        let mut lookup = Self {
-            edge_masks: [0; 256],
-            triangle_edges: [[-1; MC_TRIANGLE_TABLE_WIDTH]; 256],
-        };
-        for case_index in 0..256 {
-            let (edge_mask, triangle_edges) = Self::build_case(case_index as u8);
-            lookup.edge_masks[case_index] = edge_mask;
-            lookup.triangle_edges[case_index] = triangle_edges;
-        }
-        lookup
-    }
-
-    fn build_case(case_index: u8) -> (u16, [i8; MC_TRIANGLE_TABLE_WIDTH]) {
-        let mut edge_mask = 0u16;
-        for (edge, [a, b]) in MC_CUBE_EDGES.iter().copied().enumerate() {
-            if ((case_index >> a) & 1) != ((case_index >> b) & 1) {
-                edge_mask |= 1 << edge;
-            }
-        }
-        if edge_mask == 0 {
-            return (edge_mask, [-1; MC_TRIANGLE_TABLE_WIDTH]);
-        }
-
-        let mut connections = [[0u8; 2]; 12];
-        let mut connection_counts = [0u8; 12];
-        let mut connect = |a: usize, b: usize| {
-            let a_count = connection_counts[a] as usize;
-            let b_count = connection_counts[b] as usize;
-            if a_count < 2 && b_count < 2 {
-                connections[a][a_count] = b as u8;
-                connections[b][b_count] = a as u8;
-                connection_counts[a] += 1;
-                connection_counts[b] += 1;
-            }
-        };
-        for (face_corners, face_edges) in MC_CUBE_FACES {
-            let mut crossings = [0usize; 4];
-            let mut crossing_count = 0;
-            for edge in face_edges {
-                if edge_mask & (1 << edge) != 0 {
-                    crossings[crossing_count] = edge;
-                    crossing_count += 1;
-                }
-            }
-            match crossing_count {
-                2 => connect(crossings[0], crossings[1]),
-                4 => {
-                    let inside_count = face_corners
-                        .iter()
-                        .filter(|&&corner| case_index & (1 << corner) != 0)
-                        .count();
-                    let face_inside = inside_count > 2;
-                    for corner in 0..4 {
-                        let corner_inside = case_index & (1 << face_corners[corner]) != 0;
-                        if corner_inside != face_inside {
-                            connect(face_edges[(corner + 3) % 4], face_edges[corner]);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        drop(connect);
-
-        let inside_count = case_index.count_ones() as RealUnit;
-        let outside_count = 8.0 - inside_count;
-        let mut direction = [0.0; 3];
-        for (corner, cube_corner) in MC_CUBE_CORNERS.iter().enumerate() {
-            let sign = if case_index & (1 << corner) != 0 {
-                -1.0 / inside_count
-            } else {
-                1.0 / outside_count
-            };
-            for axis in 0..3 {
-                direction[axis] += cube_corner[axis] as RealUnit * sign;
-            }
-        }
-
-        let edge_midpoint = |edge: usize| {
-            let [a, b] = MC_CUBE_EDGES[edge];
-            std::array::from_fn::<_, 3, _>(|axis| {
-                (MC_CUBE_CORNERS[a][axis] + MC_CUBE_CORNERS[b][axis]) as RealUnit * 0.5
-            })
-        };
-        let mut triangle_edges = [-1; MC_TRIANGLE_TABLE_WIDTH];
-        let mut table_cursor = 0;
-        let mut visited = [false; 12];
-        for start in 0..12 {
-            if edge_mask & (1 << start) == 0 || visited[start] {
-                continue;
-            }
-            let mut polygon = [0usize; 12];
-            let mut polygon_count = 0;
-            let (mut previous, mut current) = (usize::MAX, start);
-            loop {
-                if visited[current] {
-                    break;
-                }
-                visited[current] = true;
-                polygon[polygon_count] = current;
-                polygon_count += 1;
-                if connection_counts[current] != 2 {
-                    break;
-                }
-                let [first, second] = connections[current].map(usize::from);
-                let next = if first == previous { second } else { first };
-                previous = current;
-                current = next;
-                if current == start || polygon_count == 12 {
-                    break;
-                }
-            }
-            if polygon_count < 3 {
-                continue;
-            }
-
-            let p0 = edge_midpoint(polygon[0]);
-            let p1 = edge_midpoint(polygon[1]);
-            let p2 = edge_midpoint(polygon[2]);
-            let ab = std::array::from_fn::<_, 3, _>(|axis| p1[axis] - p0[axis]);
-            let ac = std::array::from_fn::<_, 3, _>(|axis| p2[axis] - p0[axis]);
-            let normal = [
-                ab[1] * ac[2] - ab[2] * ac[1],
-                ab[2] * ac[0] - ab[0] * ac[2],
-                ab[0] * ac[1] - ab[1] * ac[0],
-            ];
-            let reverse =
-                normal[0] * direction[0] + normal[1] * direction[1] + normal[2] * direction[2]
-                    < 0.0;
-            for index in 1..polygon_count - 1 {
-                if table_cursor + 3 > MC_TRIANGLE_TABLE_WIDTH {
-                    break;
-                }
-                triangle_edges[table_cursor] = polygon[0] as i8;
-                triangle_edges[table_cursor + 1] =
-                    polygon[if reverse { index + 1 } else { index }] as i8;
-                triangle_edges[table_cursor + 2] =
-                    polygon[if reverse { index } else { index + 1 }] as i8;
-                table_cursor += 3;
-            }
-        }
-        (edge_mask, triangle_edges)
     }
 }
 
