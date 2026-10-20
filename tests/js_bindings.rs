@@ -2,9 +2,9 @@
 //! `examples/js` against the JS bindings.
 //!
 //! The host cdylib of this test run is of no use to JavaScript, so the crate
-//! is built for `wasm32-unknown-unknown` with wasm-pack (the build the README
-//! documents: `--target web`). Every JS test case runs in its own Node.js
-//! process, so a trap (e.g. a Rust panic) fails only that case.
+//! is built for `wasm32-unknown-unknown` with wasm-pack (`--target web`, the
+//! build the header of the example shows). Every JS test case runs in its own
+//! Node.js process, so a trap (e.g. a Rust panic) fails only that case.
 //!
 //! Node.js has no WebGPU: the tests take it from the `webgpu` package (Dawn),
 //! installed into `tests/js/node_modules` by `npm ci` in `tests/js`, which

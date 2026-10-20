@@ -18,8 +18,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const MODULE = "r3v_renderer";
 
 /** Directory of the wasm-pack output (`--target web`), as passed in by
- * tests/js_bindings.rs. When run by hand without it, the README's build
- * output (pkg/) is used. */
+ * tests/js_bindings.rs. When run by hand without it, pkg/ is used, where the
+ * build in the header of examples/js/voxels_to_ppm.mjs puts it. */
 const PKG_DIR =
     process.env.R3V_RENDERER_PKG ?? fileURLToPath(new URL("../../pkg", import.meta.url));
 

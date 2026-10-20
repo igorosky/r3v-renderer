@@ -5,8 +5,11 @@ tests in tests/c/renderer_tests.c.
 """
 
 import array
+import ast
+import inspect
 import math
 import sys
+from pathlib import Path
 
 import r3v_renderer as rr
 
@@ -94,6 +97,125 @@ def module_exports_its_classes():
         check(isinstance(cls, type), f"r3v_renderer.{name} is no class")
         check(cls.__module__ == "r3v_renderer", f"{name} belongs to {cls.__module__}")
         check(cls.__name__ == name, f"{name} is named {cls.__name__}")
+
+
+STUB = Path(__file__).resolve().parents[2] / "bindings" / "r3v_renderer.pyi"
+
+# Dunder methods telling type checkers what a class supports: the stub has to
+# declare exactly those the class has.
+PROTOCOL_DUNDERS = {"__new__", "__len__", "__getitem__", "__iter__", "__contains__", "__call__"}
+
+# Py_TPFLAGS_BASETYPE, set for classes that can be subclassed.
+BASETYPE = 1 << 10
+
+
+def stub_members(node):
+    """{name: kind} of the class `node` of the stub, kind being "property",
+    "method" or "staticmethod", and whether it declares `__hash__` None."""
+    members = {}
+    unhashable = False
+    for item in node.body:
+        if isinstance(item, ast.AnnAssign) and item.target.id == "__hash__":
+            unhashable = True
+        elif isinstance(item, ast.AnnAssign):
+            members[item.target.id] = "property"
+        elif isinstance(item, ast.FunctionDef):
+            decorators = [ast.unparse(decorator) for decorator in item.decorator_list]
+            if decorators == [f"{item.name}.setter"]:
+                check(members.get(item.name) == "property", f"{node.name}.{item.name} has a setter, no getter")
+            elif decorators in (["property"], ["staticmethod"]):
+                members[item.name] = decorators[0]
+            else:
+                check(decorators == [], f"{node.name}.{item.name} is decorated with {decorators}")
+                members[item.name] = "method"
+        else:
+            fail(f"{node.name} has {ast.unparse(item)!r} in the stub")
+    return members, unhashable
+
+
+def runtime_members(cls):
+    """{name: kind} of `cls`, as stub_members gives them."""
+    members = {}
+    for name, value in vars(cls).items():
+        if name.startswith("_") and name not in PROTOCOL_DUNDERS:
+            continue
+        if isinstance(value, staticmethod):
+            members[name] = "staticmethod"
+        elif inspect.isdatadescriptor(value):
+            members[name] = "property"
+        else:
+            members[name] = "method"
+    # iter() falls back on __getitem__; the stub has to say so with __iter__,
+    # type checkers such as mypy do not know the fallback.
+    if "__getitem__" in members:
+        members.setdefault("__iter__", "method")
+    return members
+
+
+def stub_parameters(function):
+    """(name, kind, default) of every parameter of `function` in the stub,
+    without self or cls."""
+    args = function.args
+    check(args.vararg is None and args.kwarg is None and not args.kwonlyargs,
+          f"{function.name} has * or ** parameters in the stub")
+    names = [arg.arg for arg in args.posonlyargs + args.args]
+    kinds = ([inspect.Parameter.POSITIONAL_ONLY.description] * len(args.posonlyargs)
+             + [inspect.Parameter.POSITIONAL_OR_KEYWORD.description] * len(args.args))
+    defaults = [None] * (len(names) - len(args.defaults)) + [ast.unparse(default) for default in args.defaults]
+    parameters = list(zip(names, kinds, defaults))
+    static = [ast.unparse(decorator) for decorator in function.decorator_list] == ["staticmethod"]
+    return parameters if static else parameters[1:]
+
+
+def runtime_parameters(cls, name, kind):
+    """(name, kind, default) of every parameter of `cls.name`, without self."""
+    if name == "__new__":
+        parameters = list(inspect.signature(cls).parameters.values())
+    else:
+        parameters = list(inspect.signature(getattr(cls, name)).parameters.values())
+        if kind == "method":
+            parameters = parameters[1:]
+
+    def default(parameter):
+        if parameter.default is inspect.Parameter.empty:
+            return None
+        return "..." if parameter.default is Ellipsis else repr(parameter.default)
+
+    return [(parameter.name, parameter.kind.description, default(parameter)) for parameter in parameters]
+
+
+def stub_matches_module():
+    tree = ast.parse(STUB.read_text(encoding="utf-8"), str(STUB))
+    public = {}
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        name = node.target.id if isinstance(node, ast.AnnAssign) else getattr(node, "name", None)
+        check(name is not None, f"the stub has {ast.unparse(node)!r}")
+        if not name.startswith("_"):
+            public[name] = node
+    check(sorted(public) == CLASSES, f"{sorted(public.keys() - set(CLASSES))} are only in the stub, "
+          f"{sorted(set(CLASSES) - public.keys())} only in the module")
+
+    for name in CLASSES:
+        node, cls = public[name], getattr(rr, name)
+        check(isinstance(node, ast.ClassDef), f"{name} is no class in the stub")
+        final = [ast.unparse(decorator) for decorator in node.decorator_list] == ["final"]
+        check(final == (not cls.__flags__ & BASETYPE), f"{name} is final in the stub: {final}")
+        members, unhashable = stub_members(node)
+        check(unhashable == (cls.__hash__ is None), f"{name} is unhashable in the stub: {unhashable}")
+        expected = runtime_members(cls)
+        check(members == expected, f"{name} has {sorted(members.items() - expected.items())} only in the stub, "
+              f"{sorted(expected.items() - members.items())} only in the module")
+
+        functions = {item.name: item for item in node.body if isinstance(item, ast.FunctionDef)}
+        for member, kind in members.items():
+            # Only the stub has the __iter__ that runtime_members adds.
+            if kind == "property" or member not in vars(cls):
+                continue
+            got = stub_parameters(functions[member])
+            expected = runtime_parameters(cls, member, kind)
+            check(got == expected, f"{name}.{member} takes {got} in the stub, {expected} in the module")
 
 
 def point_i_has_the_voxelizer_interface():
@@ -601,6 +723,7 @@ def urdf_robot_moves_links():
 
 TEST_CASES = [
     module_exports_its_classes,
+    stub_matches_module,
     point_i_has_the_voxelizer_interface,
     value_classes_have_properties,
     output_classes_can_not_be_created,

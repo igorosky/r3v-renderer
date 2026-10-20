@@ -388,7 +388,10 @@ impl JsTwist {
     /// `linear` is a `Vec3`, `rotational` a `Vec4`. Without them the
     /// identity: no translation, no rotation.
     #[wasm_bindgen(constructor)]
-    pub fn new(linear: Option<JsValue>, rotational: Option<JsValue>) -> Result<JsTwist> {
+    pub fn new(
+        #[wasm_bindgen(unchecked_optional_param_type = "Vec3")] linear: Option<JsValue>,
+        #[wasm_bindgen(unchecked_optional_param_type = "Vec4")] rotational: Option<JsValue>,
+    ) -> Result<JsTwist> {
         Ok(Self {
             linear: match linear {
                 Some(linear) => vector(&linear, &|| "linear".to_owned())?,

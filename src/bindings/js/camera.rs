@@ -69,10 +69,11 @@ impl JsOrbitCamera {
     /// units along +Z.
     #[wasm_bindgen(constructor)]
     pub fn new(
-        target: Option<JsValue>,
-        distance: Option<f32>,
-        yaw_deg: Option<f32>,
-        pitch_deg: Option<f32>,
+        #[wasm_bindgen(unchecked_optional_param_type = "Vec3")] target: Option<JsValue>,
+        // After `target`, wasm-bindgen wants every parameter marked like it
+        #[wasm_bindgen(unchecked_optional_param_type = "number")] distance: Option<f32>,
+        #[wasm_bindgen(unchecked_optional_param_type = "number")] yaw_deg: Option<f32>,
+        #[wasm_bindgen(unchecked_optional_param_type = "number")] pitch_deg: Option<f32>,
     ) -> Result<JsOrbitCamera> {
         let [x, y, z] = match target {
             Some(target) => vector(&target, &|| "target".to_owned())?,
