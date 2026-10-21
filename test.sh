@@ -55,67 +55,63 @@ group_core() {
     done
 }
 
-# group_c() {
-#     local features
-#     local sets=(
-#         "c"
-#         "c,single_threaded"
-#         "c,multi_threaded"
-#         "c,single_threaded,multi_threaded"
-#         "cpp"
-#         "cpp,single_threaded,multi_threaded"
-#         "c,cpp,single_threaded,multi_threaded"
-#     )
-#     for features in "${sets[@]}"; do
-#         clippy "$features"
-#     done
-#     cargo_test "c,single_threaded,multi_threaded" --test c_bindings
-# }
-#
-# group_python() {
-#     local features
-#     local sets=(
-#         "python"
-#         "python,single_threaded"
-#         "python,multi_threaded"
-#         "python,single_threaded,multi_threaded"
-#     )
-#     for features in "${sets[@]}"; do
-#         clippy "$features"
-#     done
-#     for features in "${sets[@]}"; do
-#         cargo_test "$features" --test python_bindings
-#     done
-# }
-#
-# group_js() {
-#     local features
-#     local sets=(
-#         "js"
-#         "js,single_threaded"
-#     )
-#     for features in "${sets[@]}"; do
-#         clippy "$features"
-#         clippy "$features" --target wasm32-unknown-unknown
-#     done
-#     for features in "${sets[@]}"; do
-#         cargo_test "$features" --test js_bindings
-#     done
-# }
+# Needs a C and a C++ compiler, and a GPU for the renderer cases (a software
+# Vulkan one such as lavapipe works).
+group_c() {
+    local features
+    local sets=(
+        "c"
+        "c,multi-threaded"
+        "cpp"
+        "c,cpp"
+        "c,cpp,multi-threaded"
+    )
+    for features in "${sets[@]}"; do
+        clippy "$features"
+    done
+    cargo_test "c" --lib bindings
+    cargo_test "c" --test c_bindings
+    cargo_test "c,multi-threaded" --test c_bindings
+    # Alone, so the library has to export everything the C++ header declares
+    cargo_test "cpp" --test cpp_bindings
+}
+
+# Needs python3 (or PYO3_PYTHON), and a GPU for the renderer cases (a
+# software Vulkan one such as lavapipe works).
+group_python() {
+    local features
+    local sets=(
+        "python"
+        "python,multi-threaded"
+    )
+    for features in "${sets[@]}"; do
+        clippy "$features"
+    done
+    for features in "${sets[@]}"; do
+        cargo_test "$features" --test python_bindings
+    done
+}
+
+# Needs wasm-pack, the wasm32-unknown-unknown target, Node.js and the
+# `webgpu` package (`npm ci` in tests/js), and a GPU for the renderer cases (a
+# software Vulkan one such as lavapipe works). `multi-threaded` can not be
+# built for JS.
+group_js() {
+    clippy "js"
+    clippy "js" --target wasm32-unknown-unknown
+    cargo_test "js" --test js_bindings
+}
 
 groups=("$@")
 if [[ ${#groups[@]} -eq 0 ]]; then
-    # groups=(core c python js)
-    groups=(core)
+    groups=(core c python js)
 fi
 
 for group in "${groups[@]}"; do
     case "$group" in
-        # core | c | python | js) "group_$group" ;;
-        core) "group_$group" ;;
+        core | c | python | js) "group_$group" ;;
         *)
-            # echo "unknown group: $group (expected core, c, python or js)" >&2
-            echo "unknown group: $group (expected core)" >&2
+            echo "unknown group: $group (expected core, c, python or js)" >&2
             exit 1
             ;;
     esac

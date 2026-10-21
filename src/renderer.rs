@@ -513,23 +513,11 @@ impl WgpuAccelerated {
         });
         self.frame_index = 0;
     }
-}
 
-impl Renderer for WgpuAccelerated {
-    type Configuration = WgpuAcceleratedConfiguration;
-    type GeometryDelta = Vec<geometry::TriangleChunk>;
-
-    type AssetInstanceId = u64;
-    type AssetDescription = stl::StlMesh;
-    type AssetTransform = geometry::RealTwist;
-
-    type CameraState = camera::CameraState;
-
-    fn configure(&mut self, configuration: Self::Configuration) {
-        self.active_configuration = Some(configuration);
-    }
-
-    fn render(&mut self, camera_state: &Self::CameraState, output: &mut [u8]) {
+    /// `Renderer::render` for callers that can not block: waiting for the
+    /// previous frame to be read back is awaited instead. The web has to
+    /// render this way, blocking there never lets the read back finish.
+    pub async fn render_async(&mut self, camera_state: &camera::CameraState, output: &mut [u8]) {
         let config = self
             .active_configuration
             .expect("Renderer is not configured.");
@@ -553,15 +541,20 @@ impl Renderer for WgpuAccelerated {
             let read_buffer = &targets.output_buffers[read_index];
             let buffer_slice = read_buffer.slice(..);
 
-            let (sender, receiver) = std::sync::mpsc::channel();
+            let (sender, receiver) = futures_channel::oneshot::channel();
             buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-                sender.send(result).unwrap();
+                let _ = sender.send(result);
             });
+            // Native backends map (and call back) while polling, the web maps
+            // on its own and polling does nothing there
             let _ = self.state.device.poll(wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: None,
             });
-            receiver.recv().unwrap().unwrap();
+            receiver
+                .await
+                .expect("the GPU dropped the mapping callback")
+                .expect("mapping the frame buffer failed");
 
             {
                 let padded_data = buffer_slice.get_mapped_range().unwrap();
@@ -658,6 +651,25 @@ impl Renderer for WgpuAccelerated {
         );
         self.state.queue.submit(Some(encoder.finish()));
         self.frame_index += 1;
+    }
+}
+
+impl Renderer for WgpuAccelerated {
+    type Configuration = WgpuAcceleratedConfiguration;
+    type GeometryDelta = Vec<geometry::TriangleChunk>;
+
+    type AssetInstanceId = u64;
+    type AssetDescription = stl::StlMesh;
+    type AssetTransform = geometry::RealTwist;
+
+    type CameraState = camera::CameraState;
+
+    fn configure(&mut self, configuration: Self::Configuration) {
+        self.active_configuration = Some(configuration);
+    }
+
+    fn render(&mut self, camera_state: &Self::CameraState, output: &mut [u8]) {
+        pollster::block_on(self.render_async(camera_state, output))
     }
 
     fn update_geometry(&mut self, geometry_delta: Self::GeometryDelta) {

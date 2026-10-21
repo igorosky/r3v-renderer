@@ -6,6 +6,7 @@ pub mod stl;
 pub mod tesselator;
 pub mod urdf;
 
+mod bindings;
 mod turbo_colormap;
 mod vertex_arena;
 mod wgpu_utils;
