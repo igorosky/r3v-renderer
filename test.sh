@@ -46,6 +46,7 @@ group_core() {
     local sets=(
         "" # Default
         "multi-threaded"
+        "gpu-tesselator"
     )
     for features in "${sets[@]}"; do
         clippy "$features"

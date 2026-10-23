@@ -1,9 +1,12 @@
 pub mod camera;
+pub mod cpu_tesselator;
 pub mod geometry;
+pub mod gpu_context;
+#[cfg(feature = "gpu-tesselator")]
+pub mod gpu_tesselator;
 pub mod renderer;
 pub mod robot;
 pub mod stl;
-pub mod tesselator;
 pub mod urdf;
 
 mod bindings;

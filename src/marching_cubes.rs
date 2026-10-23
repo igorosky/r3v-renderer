@@ -9,7 +9,7 @@ pub(super) const MC_X_SUM_VOLUME: usize = MC_GRID_SIZE * MC_PADDED_GRID_SIZE * M
 pub(super) const MC_XY_SUM_VOLUME: usize = MC_GRID_SIZE * MC_GRID_SIZE * MC_PADDED_GRID_SIZE;
 pub(super) const MC_PADDED_GRID_VOLUME: usize =
     MC_PADDED_GRID_SIZE * MC_PADDED_GRID_SIZE * MC_PADDED_GRID_SIZE;
-pub(super) const MC_CUBE_CORNERS: [[usize; 3]; 8] = [
+pub(crate) const MC_CUBE_CORNERS: [[usize; 3]; 8] = [
     [0, 0, 0],
     [1, 0, 0],
     [1, 1, 0],
@@ -19,7 +19,7 @@ pub(super) const MC_CUBE_CORNERS: [[usize; 3]; 8] = [
     [1, 1, 1],
     [0, 1, 1],
 ];
-pub(super) const MC_CUBE_EDGES: [[usize; 2]; 12] = [
+pub(crate) const MC_CUBE_EDGES: [[usize; 2]; 12] = [
     [0, 1],
     [1, 2],
     [2, 3],
@@ -34,9 +34,9 @@ pub(super) const MC_CUBE_EDGES: [[usize; 2]; 12] = [
     [3, 7],
 ];
 const MC_ISO_LEVEL: RealUnit = 0.5;
-const MC_TRIANGLE_TABLE_WIDTH: usize = 16;
+pub(crate) const MC_TRIANGLE_TABLE_WIDTH: usize = 16;
 
-static MC_EDGE_MASKS: [u16; 256] = [
+pub(crate) static MC_EDGE_MASKS: [u16; 256] = [
     0, 265, 515, 778, 1030, 1295, 1541, 1804, 2060, 2309, 2575, 2822, 3082, 3331, 3593, 3840, 400,
     153, 915, 666, 1430, 1183, 1941, 1692, 2460, 2197, 2975, 2710, 3482, 3219, 3993, 3728, 560,
     825, 51, 314, 1590, 1855, 1077, 1340, 2620, 2869, 2111, 2358, 3642, 3891, 3129, 3376, 928, 681,
@@ -54,7 +54,7 @@ static MC_EDGE_MASKS: [u16; 256] = [
     3219, 3482, 2710, 2975, 2197, 2460, 1692, 1941, 1183, 1430, 666, 915, 153, 400, 3840, 3593,
     3331, 3082, 2822, 2575, 2309, 2060, 1804, 1541, 1295, 1030, 778, 515, 265, 0,
 ];
-static MC_TRIANGLE_EDGES: [[i8; MC_TRIANGLE_TABLE_WIDTH]; 256] = [
+pub(crate) static MC_TRIANGLE_EDGES: [[i8; MC_TRIANGLE_TABLE_WIDTH]; 256] = [
     [
         -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     ],

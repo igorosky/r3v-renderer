@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use common::Lcg;
 use r3v_renderer::{
     Tesselator,
+    cpu_tesselator::{CpuTesselator, CpuTesselatorConfiguration},
     geometry::{DiscretePoint, PointI, RealQuad, RealTriangle, TriangleChunk},
-    tesselator::{CpuTesselator, CpuTesselatorConfiguration},
 };
 
 const BRICK: [i32; 3] = [4, 4, 2];

@@ -1,7 +1,27 @@
 use std::ops::Range;
 
 use crate::wgpu_utils::*;
-use crate::{Renderer, camera, geometry, stl, vertex_arena::VertexArena};
+use crate::{Renderer, camera, geometry, gpu_context::GpuContext, stl, vertex_arena::VertexArena};
+
+#[non_exhaustive]
+pub enum GeometryDelta {
+    Cpu(Vec<geometry::TriangleChunk>),
+    #[cfg(feature = "gpu-tesselator")]
+    Gpu(crate::gpu_tesselator::GpuGeometryDelta),
+}
+
+impl From<Vec<geometry::TriangleChunk>> for GeometryDelta {
+    fn from(chunks: Vec<geometry::TriangleChunk>) -> Self {
+        Self::Cpu(chunks)
+    }
+}
+
+#[cfg(feature = "gpu-tesselator")]
+impl From<crate::gpu_tesselator::GpuGeometryDelta> for GeometryDelta {
+    fn from(delta: crate::gpu_tesselator::GpuGeometryDelta) -> Self {
+        Self::Gpu(delta)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WgpuAcceleratedConfiguration {
@@ -10,8 +30,7 @@ pub struct WgpuAcceleratedConfiguration {
 }
 
 struct WgpuAcceleratedState {
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
+    pub context: GpuContext,
     pub environment_pipeline: wgpu::RenderPipeline,
     pub asset_pipeline: wgpu::RenderPipeline,
     pub pixel_size: u32,
@@ -219,22 +238,13 @@ impl WgpuAccelerated {
     }
 
     pub async fn new_async() -> Option<Self> {
-        let instance = wgpu::Instance::default();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions::default())
-            .await
-            .ok()?;
-        let required_limits = wgpu::Limits {
-            max_buffer_size: adapter.limits().max_buffer_size,
-            ..Default::default()
-        };
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_limits,
-                ..Default::default()
-            })
-            .await
-            .ok()?;
+        let context = GpuContext::new_async().await?;
+        Some(Self::with_context(&context))
+    }
+
+    pub fn with_context(context: &GpuContext) -> Self {
+        let device = context.device();
+        let queue = context.queue();
 
         // Camera
         let camera_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -267,7 +277,7 @@ impl WgpuAccelerated {
         });
 
         // Colormap
-        let colormap_texture = create_turbo_colormap_texture(&device, &queue);
+        let colormap_texture = create_turbo_colormap_texture(device, queue);
         let colormap_texture_view =
             colormap_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let colormap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -371,7 +381,7 @@ impl WgpuAccelerated {
             multiview_mask: None,
             cache: None,
         });
-        let vertex_arena = VertexArena::new(&device);
+        let vertex_arena = VertexArena::new(device);
 
         // Asset shader
         let asset_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -427,11 +437,10 @@ impl WgpuAccelerated {
             cache: None,
         });
 
-        let assets = Assets::new(&device);
+        let assets = Assets::new(device);
 
         let state = WgpuAcceleratedState {
-            device,
-            queue,
+            context: context.clone(),
             environment_pipeline,
             asset_pipeline,
             pixel_size: std::mem::size_of::<[u8; 4]>() as u32,
@@ -440,14 +449,18 @@ impl WgpuAccelerated {
             colormap_bind_group,
         };
 
-        Some(Self {
+        Self {
             state,
             active_configuration: None,
             render_targets: None,
             vertex_arena,
             assets,
             frame_index: 0,
-        })
+        }
+    }
+
+    pub fn context(&self) -> &GpuContext {
+        &self.state.context
     }
 
     fn rebuild_targets(&mut self) {
@@ -474,7 +487,11 @@ impl WgpuAccelerated {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         };
-        let texture = self.state.device.create_texture(&texture_descriptor);
+        let texture = self
+            .state
+            .context
+            .device()
+            .create_texture(&texture_descriptor);
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let depth_texture_descriptor = wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
@@ -490,15 +507,22 @@ impl WgpuAccelerated {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         };
-        let depth_texture = self.state.device.create_texture(&depth_texture_descriptor);
+        let depth_texture = self
+            .state
+            .context
+            .device()
+            .create_texture(&depth_texture_descriptor);
         let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let create_output_buffer = || {
-            self.state.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Output Buffer"),
-                size: (padded_bytes_per_row * config.height) as wgpu::BufferAddress,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            })
+            self.state
+                .context
+                .device()
+                .create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Output Buffer"),
+                    size: (padded_bytes_per_row * config.height) as wgpu::BufferAddress,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                })
         };
         self.render_targets = Some(RenderTargets {
             width: config.width,
@@ -514,9 +538,6 @@ impl WgpuAccelerated {
         self.frame_index = 0;
     }
 
-    /// `Renderer::render` for callers that can not block: waiting for the
-    /// previous frame to be read back is awaited instead. The web has to
-    /// render this way, blocking there never lets the read back finish.
     pub async fn render_async(&mut self, camera_state: &camera::CameraState, output: &mut [u8]) {
         let config = self
             .active_configuration
@@ -533,7 +554,7 @@ impl WgpuAccelerated {
         if needs_rebuild {
             self.rebuild_targets();
         }
-        self.assets.flush_transforms(&self.state.queue);
+        self.assets.flush_transforms(self.state.context.queue());
 
         let targets = self.render_targets.as_ref().unwrap();
         if self.frame_index > 0 {
@@ -547,7 +568,7 @@ impl WgpuAccelerated {
             });
             // Native backends map (and call back) while polling, the web maps
             // on its own and polling does nothing there
-            let _ = self.state.device.poll(wgpu::PollType::Wait {
+            let _ = self.state.context.device().poll(wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: None,
             });
@@ -569,14 +590,15 @@ impl WgpuAccelerated {
         } else {
             output.fill(0);
         }
-        self.state.queue.write_buffer(
+        self.state.context.queue().write_buffer(
             &self.state.camera_uniform_buffer,
             0,
             bytemuck::bytes_of::<camera::CameraUniform>(&camera_state.into()),
         );
         let mut encoder =
             self.state
-                .device
+                .context
+                .device()
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Render Encoder"),
                 });
@@ -649,14 +671,14 @@ impl WgpuAccelerated {
                 depth_or_array_layers: 1,
             },
         );
-        self.state.queue.submit(Some(encoder.finish()));
+        self.state.context.queue().submit(Some(encoder.finish()));
         self.frame_index += 1;
     }
 }
 
 impl Renderer for WgpuAccelerated {
     type Configuration = WgpuAcceleratedConfiguration;
-    type GeometryDelta = Vec<geometry::TriangleChunk>;
+    type GeometryDelta = GeometryDelta;
 
     type AssetInstanceId = u64;
     type AssetDescription = stl::StlMesh;
@@ -673,17 +695,54 @@ impl Renderer for WgpuAccelerated {
     }
 
     fn update_geometry(&mut self, geometry_delta: Self::GeometryDelta) {
-        let device = &self.state.device;
-        let queue = &self.state.queue;
-        let mut vertices = Vec::new();
-        for geometry::TriangleChunk {
-            index,
-            triangles: quads,
-        } in geometry_delta
-        {
-            vertices.clear();
-            vertices.extend(quads.iter().flat_map(|triangle| triangle.to_vertices()));
-            self.vertex_arena.set_chunk(device, queue, index, &vertices);
+        let device = self.state.context.device();
+        let queue = self.state.context.queue();
+        match geometry_delta {
+            GeometryDelta::Cpu(chunks) => {
+                let mut vertices = Vec::new();
+                for geometry::TriangleChunk {
+                    index,
+                    triangles: quads,
+                } in chunks
+                {
+                    vertices.clear();
+                    vertices.extend(quads.iter().flat_map(|triangle| triangle.to_vertices()));
+                    self.vertex_arena.set_chunk(device, queue, index, &vertices);
+                }
+            }
+            #[cfg(feature = "gpu-tesselator")]
+            GeometryDelta::Gpu(delta) => {
+                assert_eq!(
+                    delta.context_id(),
+                    self.state.context.id(),
+                    "The geometry delta was tesselated on another GpuContext."
+                );
+                let mut copies = Vec::with_capacity(delta.chunks().len());
+                for (index, range) in delta.chunks() {
+                    let count = range.end - range.start;
+                    if count == 0 {
+                        self.vertex_arena.remove_chunk(*index);
+                        continue;
+                    }
+                    let offset = self
+                        .vertex_arena
+                        .reserve_chunk(device, queue, *index, count);
+                    copies.push((range.start, offset, count));
+                }
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("GPU Geometry Copy Encoder"),
+                });
+                for (source, destination, count) in copies {
+                    encoder.copy_buffer_to_buffer(
+                        delta.vertices(),
+                        source as wgpu::BufferAddress * VERTEX_STRIDE,
+                        self.vertex_arena.vertex_buffer(),
+                        destination as wgpu::BufferAddress * VERTEX_STRIDE,
+                        count as wgpu::BufferAddress * VERTEX_STRIDE,
+                    );
+                }
+                queue.submit(Some(encoder.finish()));
+            }
         }
         self.vertex_arena.finish_update(device, queue);
     }
@@ -698,10 +757,12 @@ impl Renderer for WgpuAccelerated {
             .iter()
             .flat_map(|triangle| triangle.to_vertices())
             .collect::<Vec<geometry::Vertex>>();
-        let first_instance =
-            self.assets
-                .upload(&self.state.device, &self.state.queue, &vertices, instances)
-                as u64;
+        let first_instance = self.assets.upload(
+            self.state.context.device(),
+            self.state.context.queue(),
+            &vertices,
+            instances,
+        ) as u64;
         (first_instance..first_instance + instances as u64).collect()
     }
 
@@ -747,5 +808,47 @@ mod tests {
         );
         assert_eq!(runs(&[false, true, true], 0), [(1, 3)]);
         assert_eq!(runs(&[true, true, false], 0), [(0, 2)]);
+    }
+
+    #[cfg(feature = "gpu-tesselator")]
+    #[test]
+    fn gpu_geometry_is_copied_into_the_arena() {
+        use super::*;
+        use crate::{
+            geometry::{DiscretePoint, Vertex},
+            gpu_tesselator::GpuGeometryDelta,
+            wgpu_utils::test_support::TestGpu,
+        };
+        use wgpu::util::DeviceExt;
+
+        let gpu = TestGpu::new();
+        let mut renderer = WgpuAccelerated::with_context(&gpu.context);
+        let vertices: Vec<Vertex> = (0..9).map(|i| Vertex::from([i as f32, 0.0, 0.0])).collect();
+        let delta = |chunks| {
+            let buffer = gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: None,
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::COPY_SRC,
+                });
+            GpuGeometryDelta::new(&gpu.context, buffer, chunks).into()
+        };
+        let chunk = |x| DiscretePoint { x, y: 0, z: 0 };
+
+        renderer.update_geometry(delta(vec![(chunk(0), 0..3), (chunk(16), 3..9)]));
+        assert_eq!(renderer.vertex_arena.draw_count(), 2);
+        let arena = gpu.read_buffer(renderer.vertex_arena.vertex_buffer());
+        let arena: &[Vertex] = bytemuck::cast_slice(&arena);
+        let contains = |drawn: &[Vertex]| {
+            arena
+                .windows(drawn.len())
+                .any(|window| bytemuck::cast_slice::<_, u8>(window) == bytemuck::cast_slice(drawn))
+        };
+        assert!(contains(&vertices[0..3]));
+        assert!(contains(&vertices[3..9]));
+
+        renderer.update_geometry(delta(vec![(chunk(0), 0..0)]));
+        assert_eq!(renderer.vertex_arena.draw_count(), 1);
     }
 }

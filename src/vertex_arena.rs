@@ -79,30 +79,38 @@ impl VertexArena {
             self.remove_chunk(index);
             return;
         }
-        let count = vertices.len() as u32;
+        let offset = self.reserve_chunk(device, queue, index, vertices.len() as u32);
+        queue.write_buffer(
+            &self.vertex_buffer,
+            offset as wgpu::BufferAddress * VERTEX_STRIDE,
+            bytemuck::cast_slice(vertices),
+        );
+    }
+
+    /// Makes room for `count` vertices of chunk `index` and draws them, returning
+    /// the vertex offset to write them at. Reserving may grow the vertex buffer,
+    /// so copies into it are recorded after all reservations.
+    pub fn reserve_chunk(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        index: DiscretePoint,
+        count: u32,
+    ) -> u32 {
+        debug_assert!(count > 0, "remove empty chunks instead");
         if let Some(alloc) = self.chunks.get_mut(&index)
             && count <= alloc.capacity
         {
             alloc.count = count;
-            queue.write_buffer(
-                &self.vertex_buffer,
-                alloc.offset as wgpu::BufferAddress * VERTEX_STRIDE,
-                bytemuck::cast_slice(vertices),
-            );
             self.draws[alloc.draw_slot].vertex_count = count;
             self.draws_dirty = true;
-            return;
+            return alloc.offset;
         }
         if let Some(alloc) = self.chunks.get(&index) {
             self.release(alloc.offset, alloc.capacity);
         }
         let capacity = size_class(count);
         let offset = self.allocate(device, queue, capacity);
-        queue.write_buffer(
-            &self.vertex_buffer,
-            offset as wgpu::BufferAddress * VERTEX_STRIDE,
-            bytemuck::cast_slice(vertices),
-        );
 
         let args = DrawIndirectArgs {
             vertex_count: count,
@@ -132,6 +140,7 @@ impl VertexArena {
             }
         }
         self.draws_dirty = true;
+        offset
     }
 
     pub fn remove_chunk(&mut self, index: DiscretePoint) {
@@ -349,6 +358,25 @@ mod tests {
         let mut harness = Harness::new();
         harness.finish_and_check();
         assert_eq!(harness.arena.draw_count(), 0);
+    }
+
+    #[test]
+    fn reserving_keeps_the_slot_while_the_chunk_fits() {
+        let gpu = TestGpu::new();
+        let mut arena = VertexArena::new(&gpu.device);
+        let first = arena.reserve_chunk(&gpu.device, &gpu.queue, index(0), 10);
+        let other = arena.reserve_chunk(&gpu.device, &gpu.queue, index(1), 10);
+        assert_ne!(first, other);
+        let capacity = size_class(10);
+        assert_eq!(
+            arena.reserve_chunk(&gpu.device, &gpu.queue, index(0), capacity),
+            first
+        );
+        assert_ne!(
+            arena.reserve_chunk(&gpu.device, &gpu.queue, index(0), capacity + 1),
+            first
+        );
+        assert_eq!(arena.draw_count(), 2);
     }
 
     #[test]

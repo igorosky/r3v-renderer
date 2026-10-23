@@ -5,10 +5,10 @@
 use crate::{
     Camera, Renderer, Tesselator,
     camera::{CameraState, OrbitCamera},
+    cpu_tesselator::{CpuTesselator, CpuTesselatorConfiguration, SUBCHUNK_SIZE},
     geometry::{PointI, RealTwist, TriangleChunk},
     renderer::{WgpuAccelerated, WgpuAcceleratedConfiguration},
     stl::StlMesh,
-    tesselator::{CpuTesselator, CpuTesselatorConfiguration, SUBCHUNK_SIZE},
 };
 
 /// Bytes per pixel of a rendered frame.
@@ -191,7 +191,7 @@ impl CheckedRenderer {
     }
 
     pub(crate) fn update_geometry(&mut self, delta: Vec<TriangleChunk>) {
-        self.renderer.update_geometry(delta);
+        self.renderer.update_geometry(delta.into());
     }
 
     /// Checks that `instances` more instances of `mesh` fit, before anything

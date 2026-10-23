@@ -3,12 +3,11 @@ use image::{ImageBuffer, Rgba};
 use r3v_renderer::{
     Camera, Renderer, Robot, Tesselator,
     camera::OrbitCamera,
+    cpu_tesselator::{CpuTesselator, CpuTesselatorConfiguration},
     geometry::{self, PointI, RealTwist},
     renderer::{self, WgpuAccelerated},
     robot::UrdfRobot,
-    stl,
-    tesselator::{CpuTesselator, CpuTesselatorConfiguration},
-    urdf,
+    stl, urdf,
 };
 use rayon::prelude::*;
 use std::{
@@ -273,7 +272,7 @@ impl Demo {
                 self.quad_count += delta.triangles.len();
                 self.chunk_count += !delta.triangles.is_empty() as usize;
             }
-            self.renderer.update_geometry(geometry_delta);
+            self.renderer.update_geometry(geometry_delta.into());
         }
 
         // Robot meshes were uploaded once; each frame only moves their instances.

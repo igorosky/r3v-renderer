@@ -77,6 +77,9 @@ pub(crate) mod test_support {
     pub(crate) struct TestGpu {
         pub device: wgpu::Device,
         pub queue: wgpu::Queue,
+        pub adapter: wgpu::Adapter,
+        /// Of `device` and `queue`.
+        pub context: crate::gpu_context::GpuContext,
         _guard: MutexGuard<'static, ()>,
     }
 
@@ -92,9 +95,13 @@ pub(crate) mod test_support {
             let (device, queue) =
                 pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                     .expect("failed to create wgpu device");
+            let context =
+                crate::gpu_context::GpuContext::from_wgpu(&adapter, device.clone(), queue.clone());
             Self {
                 device,
                 queue,
+                adapter,
+                context,
                 _guard: guard,
             }
         }

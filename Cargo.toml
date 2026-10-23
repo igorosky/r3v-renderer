@@ -37,6 +37,7 @@ pyo3-build-config = { version = "0.29.3", optional = true }
 c = ["dep:cbindgen"]
 cpp = ["dep:cbindgen"]
 demo = ["dep:image", "dep:winit", "dep:softbuffer", "multi-threaded"]
+gpu-tesselator = []
 js = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys"]
 multi-threaded = ["dep:rayon"]
 python = ["dep:pyo3", "dep:pyo3-build-config"]
