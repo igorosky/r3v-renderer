@@ -11,15 +11,18 @@ struct CameraUniform {
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
 
+// A uniform buffer rather than a 1D texture: sampling one gave black on the Jetson's NVIDIA driver.
+struct Colormap {
+    colors: array<vec4<f32>, 256>,
+};
+
 @group(1) @binding(0)
-var colormap_texture: texture_1d<f32>;
-@group(1) @binding(1)
-var colormap_sampler: sampler;
+var<uniform> colormap: Colormap;
 
 fn turbo_colormap(x: f32) -> vec3<f32> {
-    let size = f32(textureDimensions(colormap_texture));
-    let u = (clamp(x, 0.0, 1.0) * (size - 1.0) + 0.5) / size;
-    return textureSample(colormap_texture, colormap_sampler, u).rgb;
+    let position = clamp(x, 0.0, 1.0) * 255.0;
+    let index = min(u32(position), 254u);
+    return mix(colormap.colors[index].rgb, colormap.colors[index + 1u].rgb, position - f32(index));
 }
 
 fn distance_from_camera(world_position: vec3<f32>) -> f32 {
