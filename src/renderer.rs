@@ -267,51 +267,28 @@ impl WgpuAccelerated {
         });
 
         // Colormap
-        let colormap_texture = create_turbo_colormap_texture(&device, &queue);
-        let colormap_texture_view =
-            colormap_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let colormap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Colormap Sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
+        let colormap_buffer = create_turbo_colormap_buffer(&device);
         let colormap_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Colormap Bind Group Layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D1,
-                            multisampled: false,
-                        },
-                        count: None,
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
+                    count: None,
+                }],
             });
         let colormap_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Colormap Bind Group"),
             layout: &colormap_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&colormap_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&colormap_sampler),
-                },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: colormap_buffer.as_entire_binding(),
+            }],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -558,6 +535,8 @@ impl WgpuAccelerated {
 
             {
                 let padded_data = buffer_slice.get_mapped_range().unwrap();
+                // The CPU may still hold lines of this buffer from two frames ago
+                invalidate_cpu_cache(&padded_data);
                 let mut offset = 0;
                 for chunk in padded_data.chunks(targets.padded_bytes_per_row as usize) {
                     let unpadded_chunk = &chunk[..targets.unpadded_bytes_per_row as usize];
@@ -649,7 +628,12 @@ impl WgpuAccelerated {
                 depth_or_array_layers: 1,
             },
         );
-        self.state.queue.submit(Some(encoder.finish()));
+        self.state
+            .queue
+            .submit(std::iter::once(encoder.finish()).chain(host_read_barrier(
+                &self.state.device,
+                &targets.output_buffers[write_index],
+            )));
         self.frame_index += 1;
     }
 }

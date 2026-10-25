@@ -501,6 +501,9 @@ static void renderer_draws_voxels(void) {
     static uint8_t frame[W * H * 4];
     render_now(renderer, camera, W, H, frame);
     CHECK(lit(frame, W, W / 2, H / 2));
+    /* Coloured by distance: a few metres along the view is turbo's blue (BGRA). */
+    const uint8_t *centre = frame + 4 * ((H / 2) * W + W / 2);
+    CHECK(centre[0] > centre[2]);
     CHECK(!lit(frame, W, 0, 0));
     CHECK(!lit(frame, W, W - 1, H - 1));
 
