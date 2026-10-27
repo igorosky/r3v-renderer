@@ -105,6 +105,12 @@ struct R3vWgpuRendererConfiguration {
   uint32_t width;
   /// Frame height in pixels.
   uint32_t height;
+  /// Opaque background color, sRGB: `x`, `y`, `z` are red, green and blue
+  /// between 0 and 1.
+  R3vVec3 background_color;
+  /// Distance along the camera's forward axis over which the voxel colormap
+  /// runs once. Has to be positive.
+  float color_depth_range;
 };
 
 /// Rotation quaternion.
@@ -303,8 +309,8 @@ R3vStatus r3v_orbit_camera_get_state(R3vOrbitCamera camera,
 /// rendering.
 R3vWgpuRenderer *r3v_wgpu_renderer_create();
 
-/// `Renderer::configure`: sets the frame size. Both sides have to be
-/// between 1 and 8192.
+/// `Renderer::configure`: sets the frame size, the background color and the
+/// colormap depth range. Both sides have to be between 1 and 8192.
 R3vStatus r3v_wgpu_renderer_configure(R3vWgpuRenderer *renderer,
                                       R3vWgpuRendererConfiguration configuration);
 

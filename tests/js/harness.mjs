@@ -113,6 +113,12 @@ export function lit(frame, width, x, y) {
     return frame[offset] !== 0 || frame[offset + 1] !== 0 || frame[offset + 2] !== 0;
 }
 
+/** Whether the pixel at (x, y) is bgr, opaque, within 1 per channel. */
+export function pixelIs(frame, width, x, y, bgr) {
+    const offset = (y * width + x) * 4;
+    return [...bgr, 255].every((expected, k) => Math.abs(frame[offset + k] - expected) <= 1);
+}
+
 // ------------------------------------------------------------------ main
 
 /** testCases: test functions, run by name. Resolves to the exit code. */

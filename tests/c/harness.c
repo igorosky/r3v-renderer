@@ -63,13 +63,17 @@ void write_file(const char *path, const char *contents) {
     CHECK(fclose(file) == 0);
 }
 
+R3vWgpuRendererConfiguration renderer_configuration(uint32_t width, uint32_t height) {
+    R3vWgpuRendererConfiguration configuration = {width, height, {0.0f, 0.0f, 0.0f}, 50.0f};
+    return configuration;
+}
+
 R3vWgpuRenderer *make_renderer(uint32_t width, uint32_t height) {
     R3vWgpuRenderer *renderer = r3v_wgpu_renderer_create();
     if (renderer == NULL) {
         fail(__FILE__, __LINE__, "no renderer: %s", r3v_renderer_last_error());
     }
-    R3vWgpuRendererConfiguration configuration = {width, height};
-    CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
+    CHECK_OK(r3v_wgpu_renderer_configure(renderer, renderer_configuration(width, height)));
     return renderer;
 }
 
@@ -100,6 +104,18 @@ void render_now(R3vWgpuRenderer *renderer, R3vOrbitCamera camera, uint32_t width
 bool lit(const uint8_t *frame, uint32_t width, uint32_t x, uint32_t y) {
     const uint8_t *pixel = frame + ((size_t)y * width + x) * 4;
     return pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0;
+}
+
+bool pixel_is(const uint8_t *frame, uint32_t width, uint32_t x, uint32_t y, uint8_t b, uint8_t g,
+              uint8_t r) {
+    const uint8_t *pixel = frame + ((size_t)y * width + x) * 4;
+    const uint8_t expected[4] = {b, g, r, 255};
+    for (size_t k = 0; k < 4; ++k) {
+        if (abs((int)pixel[k] - (int)expected[k]) > 1) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /* ---------------------------------------------------------------- main */
