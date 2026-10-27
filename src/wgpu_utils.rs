@@ -39,17 +39,28 @@ pub fn create_vertex_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buf
     })
 }
 
-/// The colormap as `array<vec4<f32>, 256>` (vec4 for the uniform array stride of 16 bytes).
-pub fn create_turbo_colormap_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+/// Offset of the colormap parameters (`depth_range`) behind the colors.
+pub const COLORMAP_PARAMS_OFFSET: wgpu::BufferAddress =
+    (TURBO_COLORMAP.len() * std::mem::size_of::<[f32; 4]>()) as wgpu::BufferAddress;
+
+/// The colormap as `array<vec4<f32>, 256>` (vec4 for the uniform array stride of 16 bytes),
+/// followed by its parameters padded to the struct alignment of 16 bytes.
+pub fn create_turbo_colormap_buffer(device: &wgpu::Device, depth_range: f32) -> wgpu::Buffer {
     let colors = TURBO_COLORMAP
         .iter()
         .map(|&[r, g, b]| [r, g, b, 1.0])
+        .chain(std::iter::once(colormap_params(depth_range)))
         .collect::<Vec<[f32; 4]>>();
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Turbo Colormap Buffer"),
         contents: bytemuck::cast_slice(&colors),
-        usage: wgpu::BufferUsages::UNIFORM,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     })
+}
+
+/// The colormap parameters as written at `COLORMAP_PARAMS_OFFSET`.
+pub fn colormap_params(depth_range: f32) -> [f32; 4] {
+    [depth_range, 0.0, 0.0, 0.0]
 }
 
 /// A command buffer making a copy into `buffer` visible to the host: a TRANSFER_WRITE ->
@@ -257,10 +268,15 @@ mod tests {
     #[test]
     fn turbo_buffer_holds_whole_colormap() {
         let gpu = TestGpu::new();
-        let buffer = create_turbo_colormap_buffer(&gpu.device);
-        // 256 entries of vec4<f32>.
-        assert_eq!(buffer.size(), 256 * 16);
-        assert!(buffer.usage().contains(wgpu::BufferUsages::UNIFORM));
+        let buffer = create_turbo_colormap_buffer(&gpu.device, 50.0);
+        // 256 entries of vec4<f32>, then the parameters padded to a vec4<f32>.
+        assert_eq!(COLORMAP_PARAMS_OFFSET, 256 * 16);
+        assert_eq!(buffer.size(), 256 * 16 + 16);
+        assert!(
+            buffer
+                .usage()
+                .contains(wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST)
+        );
     }
 
     #[test]

@@ -65,6 +65,10 @@ R3vVec3 vec3(float x, float y, float z);
 const char *temp_path(const char *name);
 void write_file(const char *path, const char *contents);
 
+/* A width x height configuration with a black background and the default
+ * colormap depth range. */
+R3vWgpuRendererConfiguration renderer_configuration(uint32_t width, uint32_t height);
+
 /* Creates a renderer configured to width x height. Fails the test on
  * failure. */
 R3vWgpuRenderer *make_renderer(uint32_t width, uint32_t height);
@@ -81,5 +85,9 @@ void render_now(R3vWgpuRenderer *renderer, R3vOrbitCamera camera, uint32_t width
 
 /* Whether the pixel at (x, y) is not black (alpha ignored). */
 bool lit(const uint8_t *frame, uint32_t width, uint32_t x, uint32_t y);
+
+/* Whether the pixel at (x, y) is (b, g, r), opaque, within 1 per channel. */
+bool pixel_is(const uint8_t *frame, uint32_t width, uint32_t x, uint32_t y, uint8_t b, uint8_t g,
+              uint8_t r);
 
 #endif /* RENDERER_C_TEST_HARNESS_H */

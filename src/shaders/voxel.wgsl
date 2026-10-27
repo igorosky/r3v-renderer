@@ -1,5 +1,4 @@
 const light_direction = vec3<f32>(0.25, 1.0, 0.25);
-const color_depth_range = 50.0;
 const minimum_light_intensity = 0.125;
 
 struct CameraUniform {
@@ -14,6 +13,7 @@ var<uniform> camera: CameraUniform;
 // A uniform buffer rather than a 1D texture: sampling one gave black on the Jetson's NVIDIA driver.
 struct Colormap {
     colors: array<vec4<f32>, 256>,
+    depth_range: f32,
 };
 
 @group(1) @binding(0)
@@ -26,7 +26,7 @@ fn turbo_colormap(x: f32) -> vec3<f32> {
 }
 
 fn distance_from_camera(world_position: vec3<f32>) -> f32 {
-    return dot(world_position - camera.position, camera.forward) / color_depth_range;
+    return dot(world_position - camera.position, camera.forward);
 }
 
 struct VertexInput {
@@ -59,5 +59,5 @@ fn vs_main(
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let smooth_normal = normalize(in.normal);
     let light_intensity = max(dot(smooth_normal, normalize(light_direction)), minimum_light_intensity);
-    return vec4<f32>(turbo_colormap(in.distance_from_camera) * light_intensity, 1.0);
+    return vec4<f32>(turbo_colormap(in.distance_from_camera / colormap.depth_range) * light_intensity, 1.0);
 }

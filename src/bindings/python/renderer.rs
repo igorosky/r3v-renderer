@@ -2,11 +2,17 @@
 
 use pyo3::{buffer::PyBuffer, exceptions::PyValueError, prelude::*};
 
-use crate::bindings::checked::CheckedRenderer;
+use crate::{
+    bindings::checked::CheckedRenderer,
+    renderer::{DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE},
+};
 
-use super::{PyCameraState, PyTwist, stl::PyStlMesh, tesselator::PyGeometryDelta};
+use super::{PyCameraState, PyTwist, Vec3, stl::PyStlMesh, tesselator::PyGeometryDelta};
 
-/// `renderer::WgpuAcceleratedConfiguration`: the frame size in pixels.
+/// `renderer::WgpuAcceleratedConfiguration`: the frame size in pixels, the
+/// opaque sRGB background color (components between 0 and 1) and the
+/// distance along the camera's forward axis over which the voxel colormap
+/// runs once.
 #[pyclass(
     module = "r3v_renderer",
     name = "WgpuRendererConfiguration",
@@ -15,22 +21,35 @@ use super::{PyCameraState, PyTwist, stl::PyStlMesh, tesselator::PyGeometryDelta}
     get_all,
     set_all
 )]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PyWgpuRendererConfiguration {
     width: u32,
     height: u32,
+    background_color: Vec3,
+    color_depth_range: f32,
 }
 
 #[pymethods]
 impl PyWgpuRendererConfiguration {
     #[new]
-    fn new(width: u32, height: u32) -> Self {
-        Self { width, height }
+    #[pyo3(signature = (
+        width,
+        height,
+        background_color = (DEFAULT_BACKGROUND_COLOR[0], DEFAULT_BACKGROUND_COLOR[1], DEFAULT_BACKGROUND_COLOR[2]),
+        color_depth_range = DEFAULT_COLOR_DEPTH_RANGE,
+    ))]
+    fn new(width: u32, height: u32, background_color: Vec3, color_depth_range: f32) -> Self {
+        Self {
+            width,
+            height,
+            background_color,
+            color_depth_range,
+        }
     }
     fn __repr__(&self) -> String {
         format!(
-            "WgpuRendererConfiguration(width={}, height={})",
-            self.width, self.height
+            "WgpuRendererConfiguration(width={}, height={}, background_color={:?}, color_depth_range={:?})",
+            self.width, self.height, self.background_color, self.color_depth_range
         )
     }
 }
@@ -56,12 +75,18 @@ impl PyWgpuRenderer {
         })
     }
 
-    /// `Renderer::configure`: sets the frame size. `ValueError` unless both
-    /// sides are between 1 and 8192.
+    /// `Renderer::configure`: sets the frame size, the background color and
+    /// the colormap depth range. `ValueError` unless both sides are between 1
+    /// and 8192, the color components between 0 and 1 and the depth range
+    /// positive.
     fn configure(&mut self, configuration: PyWgpuRendererConfiguration) -> PyResult<()> {
-        Ok(self
-            .renderer
-            .configure(configuration.width, configuration.height)?)
+        let (r, g, b) = configuration.background_color;
+        Ok(self.renderer.configure(
+            configuration.width,
+            configuration.height,
+            [r, g, b],
+            configuration.color_depth_range,
+        )?)
     }
 
     /// `Renderer::update_geometry`: replaces the triangles of every chunk in

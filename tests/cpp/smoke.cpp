@@ -46,7 +46,7 @@ int main() {
     const uint32_t width = 16, height = 16;
     R3vWgpuRenderer *renderer = r3v_wgpu_renderer_create();
     CHECK(renderer != nullptr);
-    CHECK_OK(r3v_wgpu_renderer_configure(renderer, R3vWgpuRendererConfiguration{width, height}));
+    CHECK_OK(r3v_wgpu_renderer_configure(renderer, R3vWgpuRendererConfiguration{width, height, {0.0f, 0.0f, 0.0f}, 50.0f}));
     CHECK_OK(r3v_wgpu_renderer_update_geometry(renderer, delta));
     const R3vTriangle triangle{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
     R3vStlMesh *mesh = r3v_stl_mesh_from_triangles(&triangle, 1);
