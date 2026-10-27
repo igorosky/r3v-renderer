@@ -109,6 +109,7 @@ Controls:
   Shift             move faster
   O                 toggle auto-orbit
   C                 toggle marching-cubes terrain smoothing
+  V                 toggle frustum culling of terrain chunks
   R                 reset camera
   F                 focus camera on the robot
   M                 add/remove the robot arm
@@ -369,6 +370,9 @@ impl Demo {
             KeyCode::KeyC => self
                 .tesselator
                 .set_marching_cubes_enabled(!self.tesselator.marching_cubes_enabled()),
+            KeyCode::KeyV => self
+                .renderer
+                .set_frustum_culling(!self.renderer.frustum_culling()),
             KeyCode::KeyR => {
                 self.camera = initial_camera();
                 self.auto_orbit = true;
@@ -403,11 +407,17 @@ impl Demo {
         } else {
             "MC OFF"
         };
-        self.overlay_text = format!("{:.0} FPS {:.1}MS {}", fps, frame_ms, smoothing);
+        let (drawn, chunks) = self.renderer.drawn_chunks();
+        let culling = if self.renderer.frustum_culling() {
+            format!("CULL {drawn}/{chunks}")
+        } else {
+            "CULL OFF".to_owned()
+        };
+        self.overlay_text = format!("{:.0} FPS {:.1}MS {} {}", fps, frame_ms, smoothing, culling);
         if let Some(window) = &self.window {
             window.set_title(&format!(
-                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated",
-                fps, frame_ms, self.quad_count, self.chunk_count,
+                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated, {} of {} chunks drawn",
+                fps, frame_ms, self.quad_count, self.chunk_count, drawn, chunks,
             ));
         }
         self.quad_count = 0;
@@ -1617,6 +1627,12 @@ fn glyph(c: char) -> [u8; 5] {
         'F' => [0b111, 0b100, 0b110, 0b100, 0b100],
         'P' => [0b111, 0b101, 0b111, 0b100, 0b100],
         'M' => [0b101, 0b111, 0b111, 0b101, 0b101],
+        'C' => [0b111, 0b100, 0b100, 0b100, 0b111],
+        'O' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        'N' => [0b110, 0b101, 0b101, 0b101, 0b101],
+        'U' => [0b101, 0b101, 0b101, 0b101, 0b111],
+        'L' => [0b100, 0b100, 0b100, 0b100, 0b111],
+        '/' => [0b001, 0b001, 0b010, 0b100, 0b100],
         _ => [0; 5],
     }
 }

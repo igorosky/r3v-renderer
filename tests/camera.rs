@@ -1,7 +1,7 @@
 mod common;
 
 use cgmath::{EuclideanSpace, InnerSpace, Point3, Vector4};
-use common::{close, close3, close3_eps};
+use common::{Lcg, close, close3, close3_eps};
 use r3v_renderer::{
     Camera,
     camera::{CameraState, CameraUniform, OrbitCamera},
@@ -397,4 +397,77 @@ fn default_camera_uniform_is_identity_looking_down_negative_z() {
     assert_eq!(&floats[..16], identity.as_flattened());
     assert_eq!(&floats[16..19], &[0.0, 0.0, 0.0]);
     assert_eq!(&floats[20..23], &[0.0, 0.0, -1.0]);
+}
+
+#[test]
+fn frustum_keeps_boxes_in_view() {
+    // From (0, 0, 5) towards negative z
+    let frustum = OrbitCamera::default().get_state(ASPECT).frustum();
+    let boxes = [
+        ([-1.0; 3], [1.0; 3]),                    // around the target
+        ([-0.5, -0.5, 4.8], [0.5, 0.5, 5.2]),     // through the near plane
+        ([-0.1, -0.1, -96.0], [0.1, 0.1, -94.0]), // through the far plane
+        ([2.5, -0.5, -0.5], [10.0, 0.5, 0.5]),    // through the right plane
+        ([-1000.0; 3], [1000.0; 3]),              // around the whole view
+    ];
+    for (min, max) in boxes {
+        assert!(frustum.intersects_box(min, max), "{min:?}..{max:?}");
+    }
+}
+
+#[test]
+fn frustum_drops_boxes_beyond_each_plane() {
+    let frustum = OrbitCamera::default().get_state(ASPECT).frustum();
+    let boxes = [
+        ([-1.0, -1.0, 6.0], [1.0, 1.0, 7.0]),       // behind the camera
+        ([-1.0, -1.0, -200.0], [1.0, 1.0, -150.0]), // past the far plane
+        ([-20.0, -1.0, -1.0], [-10.0, 1.0, 1.0]),   // left
+        ([10.0, -1.0, -1.0], [20.0, 1.0, 1.0]),     // right
+        ([-1.0, -20.0, -1.0], [1.0, -10.0, 1.0]),   // below
+        ([-1.0, 10.0, -1.0], [1.0, 20.0, 1.0]),     // above
+    ];
+    for (min, max) in boxes {
+        assert!(!frustum.intersects_box(min, max), "{min:?}..{max:?}");
+    }
+}
+
+#[test]
+fn frustum_agrees_with_projection() {
+    let mut rng = Lcg::new(7);
+    let mut camera = OrbitCamera::default();
+    let (mut inside, mut outside) = (0, 0);
+    for _ in 0..20 {
+        camera.rotate(
+            rng.range(-314, 314) as f32 / 100.0,
+            rng.range(-150, 150) as f32 / 100.0,
+        );
+        let state = camera.get_state(ASPECT);
+        let frustum = state.frustum();
+        for _ in 0..500 {
+            let point = [0; 3].map(|_| rng.range(-5000, 5000) as f32 / 100.0);
+            let clip = state.view_proj * Vector4::new(point[0], point[1], point[2], 1.0);
+            let ndc = [clip.x / clip.w, clip.y / clip.w, clip.z / clip.w];
+            let tiny = |offset: f32| point.map(|c| c + offset);
+            let hit = frustum.intersects_box(tiny(-1.0e-4), tiny(1.0e-4));
+            let in_view = clip.w > 0.0
+                && ndc[0].abs() <= 1.0
+                && ndc[1].abs() <= 1.0
+                && (0.0..=1.0).contains(&ndc[2]);
+            // Clear of the frustum's sides, past the far plane, or behind the camera
+            let clearly_out = clip.w > 0.0
+                && (ndc[0].abs() > 1.01 || ndc[1].abs() > 1.01 || ndc[2] > 1.01)
+                || clip.w < -0.01;
+            if in_view {
+                assert!(hit, "visible point {point:?} culled");
+                inside += 1;
+            } else if clearly_out {
+                assert!(!hit, "point {point:?} outside the view kept");
+                outside += 1;
+            }
+        }
+    }
+    assert!(
+        inside > 100 && outside > 100,
+        "{inside} inside, {outside} outside"
+    );
 }

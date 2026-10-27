@@ -211,9 +211,25 @@ pub struct WgpuAccelerated {
     vertex_arena: VertexArena,
     assets: Assets,
     frame_index: usize,
+    frustum_culling: bool,
+    drawn_chunks: u32,
 }
 
 impl WgpuAccelerated {
+    /// Whether chunks outside the camera's view are skipped, on by default.
+    pub fn set_frustum_culling(&mut self, enabled: bool) {
+        self.frustum_culling = enabled;
+    }
+
+    pub fn frustum_culling(&self) -> bool {
+        self.frustum_culling
+    }
+
+    /// The chunks drawn by the last frame, and all chunks there are.
+    pub fn drawn_chunks(&self) -> (u32, u32) {
+        (self.drawn_chunks, self.vertex_arena.draw_count())
+    }
+
     pub fn new() -> Option<Self> {
         pollster::block_on(Self::new_async())
     }
@@ -424,6 +440,8 @@ impl WgpuAccelerated {
             vertex_arena,
             assets,
             frame_index: 0,
+            frustum_culling: true,
+            drawn_chunks: 0,
         })
     }
 
@@ -511,6 +529,15 @@ impl WgpuAccelerated {
             self.rebuild_targets();
         }
         self.assets.flush_transforms(&self.state.queue);
+        self.drawn_chunks = if self.frustum_culling {
+            self.vertex_arena.cull(
+                &self.state.device,
+                &self.state.queue,
+                &camera_state.frustum(),
+            )
+        } else {
+            self.vertex_arena.draw_count()
+        };
 
         let targets = self.render_targets.as_ref().unwrap();
         if self.frame_index > 0 {
@@ -583,13 +610,18 @@ impl WgpuAccelerated {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            let draw_count = self.vertex_arena.draw_count();
+            let draw_count = self.drawn_chunks;
+            let draw_buffer = if self.frustum_culling {
+                self.vertex_arena.visible_buffer()
+            } else {
+                self.vertex_arena.draw_buffer()
+            };
             if draw_count > 0 {
                 render_pass.set_pipeline(&self.state.environment_pipeline);
                 render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
                 render_pass.set_bind_group(1, &self.state.colormap_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.vertex_arena.vertex_buffer().slice(..));
-                render_pass.multi_draw_indirect(self.vertex_arena.draw_buffer(), 0, draw_count);
+                render_pass.multi_draw_indirect(draw_buffer, 0, draw_count);
             }
             if !self.assets.is_empty() {
                 render_pass.set_pipeline(&self.state.asset_pipeline);
@@ -731,5 +763,68 @@ mod tests {
         );
         assert_eq!(runs(&[false, true, true], 0), [(1, 3)]);
         assert_eq!(runs(&[true, true, false], 0), [(0, 2)]);
+    }
+
+    #[test]
+    fn culling_does_not_change_the_image() {
+        use super::{WgpuAccelerated, WgpuAcceleratedConfiguration};
+        use crate::{
+            Camera, Renderer,
+            camera::OrbitCamera,
+            geometry::{DiscretePoint, RealTriangle, TriangleChunk},
+            wgpu_utils::test_support::TestGpu,
+        };
+
+        // The renderer makes its own device, the lock keeps other GPU tests from running
+        let _lock = TestGpu::new();
+        let mut renderer = WgpuAccelerated::new().expect("no wgpu adapter available");
+        let size = 64;
+        renderer.configure(WgpuAcceleratedConfiguration {
+            width: size,
+            height: size,
+        });
+        let square = |x: f32, z: f32| {
+            let [a, b, c, d] = [
+                [x - 1.0, -1.0, z],
+                [x + 1.0, -1.0, z],
+                [x + 1.0, 1.0, z],
+                [x - 1.0, 1.0, z],
+            ];
+            // Both windings, back faces are not drawn
+            [[a, b, c], [a, c, d], [a, c, b], [a, d, c]]
+                .map(|[v0, v1, v2]| RealTriangle { v0, v1, v2 })
+                .to_vec()
+        };
+        // Rows of squares in front of the camera, most of them off to the sides
+        let chunks = (-8..=8)
+            .flat_map(|i| (0..4).map(move |j| (i, j)))
+            .map(|(i, j)| TriangleChunk {
+                index: DiscretePoint {
+                    x: i * 16,
+                    y: 0,
+                    z: j * 16,
+                },
+                triangles: square(i as f32 * 3.0, j as f32 * -3.0),
+            })
+            .collect();
+        renderer.update_geometry(chunks);
+
+        // From (0, 0, 5) towards negative z
+        let camera = OrbitCamera::default().get_state(1.0);
+        let mut frame = |culling| {
+            renderer.set_frustum_culling(culling);
+            let mut output = vec![0; (size * size * 4) as usize];
+            // A frame is read back while the next one renders
+            renderer.render(&camera, &mut output);
+            renderer.render(&camera, &mut output);
+            (output, renderer.drawn_chunks())
+        };
+        let (culled, (drawn, total)) = frame(true);
+        let (all, (drawn_unculled, _)) = frame(false);
+        assert_eq!(total, 17 * 4);
+        assert_eq!(drawn_unculled, total);
+        assert!(0 < drawn && drawn < total / 2, "{drawn} of {total} drawn");
+        assert!(culled.iter().any(|&byte| byte != 0), "nothing was drawn");
+        assert!(culled == all, "culling changed the image");
     }
 }
