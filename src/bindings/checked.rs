@@ -5,7 +5,9 @@
 use crate::{
     Camera, Renderer, Tesselator,
     camera::{CameraState, OrbitCamera},
-    geometry::{PointI, RealTwist, TriangleChunk},
+    geometry::{
+        PointI, RealTwist, TriangleChunk, VOXEL_GROUP_PAGES, VOXEL_GROUP_SHIFT, group_blocks,
+    },
     renderer::{TerrainColoring, WgpuAccelerated, WgpuAcceleratedConfiguration},
     stl::StlMesh,
     tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext, SUBCHUNK_SIZE},
@@ -166,6 +168,34 @@ impl CheckedTesselator {
             )));
         }
         self.tesselator.update_input_geometry(&blocks);
+        Ok(())
+    }
+
+    /// `CpuTesselator::replace_input_geometry` with groups as their key and
+    /// words. Applies none of them when the key of one does not fit the voxel
+    /// coordinates, where the tesselator would wrap it.
+    pub(crate) fn replace_input_geometry<'a>(
+        &mut self,
+        groups: impl Iterator<Item = (PointI, &'a [u64; VOXEL_GROUP_PAGES])> + Clone,
+    ) -> Result<()> {
+        self.check_configured()?;
+        let keys = (i32::MIN >> VOXEL_GROUP_SHIFT)..=(i32::MAX >> VOXEL_GROUP_SHIFT);
+        if let Some((k, (key, _))) = groups
+            .clone()
+            .enumerate()
+            .find(|(_, (key, _))| ![key.x, key.y, key.z].iter().all(|c| keys.contains(c)))
+        {
+            return Err(Error::invalid_argument(format!(
+                "groups[{k}] has key ({}, {}, {}), key coordinates must be between {} and {}",
+                key.x,
+                key.y,
+                key.z,
+                keys.start(),
+                keys.end()
+            )));
+        }
+        self.tesselator
+            .replace_input_blocks(groups.flat_map(|(key, values)| group_blocks(&key, values)));
         Ok(())
     }
 

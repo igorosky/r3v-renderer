@@ -4,6 +4,7 @@
  * argument checks and status codes.
  */
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -466,6 +467,233 @@ static void tesselator_null_arguments(void) {
     r3v_cpu_tesselator_drop(tesselator);
 }
 
+/* ----------------------------------------------------------- voxel groups */
+
+/* `count` groups without voxels. Free them with free(). */
+static R3vVoxelGroup *voxel_groups(size_t count) {
+    R3vVoxelGroup *groups = calloc(count, sizeof *groups);
+    CHECK(groups != NULL);
+    return groups;
+}
+
+/* Sets voxel (x, y, z), not negative, in `group` the way r3v-voxelizer
+ * packs it, and the key of `group` to the one holding it. */
+static void set_voxel(R3vVoxelGroup *group, int32_t x, int32_t y, int32_t z) {
+    const int32_t voxel[3] = {x, y, z};
+    group->point = (R3vPointI){x >> 6, y >> 6, z >> 6, 0};
+    size_t page = 0;
+    for (int bit = 0; bit < 4; ++bit) {
+        for (int axis = 0; axis < 3; ++axis) {
+            page |= (size_t)((voxel[axis] >> 2 >> bit) & 1) << (3 * bit + axis);
+        }
+    }
+    group->values[page] |= (uint64_t)1 << ((x & 3) + 4 * (y & 3) + 16 * (z & 3));
+}
+
+/* Sets the 4x4x2 block of voxels at (x, y, z) in `group`. */
+static void set_block(R3vVoxelGroup *group, int32_t x, int32_t y, int32_t z) {
+    for (int32_t dz = 0; dz < 2; ++dz) {
+        for (int32_t dy = 0; dy < 4; ++dy) {
+            for (int32_t dx = 0; dx < 4; ++dx) {
+                set_voxel(group, x + dx, y + dy, z + dz);
+            }
+        }
+    }
+}
+
+/* The chunk at voxel (x, y, z) of `delta`, failing when there is none. */
+static R3vTriangleChunk delta_chunk_at(const R3vGeometryDelta *delta, int32_t x, int32_t y,
+                                       int32_t z) {
+    R3vTriangleChunk chunk;
+    for (size_t k = 0; k < r3v_geometry_delta_chunk_count(delta); ++k) {
+        CHECK_OK(r3v_geometry_delta_chunk(delta, k, &chunk));
+        if (chunk.index.x == x && chunk.index.y == y && chunk.index.z == z) {
+            return chunk;
+        }
+    }
+    fail(__FILE__, __LINE__, "no chunk at (%d, %d, %d)", x, y, z);
+    return chunk;
+}
+
+/* `VoxelGroup` of r3v-voxelizer's C header, which R3vVoxelGroup has to match. */
+typedef struct VoxelizerVoxelGroup {
+    struct {
+        int32_t x;
+        int32_t y;
+        int32_t z;
+        uint32_t i;
+    } point;
+    uint64_t values[4096];
+} VoxelizerVoxelGroup;
+
+static void voxel_group_has_the_voxelizer_layout(void) {
+    CHECK(R3V_VOXEL_GROUP_PAGES == 4096);
+    CHECK(sizeof(R3vVoxelGroup) == 16 + 8 * 4096);
+    CHECK(sizeof(R3vVoxelGroup) == sizeof(VoxelizerVoxelGroup));
+    CHECK(offsetof(R3vVoxelGroup, point) == offsetof(VoxelizerVoxelGroup, point));
+    CHECK(offsetof(R3vVoxelGroup, values) == offsetof(VoxelizerVoxelGroup, values));
+    CHECK(offsetof(R3vVoxelGroup, values) == 16);
+    CHECK(_Alignof(R3vVoxelGroup) == _Alignof(VoxelizerVoxelGroup));
+}
+
+static void tesselator_replace_requires_configure(void) {
+    R3vCpuTesselator *tesselator = r3v_cpu_tesselator_create();
+    R3vVoxelGroup *groups = voxel_groups(1);
+    set_voxel(groups, 1, 2, 3);
+    CHECK_STATUS(r3v_cpu_tesselator_replace_input_geometry(tesselator, groups, 1),
+                 R3V_NOT_CONFIGURED);
+    CHECK_STATUS(r3v_cpu_tesselator_replace_input_geometry(tesselator, NULL, 0),
+                 R3V_NOT_CONFIGURED);
+    free(groups);
+    r3v_cpu_tesselator_drop(tesselator);
+}
+
+static void tesselator_replace_matches_update(void) {
+    R3vCpuTesselator *updated = make_tesselator(0.5f);
+    R3vPointI block = {4, 4, 2, UINT32_MAX};
+    CHECK_OK(r3v_cpu_tesselator_update_input_geometry(updated, &block, 1));
+    R3vTriangleChunk expected;
+    R3vGeometryDelta *expected_delta = single_chunk_delta(updated, &expected);
+    CHECK(expected.triangle_count == 12);
+
+    R3vCpuTesselator *replaced = make_tesselator(0.5f);
+    R3vVoxelGroup *groups = voxel_groups(1);
+    set_block(groups, 4, 4, 2);
+    /* The i of the key is ignored. */
+    groups[0].point.i = 0xDEAD;
+    CHECK_OK(r3v_cpu_tesselator_replace_input_geometry(replaced, groups, 1));
+    R3vTriangleChunk chunk;
+    R3vGeometryDelta *delta = single_chunk_delta(replaced, &chunk);
+    CHECK(chunk.index.x == 0 && chunk.index.y == 0 && chunk.index.z == 0);
+    CHECK(chunk.triangle_count == expected.triangle_count);
+    CHECK(memcmp(chunk.triangles, expected.triangles,
+                 chunk.triangle_count * sizeof(R3vTriangle)) == 0);
+    r3v_geometry_delta_drop(delta);
+    r3v_geometry_delta_drop(expected_delta);
+
+    /* The same voxels again change nothing, whichever way they come. */
+    CHECK_OK(r3v_cpu_tesselator_replace_input_geometry(replaced, groups, 1));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(replaced, NULL, &delta));
+    CHECK(delta == NULL);
+    CHECK_OK(r3v_cpu_tesselator_update_input_geometry(replaced, &block, 1));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(replaced, NULL, &delta));
+    CHECK(delta == NULL);
+    CHECK_OK(r3v_cpu_tesselator_replace_input_geometry(updated, groups, 1));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(updated, NULL, &delta));
+    CHECK(delta == NULL);
+
+    free(groups);
+    r3v_cpu_tesselator_drop(replaced);
+    r3v_cpu_tesselator_drop(updated);
+}
+
+static void tesselator_replace_clears_old_voxels(void) {
+    R3vCpuTesselator *tesselator = make_tesselator(1.0f);
+    /* Inside their chunks, so no neighbouring chunks come along. */
+    R3vPointI blocks[] = {{4, 4, 2, UINT32_MAX}, {68, 4, 2, 0x0000FFFF}};
+    CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, blocks, 2));
+    R3vGeometryDelta *delta = NULL;
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(r3v_geometry_delta_chunk_count(delta) == 2);
+    r3v_geometry_delta_drop(delta);
+
+    /* Keeps the block in chunk 64, drops the one in chunk 0, adds chunk 32. */
+    R3vVoxelGroup *groups = voxel_groups(2);
+    set_block(&groups[0], 36, 4, 2);
+    for (int32_t y = 0; y < 4; ++y) {
+        for (int32_t x = 0; x < 4; ++x) {
+            set_voxel(&groups[1], 68 + x, 4 + y, 2);
+        }
+    }
+    CHECK(groups[1].point.x == 1);
+    CHECK_OK(r3v_cpu_tesselator_replace_input_geometry(tesselator, groups, 2));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(r3v_geometry_delta_chunk_count(delta) == 2);
+    R3vTriangleChunk chunk = delta_chunk_at(delta, 0, 0, 0);
+    CHECK(chunk.triangle_count == 0 && chunk.triangles == NULL);
+    chunk = delta_chunk_at(delta, 32, 0, 0);
+    CHECK(chunk.triangle_count == 12);
+    r3v_geometry_delta_drop(delta);
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(delta == NULL);
+
+    /* No groups clear everything. */
+    CHECK_OK(r3v_cpu_tesselator_replace_input_geometry(tesselator, NULL, 0));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(r3v_geometry_delta_chunk_count(delta) == 2);
+    CHECK(delta_chunk_at(delta, 32, 0, 0).triangle_count == 0);
+    CHECK(delta_chunk_at(delta, 64, 0, 0).triangle_count == 0);
+    r3v_geometry_delta_drop(delta);
+    CHECK_OK(r3v_cpu_tesselator_replace_input_geometry(tesselator, groups, 0));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(delta == NULL);
+
+    free(groups);
+    r3v_cpu_tesselator_drop(tesselator);
+}
+
+static void tesselator_replace_adds_up_groups_sharing_a_key(void) {
+    R3vCpuTesselator *tesselator = make_tesselator(1.0f);
+    R3vVoxelGroup *groups = voxel_groups(3);
+    set_voxel(&groups[0], 1, 1, 1);
+    set_voxel(&groups[1], 9, 9, 9);
+    /* Without voxels, it takes nothing away. */
+    groups[2].point = groups[0].point;
+    CHECK(groups[0].point.x == groups[1].point.x);
+    CHECK_OK(r3v_cpu_tesselator_replace_input_geometry(tesselator, groups, 3));
+    R3vTriangleChunk chunk;
+    R3vGeometryDelta *delta = single_chunk_delta(tesselator, &chunk);
+    /* Two single voxels apart from each other. */
+    CHECK(chunk.triangle_count == 24);
+    r3v_geometry_delta_drop(delta);
+    free(groups);
+    r3v_cpu_tesselator_drop(tesselator);
+}
+
+static void tesselator_replace_checks_arguments(void) {
+    R3vVoxelGroup *groups = voxel_groups(2);
+    set_block(&groups[0], 4, 4, 2);
+    CHECK_STATUS(r3v_cpu_tesselator_replace_input_geometry(NULL, groups, 1),
+                 R3V_INVALID_ARGUMENT);
+    CHECK_ERROR_CONTAINS("`tesselator` is NULL");
+
+    R3vCpuTesselator *tesselator = make_tesselator(1.0f);
+    CHECK_OK(r3v_cpu_tesselator_replace_input_geometry(tesselator, groups, 1));
+    R3vGeometryDelta *delta = NULL;
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(delta != NULL);
+    r3v_geometry_delta_drop(delta);
+
+    CHECK_STATUS(r3v_cpu_tesselator_replace_input_geometry(tesselator, NULL, 1),
+                 R3V_INVALID_ARGUMENT);
+    CHECK_ERROR_CONTAINS("`groups` is NULL");
+
+    /* Voxels of these keys would not fit int32_t. None of the groups may be
+     * applied, the block would be gone otherwise. */
+    const R3vPointI bad_keys[] = {
+        {1 << 25, 0, 0, 0}, {0, -(1 << 25) - 1, 0, 0}, {0, 0, INT32_MAX, 0}, {INT32_MIN, 0, 0, 0}};
+    for (size_t k = 0; k < ARRAY_LEN(bad_keys); ++k) {
+        groups[1].point = bad_keys[k];
+        CHECK_STATUS(r3v_cpu_tesselator_replace_input_geometry(tesselator, groups, 2),
+                     R3V_INVALID_ARGUMENT);
+        CHECK_ERROR_CONTAINS("groups[1]");
+    }
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(delta == NULL);
+
+    /* The ends of the range are fine. */
+    const R3vPointI edge_keys[] = {{(1 << 25) - 1, 0, 0, 0}, {0, -(1 << 25), (1 << 25) - 1, 0}};
+    for (size_t k = 0; k < ARRAY_LEN(edge_keys); ++k) {
+        groups[1].point = edge_keys[k];
+        CHECK_OK(r3v_cpu_tesselator_replace_input_geometry(tesselator, groups, 2));
+    }
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(delta == NULL);
+
+    free(groups);
+    r3v_cpu_tesselator_drop(tesselator);
+}
+
 /* -------------------------------------------------------------- renderer */
 
 static void renderer_configure_checks_size(void) {
@@ -684,6 +912,44 @@ static void renderer_draws_voxels(void) {
     render_now(renderer, camera, W, H, frame);
     CHECK(!lit(frame, W, W / 2, H / 2));
 
+    r3v_cpu_tesselator_drop(tesselator);
+    r3v_wgpu_renderer_drop(renderer);
+}
+
+static void renderer_draws_only_replaced_voxels(void) {
+    enum { W = 32, H = 32 };
+    R3vWgpuRenderer *renderer = make_renderer(W, H);
+    /* Voxels 4..8 x 4..8 x 2..4. */
+    R3vCpuTesselator *tesselator = add_block(renderer, 1.0f, 4, 4, 2);
+    R3vOrbitCamera camera = r3v_orbit_camera_new(vec3(6.0f, 6.0f, 3.0f), 10.0f, 0.0f, 0.0f);
+    static uint8_t block[W * H * 4], frame[W * H * 4];
+    render_now(renderer, camera, W, H, block);
+    CHECK(lit(block, W, W / 2, H / 2));
+
+    R3vVoxelGroup *in_view = voxel_groups(1);
+    set_block(in_view, 4, 4, 2);
+    R3vVoxelGroup *out_of_view = voxel_groups(1);
+    set_block(out_of_view, 400, 400, 400);
+    const R3vVoxelGroup *const steps[] = {out_of_view, in_view, NULL};
+    for (size_t k = 0; k < ARRAY_LEN(steps); ++k) {
+        CHECK_OK(r3v_cpu_tesselator_replace_input_geometry(tesselator, steps[k],
+                                                           steps[k] != NULL));
+        R3vGeometryDelta *delta = NULL;
+        CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+        CHECK(delta != NULL);
+        CHECK_OK(r3v_wgpu_renderer_update_geometry(renderer, delta));
+        render_now(renderer, camera, W, H, frame);
+        if (steps[k] == in_view) {
+            CHECK(memcmp(frame, block, sizeof frame) == 0);
+        } else {
+            for (size_t pixel = 0; pixel < W * H; ++pixel) {
+                CHECK(!lit(frame, W, pixel % W, pixel / W));
+            }
+        }
+    }
+
+    free(out_of_view);
+    free(in_view);
     r3v_cpu_tesselator_drop(tesselator);
     r3v_wgpu_renderer_drop(renderer);
 }
@@ -1066,6 +1332,12 @@ const TestCase TEST_CASES[] = {
     TEST(tesselator_culls_chunks_out_of_view),
     TEST(tesselator_toggles_marching_cubes),
     TEST(tesselator_null_arguments),
+    TEST(voxel_group_has_the_voxelizer_layout),
+    TEST(tesselator_replace_requires_configure),
+    TEST(tesselator_replace_matches_update),
+    TEST(tesselator_replace_clears_old_voxels),
+    TEST(tesselator_replace_adds_up_groups_sharing_a_key),
+    TEST(tesselator_replace_checks_arguments),
     TEST(renderer_configure_checks_size),
     TEST(renderer_configure_checks_colors),
     TEST(renderer_configure_checks_terrain_coloring),
@@ -1075,6 +1347,7 @@ const TestCase TEST_CASES[] = {
     TEST(renderer_render_checks_arguments),
     TEST(renderer_first_frame_is_zeros),
     TEST(renderer_draws_voxels),
+    TEST(renderer_draws_only_replaced_voxels),
     TEST(renderer_update_geometry_checks_arguments),
     TEST(renderer_draws_assets),
     TEST(renderer_colors_assets),

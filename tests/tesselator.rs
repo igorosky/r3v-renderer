@@ -2,11 +2,11 @@ mod common;
 
 use std::collections::{HashMap, HashSet};
 
-use common::Lcg;
+use common::{Lcg, block_voxels, voxel_groups};
 use r3v_renderer::{
     Camera, Tesselator,
     camera::OrbitCamera,
-    geometry::{DiscretePoint, PointI, RealQuad, RealTriangle, TriangleChunk},
+    geometry::{DiscretePoint, PointI, RealQuad, RealTriangle, TriangleChunk, VoxelGroup},
     tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext},
 };
 
@@ -257,6 +257,46 @@ impl Harness {
         self.check();
     }
 
+    /// Replaces everything with the voxels of `bricks`, passed as voxel
+    /// groups. Returns the chunks that came out.
+    #[track_caller]
+    fn sync(&mut self, bricks: &[PointI]) -> Vec<Cell> {
+        // Voxels of bricks sharing an origin add up in the groups
+        self.world = World::default();
+        for brick in bricks {
+            *self
+                .world
+                .bricks
+                .entry([brick.x, brick.y, brick.z])
+                .or_default() |= brick.i;
+        }
+        self.tesselator.replace_input_geometry(&groups_of(bricks));
+        let mut chunks = Vec::new();
+        if let Some(output) = self.tesselator.get_output_geometry_delta(&ALL_CHUNKS) {
+            chunks = output
+                .iter()
+                .map(|chunk| [chunk.index.x, chunk.index.y, chunk.index.z])
+                .collect();
+            self.mesh.apply(output);
+        }
+        assert!(
+            self.tesselator
+                .get_output_geometry_delta(&ALL_CHUNKS)
+                .is_none()
+        );
+        self.check();
+        chunks.sort();
+        chunks
+    }
+
+    fn bricks(&self) -> Vec<PointI> {
+        self.world
+            .bricks
+            .iter()
+            .map(|(origin, mask)| brick(*origin, *mask))
+            .collect()
+    }
+
     #[track_caller]
     fn check(&self) {
         let expected = self.world.exposed_faces();
@@ -278,6 +318,11 @@ impl Harness {
             self.mesh.chunks.len()
         );
     }
+}
+
+/// `bricks` as r3v-voxelizer's `get_all_points_compressed` returns them.
+fn groups_of(bricks: &[PointI]) -> Vec<VoxelGroup> {
+    voxel_groups(block_voxels(bricks))
 }
 
 fn box_bricks(from: Cell, to: Cell, mask: u32) -> Vec<PointI> {
@@ -864,4 +909,359 @@ fn marching_cubes_triangles_face_out_of_the_solid() {
             assert!(facing > 0.0, "{name}: {triangle:?} faces inwards");
         }
     }
+}
+
+fn configured(marching_cubes_enabled: bool) -> CpuTesselator {
+    let mut tesselator = CpuTesselator::new();
+    tesselator.configure(CpuTesselatorConfiguration {
+        voxel_size: 1.0,
+        marching_cubes_enabled,
+    });
+    tesselator
+}
+
+type ChunkTriangles = HashMap<DiscretePoint, Vec<[u32; 9]>>;
+
+/// Applies `delta` to the triangles of every chunk, kept sorted bit for bit.
+fn apply_triangles(chunks: &mut ChunkTriangles, delta: Option<Vec<TriangleChunk>>) {
+    for chunk in delta.into_iter().flatten() {
+        if chunk.triangles.is_empty() {
+            chunks.remove(&chunk.index);
+            continue;
+        }
+        let mut triangles: Vec<[u32; 9]> = chunk
+            .triangles
+            .iter()
+            .map(|triangle| {
+                let corners = [triangle.v0, triangle.v1, triangle.v2];
+                std::array::from_fn(|k| corners[k / 3][k % 3].to_bits())
+            })
+            .collect();
+        triangles.sort();
+        chunks.insert(chunk.index, triangles);
+    }
+}
+
+/// Triangles of a tesselator given only `bricks`, through
+/// `update_input_geometry`.
+fn fresh_triangles(bricks: &[PointI], marching_cubes_enabled: bool) -> ChunkTriangles {
+    let mut tesselator = configured(marching_cubes_enabled);
+    tesselator.update_input_geometry(&bricks.to_vec());
+    let mut chunks = ChunkTriangles::new();
+    apply_triangles(
+        &mut chunks,
+        tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+    );
+    chunks
+}
+
+#[test]
+fn replace_on_empty_tesselator_matches_update() {
+    let bricks = [
+        box_bricks([-20, -8, -6], [12, 8, 6], FULL),
+        vec![
+            brick([40, 40, 40], 0x0F0F_F0F0),
+            brick([-64, 0, 0], bit([3, 3, 1])),
+        ],
+    ]
+    .concat();
+    let mut updated = Harness::new(0.5);
+    updated.step(&bricks);
+    let mut replaced = Harness::new(0.5);
+    replaced.sync(&bricks);
+    assert_eq!(replaced.mesh.faces(), updated.mesh.faces());
+    let chunks = |harness: &Harness| harness.mesh.chunks.keys().copied().collect::<HashSet<_>>();
+    assert_eq!(chunks(&replaced), chunks(&updated));
+
+    let mut tesselator = configured(false);
+    tesselator.replace_input_geometry(&groups_of(&bricks));
+    let mut chunks = ChunkTriangles::new();
+    apply_triangles(
+        &mut chunks,
+        tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+    );
+    assert_eq!(chunks, fresh_triangles(&bricks, false));
+}
+
+#[test]
+fn replace_drops_voxels_missing_from_the_groups() {
+    let mut harness = Harness::new(1.0);
+    harness.step(&box_bricks([0, 0, 0], [32, 16, 16], FULL));
+    let old: HashSet<DiscretePoint> = harness.mesh.chunks.keys().copied().collect();
+    let new = box_bricks([-48, -48, -48], [-40, -40, -40], FULL);
+    let chunks = harness.sync(&new);
+    // The old chunks come out without triangles, which removes them
+    for chunk in &old {
+        assert!(chunks.contains(&[chunk.x, chunk.y, chunk.z]), "{chunk:?}");
+    }
+    assert_eq!(
+        harness.mesh.chunks.keys().copied().collect::<Vec<_>>(),
+        [DiscretePoint {
+            x: -48,
+            y: -48,
+            z: -48
+        }]
+    );
+}
+
+#[test]
+fn replace_with_no_groups_clears_everything() {
+    let mut harness = Harness::new(1.0);
+    harness.step(&box_bricks([-20, -20, -20], [20, 20, 20], FULL));
+    harness.step(&[brick([100, 0, 0], bit([0, 0, 0]))]);
+    assert!(!harness.mesh.chunks.is_empty());
+    harness.sync(&[]);
+    assert!(harness.mesh.chunks.is_empty());
+    // Nothing is left to clear
+    harness.tesselator.replace_input_geometry(&[]);
+    assert!(
+        harness
+            .tesselator
+            .get_output_geometry_delta(&ALL_CHUNKS)
+            .is_none()
+    );
+}
+
+#[test]
+fn replace_with_the_same_voxels_changes_nothing() {
+    let mut harness = Harness::new(1.0);
+    let bricks = [
+        box_bricks([-20, -20, -20], [20, 20, 20], FULL),
+        vec![brick([60, 0, 0], 0x1234_5678)],
+    ]
+    .concat();
+    harness.step(&bricks);
+    assert!(harness.sync(&bricks).is_empty());
+    // Brick by brick or voxel by voxel, only the voxels count
+    let groups = groups_of(&bricks);
+    let mut tesselator = configured(false);
+    tesselator.update_input_geometry(&bricks);
+    tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap();
+    tesselator.replace_input_geometry(&groups);
+    assert!(tesselator.get_output_geometry_delta(&ALL_CHUNKS).is_none());
+}
+
+#[test]
+fn replace_tesselates_only_changed_chunks() {
+    let mut harness = Harness::new(1.0);
+    let bricks = box_bricks([0, 0, 0], [64, 16, 16], FULL);
+    harness.step(&bricks);
+    // A voxel off every chunk boundary, so no neighbour changes
+    let mut changed = bricks.clone();
+    let carved = changed
+        .iter_mut()
+        .find(|b| [b.x, b.y, b.z] == [40, 8, 8])
+        .unwrap();
+    carved.i &= !bit([1, 1, 0]);
+    assert_eq!(harness.sync(&changed), [[32, 0, 0]]);
+    // On the boundary to the chunk at x 48: both chunks
+    let mut changed = bricks.clone();
+    let carved = changed
+        .iter_mut()
+        .find(|b| [b.x, b.y, b.z] == [44, 8, 8])
+        .unwrap();
+    carved.i &= !bit([3, 1, 0]);
+    assert_eq!(harness.sync(&changed), [[32, 0, 0], [48, 0, 0]]);
+}
+
+#[test]
+fn replace_adds_up_groups_sharing_a_key() {
+    let [mut first] = voxel_groups([[1, 2, 3]]).try_into().unwrap();
+    let [second] = voxel_groups([[60, 50, 40]]).try_into().unwrap();
+    let [third] = voxel_groups([[1, 2, 3]]).try_into().unwrap();
+    assert_eq!(first.point, second.point);
+    let mut tesselator = configured(false);
+    tesselator.replace_input_geometry(&[first.clone(), second.clone(), third]);
+    let mut chunks = ChunkTriangles::new();
+    apply_triangles(
+        &mut chunks,
+        tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+    );
+    let bricks: Vec<PointI> = [&first, &second]
+        .into_iter()
+        .flat_map(VoxelGroup::blocks)
+        .collect();
+    assert_eq!(chunks, fresh_triangles(&bricks, false));
+
+    // A group with no voxels adds nothing
+    first.values.fill(0);
+    tesselator.replace_input_geometry(&[second.clone(), first]);
+    apply_triangles(
+        &mut chunks,
+        tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+    );
+    assert_eq!(
+        chunks,
+        fresh_triangles(&second.blocks().collect::<Vec<_>>(), false)
+    );
+}
+
+#[test]
+fn replace_overrides_updates_not_read_yet() {
+    let mut harness = Harness::new(1.0);
+    harness.step(&box_bricks([0, 0, 0], [16, 16, 16], FULL));
+    harness
+        .tesselator
+        .update_input_geometry(&box_bricks([32, 0, 0], [48, 16, 16], FULL));
+    harness
+        .tesselator
+        .update_input_geometry(&box_bricks([0, 0, 0], [16, 16, 16], 0));
+    let bricks = box_bricks([0, 0, 0], [8, 8, 8], FULL);
+    harness.sync(&bricks);
+    assert_eq!(
+        harness.mesh.chunks.keys().copied().collect::<Vec<_>>(),
+        [DiscretePoint { x: 0, y: 0, z: 0 }]
+    );
+}
+
+#[test]
+fn replace_keeps_chunks_out_of_view_for_later() {
+    let voxel_size = 0.5;
+    let mut tesselator = CpuTesselator::new();
+    tesselator.configure(CpuTesselatorConfiguration {
+        voxel_size,
+        marching_cubes_enabled: false,
+    });
+    let far = 20 * CHUNK_WIDTH;
+    tesselator.update_input_geometry(&vec![brick([0, 0, 0], FULL), brick([far, 0, 0], FULL)]);
+    tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap();
+
+    // Looking at the chunk that stays, with a far plane short of the other
+    let camera = OrbitCamera::new(cgmath::Point3::new(1.0, 1.0, 1.0), 10.0, 30.0, 30.0)
+        .with_clip_planes(0.1, 30.0);
+    let in_view = CpuTesselatorContext {
+        camera_frustum: Some(camera.get_state(1.0).frustum()),
+    };
+    tesselator.replace_input_geometry(&groups_of(&[brick([0, 0, 0], FULL)]));
+    assert!(tesselator.get_output_geometry_delta(&in_view).is_none());
+    // Neighbouring chunks come along too, without triangles
+    let delta = tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap();
+    assert!(delta.iter().all(|chunk| chunk.triangles.is_empty()));
+    assert!(
+        delta
+            .iter()
+            .any(|chunk| [chunk.index.x, chunk.index.y, chunk.index.z] == [far, 0, 0])
+    );
+    assert!(delta.iter().all(|chunk| chunk.index.x >= far - CHUNK_WIDTH));
+    assert!(tesselator.get_output_geometry_delta(&ALL_CHUNKS).is_none());
+}
+
+#[test]
+fn replace_with_marching_cubes_matches_a_fresh_tesselator() {
+    let before = [
+        box_bricks([-12, -12, -6], [12, 12, 6], FULL),
+        vec![brick([16, 16, 16], bit([0, 0, 0]))],
+    ]
+    .concat();
+    // Overlaps `before`, gives up its diagonal neighbours across chunks
+    let after = [
+        box_bricks([-4, -4, -2], [20, 20, 10], FULL),
+        vec![brick([-32, 0, 0], 0x00FF_FF00)],
+    ]
+    .concat();
+    let mut tesselator = configured(true);
+    tesselator.update_input_geometry(&before);
+    let mut chunks = ChunkTriangles::new();
+    apply_triangles(
+        &mut chunks,
+        tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+    );
+    assert_eq!(chunks, fresh_triangles(&before, true));
+    tesselator.replace_input_geometry(&groups_of(&after));
+    apply_triangles(
+        &mut chunks,
+        tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+    );
+    assert_eq!(chunks, fresh_triangles(&after, true));
+    tesselator.replace_input_geometry(&[]);
+    apply_triangles(
+        &mut chunks,
+        tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+    );
+    assert!(chunks.is_empty());
+}
+
+#[test]
+fn replace_and_toggling_marching_cubes_keep_the_mesh_in_sync() {
+    let bricks = box_bricks([-8, -8, -4], [8, 8, 4], FULL);
+    let mut tesselator = configured(false);
+    tesselator.update_input_geometry(&box_bricks([16, 16, 16], [32, 32, 32], FULL));
+    let mut chunks = ChunkTriangles::new();
+    apply_triangles(
+        &mut chunks,
+        tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+    );
+    tesselator.set_marching_cubes_enabled(true);
+    tesselator.replace_input_geometry(&groups_of(&bricks));
+    apply_triangles(
+        &mut chunks,
+        tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+    );
+    assert_eq!(chunks, fresh_triangles(&bricks, true));
+    tesselator.set_marching_cubes_enabled(false);
+    apply_triangles(
+        &mut chunks,
+        tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+    );
+    assert_eq!(chunks, fresh_triangles(&bricks, false));
+}
+
+#[test]
+fn randomized_replaces_and_updates_match_reference() {
+    let random_brick = |rng: &mut Lcg| {
+        let origin = [
+            rng.range(-10, 10) * BRICK[0],
+            rng.range(-6, 6) * BRICK[1],
+            rng.range(-12, 12) * BRICK[2],
+        ];
+        let mask = match rng.range(0, 4) {
+            0 => 0,
+            1 => FULL,
+            _ => rng.next_u32() & rng.next_u32(),
+        };
+        brick(origin, mask)
+    };
+    for seed in 0..8 {
+        let mut rng = Lcg::new(seed);
+        let mut harness = Harness::new(0.5);
+        for _ in 0..30 {
+            match rng.range(0, 4) {
+                // Missed updates: the voxels drifted away from what is shown
+                0 => {
+                    let mut bricks = harness.bricks();
+                    bricks.retain(|_| !rng.chance(1, 4));
+                    for brick in &mut bricks {
+                        if rng.chance(1, 4) {
+                            brick.i ^= rng.next_u32();
+                        }
+                    }
+                    bricks.extend((0..rng.range(0, 20)).map(|_| random_brick(&mut rng)));
+                    harness.sync(&bricks);
+                }
+                // Nothing in common with what is shown
+                1 => {
+                    let bricks: Vec<PointI> = (0..rng.range(0, 60))
+                        .map(|_| random_brick(&mut rng))
+                        .collect();
+                    harness.sync(&bricks);
+                }
+                _ => {
+                    let delta: Vec<PointI> = (0..rng.range(1, 40))
+                        .map(|_| random_brick(&mut rng))
+                        .collect();
+                    harness.step(&delta);
+                }
+            }
+            let mut fresh = Harness::new(0.5);
+            fresh.step(&harness.bricks());
+            assert_eq!(harness.mesh.faces(), fresh.mesh.faces(), "seed {seed}");
+        }
+    }
+}
+
+#[test]
+#[should_panic]
+fn replace_before_configure_panics() {
+    let mut tesselator = CpuTesselator::new();
+    tesselator.replace_input_geometry(&groups_of(&[brick([0, 0, 0], FULL)]));
 }

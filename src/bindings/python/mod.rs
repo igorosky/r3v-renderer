@@ -278,6 +278,7 @@ mod r3v_renderer {
         stl::PyStlMesh,
         tesselator::{
             PyCpuTesselator, PyCpuTesselatorConfiguration, PyGeometryDelta, PyTriangleChunk,
+            PyVoxelGroup,
         },
     };
 }

@@ -73,6 +73,56 @@ class VoxelizerPointI:
         return self._values[3]
 
 
+class VoxelizerVoxelGroup:
+    """Stands in for r3v_voxelizer.CompressedVoxelGroup: the same interface,
+    another class."""
+
+    def __init__(self, point, values):
+        self._point = point
+        self._values = list(values)
+
+    def point(self):
+        return self._point
+
+    def values(self):
+        return self._values
+
+
+GROUP_PAGES = 4096
+U64_MAX = 2**64 - 1
+
+
+def page_index(x, y, z):
+    """Index of the page at (x, y, z) in its group: bits of x, y and z
+    interleaved from the lowest one, as r3v-voxelizer packs them."""
+    index = 0
+    for bit in range(4):
+        for axis, coordinate in enumerate((x, y, z)):
+            index |= ((coordinate >> bit) & 1) << (3 * bit + axis)
+    return index
+
+
+def voxel_groups(voxels, group=rr.VoxelGroup, point=rr.PointI):
+    """`voxels` as r3v_voxelizer's get_all_points_compressed returns them, as
+    `group`s with `point` keys."""
+    words = {}
+    for x, y, z in voxels:
+        values = words.setdefault((x >> 6, y >> 6, z >> 6), [0] * GROUP_PAGES)
+        page = page_index((x >> 2) & 15, (y >> 2) & 15, (z >> 2) & 15)
+        values[page] |= 1 << ((x & 3) + 4 * (y & 3) + 16 * (z & 3))
+    return [group(point(*key, 0), values) for key, values in words.items()]
+
+
+def block_voxels(x, y, z):
+    """Voxels of the full 4x4x2 block at (x, y, z)."""
+    return [(x + dx, y + dy, z + dz) for dz in range(2) for dy in range(4) for dx in range(4)]
+
+
+def chunk_triangles(delta):
+    """{chunk index: its triangles as tuples} of `delta`."""
+    return {chunk.index: [(t.v0, t.v1, t.v2) for t in chunk.triangles] for chunk in delta}
+
+
 def project(state, point):
     """view_proj * (point, 1), divided by w."""
     v = (*point, 1.0)
@@ -86,7 +136,8 @@ CLASSES = [
     "CameraState", "CpuTesselator", "CpuTesselatorConfiguration", "GeometryDelta", "OrbitCamera", "PointI",
     "RobotTransforms", "StlMesh", "TerrainColoring", "Triangle", "TriangleChunk", "Twist", "UrdfBox", "UrdfCapsule",
     "UrdfColor", "UrdfCylinder", "UrdfDescription", "UrdfJoint", "UrdfJointLimit", "UrdfLink", "UrdfMaterial",
-    "UrdfMesh", "UrdfOrigin", "UrdfRobot", "UrdfSphere", "UrdfVisual", "WgpuRenderer", "WgpuRendererConfiguration",
+    "UrdfMesh", "UrdfOrigin", "UrdfRobot", "UrdfSphere", "UrdfVisual", "VoxelGroup", "WgpuRenderer",
+    "WgpuRendererConfiguration",
 ]
 
 
@@ -538,6 +589,113 @@ def tesselator_rejects_other_objects():
     check(tesselator.get_output_geometry_delta() is None)
 
 
+def voxel_group_has_the_voxelizer_interface():
+    values = [0] * GROUP_PAGES
+    values[5] = U64_MAX
+    group = rr.VoxelGroup(rr.PointI(1, -2, 3, 0), values)
+    check(group.point() == rr.PointI(1, -2, 3, 0))
+    check(group.values() == values)
+    # Copies both ways.
+    values[6] = 1
+    group.values()[7] = 1
+    check(group.values()[5:8] == [U64_MAX, 0, 0])
+    check(group == rr.VoxelGroup(rr.PointI(1, -2, 3, 0), group.values()))
+    check(group != rr.VoxelGroup(rr.PointI(1, -2, 3, 1), group.values()))
+    check(repr(group) == "VoxelGroup(point=PointI(1, -2, 3, 0), values=<1 pages with voxels>)")
+    # The key can be anything like a PointI, the words any sequence.
+    other = rr.VoxelGroup(VoxelizerPointI(1, -2, 3, 0), tuple(group.values()))
+    check(other == group)
+    with raises(ValueError, "values holds 4095 words, a group holds 4096"):
+        rr.VoxelGroup(rr.PointI(0, 0, 0, 0), [0] * (GROUP_PAGES - 1))
+    with raises(ValueError, "values holds 4097 words"):
+        rr.VoxelGroup(rr.PointI(0, 0, 0, 0), [0] * (GROUP_PAGES + 1))
+    with raises(TypeError, "point is a tuple, not a PointI"):
+        rr.VoxelGroup((0, 0, 0, 0), [0] * GROUP_PAGES)
+    with raises(OverflowError):
+        rr.VoxelGroup(rr.PointI(0, 0, 0, 0), [-1] + [0] * (GROUP_PAGES - 1))
+    with raises(OverflowError):
+        rr.VoxelGroup(rr.PointI(0, 0, 0, 0), [2**64] + [0] * (GROUP_PAGES - 1))
+
+
+def tesselator_replace_requires_configure():
+    tesselator = rr.CpuTesselator()
+    with raises(RuntimeError, "configure"):
+        tesselator.replace_input_geometry(voxel_groups([(1, 2, 3)]))
+    with raises(RuntimeError, "configure"):
+        tesselator.replace_input_geometry([])
+
+
+def tesselator_replace_matches_update():
+    updated = make_tesselator(0.5)
+    updated.update_input_geometry([rr.PointI(4, 4, 2, U32_MAX)])
+    expected = chunk_triangles(updated.get_output_geometry_delta())
+    check([len(triangles) for triangles in expected.values()] == [12])
+
+    # Groups of this module, of r3v_voxelizer (stand-ins here) or mixed, in
+    # any iterable.
+    voxelizer_groups = voxel_groups(block_voxels(4, 4, 2), VoxelizerVoxelGroup, VoxelizerPointI)
+    for groups in (voxel_groups(block_voxels(4, 4, 2)), iter(voxelizer_groups)):
+        tesselator = make_tesselator(0.5)
+        tesselator.replace_input_geometry(groups)
+        check(chunk_triangles(tesselator.get_output_geometry_delta()) == expected)
+        # The same voxels again change nothing.
+        tesselator.replace_input_geometry(voxelizer_groups)
+        check(tesselator.get_output_geometry_delta() is None)
+        updated.replace_input_geometry(voxel_groups(block_voxels(4, 4, 2)))
+        check(updated.get_output_geometry_delta() is None)
+
+    # Groups sharing a key add up, the i of a key is ignored.
+    tesselator = make_tesselator(1.0)
+    first, second = voxel_groups([(1, 1, 1)]) + voxel_groups([(9, 9, 9)])
+    tesselator.replace_input_geometry([first, VoxelizerVoxelGroup(rr.PointI(0, 0, 0, 7), second.values())])
+    check([len(triangles) for triangles in chunk_triangles(tesselator.get_output_geometry_delta()).values()] == [24])
+
+
+def tesselator_replace_clears_old_voxels():
+    tesselator = make_tesselator(1.0)
+    # Inside their chunks, so no neighbouring chunks come along.
+    tesselator.update_input_geometry([rr.PointI(4, 4, 2, U32_MAX), rr.PointI(68, 4, 2, U32_MAX)])
+    check(len(tesselator.get_output_geometry_delta()) == 2)
+
+    tesselator.replace_input_geometry(voxel_groups(block_voxels(36, 4, 2) + block_voxels(68, 4, 2)))
+    triangles = chunk_triangles(tesselator.get_output_geometry_delta())
+    check({index: len(t) for index, t in triangles.items()} == {(0, 0, 0): 0, (32, 0, 0): 12})
+    check(tesselator.get_output_geometry_delta() is None)
+
+    tesselator.replace_input_geometry([])
+    triangles = chunk_triangles(tesselator.get_output_geometry_delta())
+    check({index: len(t) for index, t in triangles.items()} == {(32, 0, 0): 0, (64, 0, 0): 0})
+    tesselator.replace_input_geometry(())
+    check(tesselator.get_output_geometry_delta() is None)
+
+
+def tesselator_replace_rejects_bad_groups():
+    tesselator = make_tesselator(1.0)
+    tesselator.replace_input_geometry(voxel_groups(block_voxels(4, 4, 2)))
+    tesselator.get_output_geometry_delta()
+    # Errors leave the voxels alone, which every one of these would clear.
+    group = voxel_groups([(0, 0, 0)])[0]
+    with raises(TypeError, "groups[1] is a tuple, not a VoxelGroup"):
+        tesselator.replace_input_geometry([group, (rr.PointI(0, 0, 0, 0), group.values())])
+    with raises(TypeError, "groups[0].point() is a tuple, not a PointI"):
+        tesselator.replace_input_geometry([VoxelizerVoxelGroup((0, 0, 0, 0), group.values())])
+    with raises(ValueError, "groups[1].values() holds 3 words, a group holds 4096"):
+        tesselator.replace_input_geometry([group, VoxelizerVoxelGroup(rr.PointI(0, 0, 0, 0), [0, 0, 0])])
+    with raises(OverflowError):
+        tesselator.replace_input_geometry([VoxelizerVoxelGroup(rr.PointI(0, 0, 0, 0), [-1] * GROUP_PAGES)])
+    for key in ((2**25, 0, 0), (0, -(2**25) - 1, 0), (0, 0, 2**31 - 1), (-(2**31), 0, 0)):
+        with raises(ValueError, "groups[1] has key"):
+            tesselator.replace_input_geometry([group, rr.VoxelGroup(rr.PointI(*key, 0), [0] * GROUP_PAGES)])
+    with raises(TypeError):
+        tesselator.replace_input_geometry(5)
+    check(tesselator.get_output_geometry_delta() is None)
+    # The ends of the key range are fine.
+    for key in ((2**25 - 1, 0, 0), (0, -(2**25), 2**25 - 1)):
+        tesselator.replace_input_geometry(
+            voxel_groups(block_voxels(4, 4, 2)) + [rr.VoxelGroup(rr.PointI(*key, 0), [0] * GROUP_PAGES)])
+    check(tesselator.get_output_geometry_delta() is None)
+
+
 # -------------------------------------------------------------- renderer
 
 
@@ -691,6 +849,27 @@ def renderer_draws_voxels():
     tesselator.update_input_geometry([rr.PointI(4, 4, 2, 0)])
     renderer.update_geometry(tesselator.get_output_geometry_delta())
     check(not lit(render_now(renderer, camera, w, h), w, w // 2, h // 2))
+
+
+def renderer_draws_only_replaced_voxels():
+    w = h = 32
+    renderer = make_renderer(w, h)
+    # Voxels 4..8 x 4..8 x 2..4.
+    tesselator = add_block(renderer, 1.0, 4, 4, 2)
+    camera = rr.OrbitCamera((6, 6, 3), 10)
+    block = render_now(renderer, camera, w, h)
+    check(lit(block, w, w // 2, h // 2))
+
+    out_of_view = voxel_groups(block_voxels(400, 400, 400))
+    in_view = voxel_groups(block_voxels(4, 4, 2), VoxelizerVoxelGroup)
+    for groups in (out_of_view, in_view, []):
+        tesselator.replace_input_geometry(groups)
+        renderer.update_geometry(tesselator.get_output_geometry_delta())
+        frame = render_now(renderer, camera, w, h)
+        if groups is in_view:
+            check(frame == block)
+        else:
+            check(not any(lit(frame, w, x, y) for y in range(h) for x in range(w)))
 
 
 def renderer_update_geometry_takes_the_delta():
@@ -917,6 +1096,11 @@ TEST_CASES = [
     tesselator_toggles_marching_cubes,
     tesselator_takes_voxelizer_points,
     tesselator_rejects_other_objects,
+    voxel_group_has_the_voxelizer_interface,
+    tesselator_replace_requires_configure,
+    tesselator_replace_matches_update,
+    tesselator_replace_clears_old_voxels,
+    tesselator_replace_rejects_bad_groups,
     renderer_configure_checks_size,
     renderer_configure_checks_colors,
     renderer_configure_checks_terrain_coloring,
@@ -927,6 +1111,7 @@ TEST_CASES = [
     renderer_writes_any_byte_buffer,
     renderer_first_frame_is_zeros,
     renderer_draws_voxels,
+    renderer_draws_only_replaced_voxels,
     renderer_update_geometry_takes_the_delta,
     renderer_draws_assets,
     renderer_colors_assets,

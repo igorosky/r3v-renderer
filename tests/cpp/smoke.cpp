@@ -42,6 +42,22 @@ int main() {
     R3vGeometryDelta *delta = nullptr;
     CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
     CHECK(r3v_geometry_delta_chunk_count(delta) == 1);
+    r3v_geometry_delta_drop(delta);
+    // The same voxels as a group of r3v-voxelizer's get_all_points_compressed:
+    // page (1, 1, 0), whose bits interleave to 0b011, layers 2 and 3
+    std::vector<R3vVoxelGroup> groups(1);
+    groups[0].values[0b011] = 0xFFFFFFFF'00000000u;
+    static_assert(R3V_VOXEL_GROUP_PAGES == 4096);
+    CHECK_OK(r3v_cpu_tesselator_replace_input_geometry(tesselator, groups.data(), groups.size()));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(delta == nullptr);
+    CHECK_OK(r3v_cpu_tesselator_replace_input_geometry(tesselator, nullptr, 0));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(delta != nullptr);
+    r3v_geometry_delta_drop(delta);
+    CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, &block, 1));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(r3v_geometry_delta_chunk_count(delta) == 1);
 
     const uint32_t width = 16, height = 16;
     R3vWgpuRenderer *renderer = r3v_wgpu_renderer_create();

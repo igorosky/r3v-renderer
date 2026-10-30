@@ -44,6 +44,9 @@ export type Mat4 = [Vec4, Vec4, Vec4, Vec4];
 
 /** A `PointI`, r3v-voxelizer's `PointI` or a plain object. */
 export interface PointILike { x: number; y: number; z: number; i: number }
+/** A `VoxelGroup`, r3v-voxelizer's `CompressedVoxelGroup` or a plain object
+ * whose `values` hold a word for every page of the group (4096). */
+export interface VoxelGroupLike { point: PointILike; values: BigUint64Array }
 /** A `Twist`, or a plain object such as the twists of `RobotTransforms`. */
 export interface TwistLike { linear: Vec3; rotational: Vec4 }
 /** A `Triangle`, or a plain object such as the triangles of a

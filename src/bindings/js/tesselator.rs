@@ -1,16 +1,17 @@
 //! `tesselator::CpuTesselator` (trait `Tesselator`) and its output,
 //! `Vec<TriangleChunk>`.
 
+use js_sys::BigUint64Array;
 use wasm_bindgen::prelude::*;
 
 use crate::{
     bindings::checked::CheckedTesselator,
-    geometry::{PointI, TriangleChunk},
+    geometry::{PointI, TriangleChunk, VOXEL_GROUP_PAGES},
 };
 
 use super::{
-    Result, array, error, f32_property, flag_property, index, point_i, range_error,
-    triangle_chunk_object,
+    JsPointI, Result, What, array, describe, error, f32_property, flag_property, index, point_i,
+    property, range_error, triangle_chunk_object, type_error,
 };
 
 /// `tesselator::CpuTesselatorConfiguration`: `voxel_size` is the edge length
@@ -47,6 +48,89 @@ fn blocks(value: &JsValue) -> Result<Vec<PointI>> {
         .enumerate()
         .map(|(k, item)| point_i(&item, &|| format!("blocks[{k}]")))
         .collect()
+}
+
+/// `value` as the words of a group: a `BigUint64Array` holding one for every
+/// page.
+fn words(value: &JsValue, what: What) -> Result<Box<[u64; VOXEL_GROUP_PAGES]>> {
+    let values = value.dyn_ref::<BigUint64Array>().ok_or_else(|| {
+        type_error(format!(
+            "{} is not a BigUint64Array (got {})",
+            what(),
+            describe(value)
+        ))
+    })?;
+    if values.length() as usize != VOXEL_GROUP_PAGES {
+        return Err(range_error(format!(
+            "{} holds {} words, a group holds {VOXEL_GROUP_PAGES}",
+            what(),
+            values.length()
+        )));
+    }
+    let mut words = Box::new([0; VOXEL_GROUP_PAGES]);
+    values.copy_to(&mut words[..]);
+    Ok(words)
+}
+
+type Group = (PointI, Box<[u64; VOXEL_GROUP_PAGES]>);
+
+/// `groups` as keys and words: an array of `VoxelGroupLike`s.
+fn groups(value: &JsValue) -> Result<Vec<Group>> {
+    array(value, &|| "groups".to_owned())?
+        .iter()
+        .enumerate()
+        .map(|(k, group)| {
+            let what = || format!("groups[{k}]");
+            let point = property(&group, "point", &what)?;
+            let values = property(&group, "values", &what)?;
+            Ok((
+                point_i(&point, &|| format!("groups[{k}].point"))?,
+                words(&values, &|| format!("groups[{k}].values"))?,
+            ))
+        })
+        .collect()
+}
+
+/// Constructed voxels of a cube of 64x64x64 voxels (`geometry::VoxelGroup`):
+/// `point` is the key of the group, voxel coordinates shifted right by 6 (its
+/// `i` is ignored), `values` the occupancy of every 4x4x4 page of the group,
+/// in z-order (bits of x, y and z interleaved from the lowest one). Bit
+/// `x + 4 * y + 16 * z` of a word is set when voxel (x, y, z) of its page is
+/// constructed. Same interface as r3v-voxelizer's `CompressedVoxelGroup`,
+/// which can be passed on as it is.
+#[wasm_bindgen(js_name = VoxelGroup)]
+pub struct JsVoxelGroup {
+    point: PointI,
+    values: Box<[u64; VOXEL_GROUP_PAGES]>,
+}
+
+#[wasm_bindgen(js_class = VoxelGroup)]
+impl JsVoxelGroup {
+    /// `RangeError` unless `values` holds a word for every page of the group
+    /// (4096).
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        #[wasm_bindgen(unchecked_param_type = "PointILike")] point: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "BigUint64Array")] values: JsValue,
+    ) -> Result<JsVoxelGroup> {
+        Ok(Self {
+            point: point_i(&point, &|| "point".to_owned())?,
+            values: words(&values, &|| "values".to_owned())?,
+        })
+    }
+
+    /// Key of the group, as a copy.
+    #[wasm_bindgen(getter)]
+    pub fn point(&self) -> JsPointI {
+        let PointI { x, y, z, i } = self.point;
+        JsPointI { x, y, z, i }
+    }
+
+    /// Words of the group, as a copy.
+    #[wasm_bindgen(getter)]
+    pub fn values(&self) -> Vec<u64> {
+        self.values.to_vec()
+    }
 }
 
 #[wasm_bindgen(js_class = CpuTesselator)]
@@ -98,6 +182,28 @@ impl JsCpuTesselator {
     ) -> Result<()> {
         let blocks = self::blocks(&blocks)?;
         Ok(self.0.update_input_geometry(blocks)?)
+    }
+
+    /// `CpuTesselator::replace_input_geometry`: drops every voxel the
+    /// tesselator holds and keeps only the ones of `groups`. `groups` is an
+    /// array of `VoxelGroup`s or of other objects with `point` and `values`
+    /// properties, e.g. what r3v-voxelizer's `get_all_points_compressed`
+    /// returns. Groups sharing a key add up. Only the chunks whose voxels
+    /// changed come out of the next `get_output_geometry_delta`, the ones left
+    /// without voxels with no triangles.
+    ///
+    /// `TypeError` when `values` of a group is not a `BigUint64Array`,
+    /// `RangeError` when it does not hold a word for every page (4096) or a
+    /// key coordinate is outside [-2^25, 2^25); none of the groups is applied
+    /// then.
+    pub fn replace_input_geometry(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "VoxelGroupLike[]")] groups: JsValue,
+    ) -> Result<()> {
+        let groups = self::groups(&groups)?;
+        Ok(self
+            .0
+            .replace_input_geometry(groups.iter().map(|(key, values)| (key.clone(), &**values)))?)
     }
 
     /// `Tesselator::get_output_geometry_delta`: the chunks changed since the

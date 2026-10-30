@@ -6,8 +6,8 @@ use std::ptr;
 use crate::{bindings::checked::CheckedTesselator, camera::CameraState, geometry::TriangleChunk};
 
 use super::{
-    Error, R3vCameraState, R3vPoint3I, R3vPointI, R3vStatus, R3vTriangle, arg, arg_mut,
-    drop_handle, new_handle, slice_arg, status,
+    Error, R3vCameraState, R3vPoint3I, R3vPointI, R3vStatus, R3vTriangle, R3vVoxelGroup, arg,
+    arg_mut, drop_handle, new_handle, slice_arg, status,
 };
 
 /// Turns blocks of voxels into triangles (`tesselator::CpuTesselator`).
@@ -104,6 +104,34 @@ pub extern "C" fn r3v_cpu_tesselator_update_input_geometry(
         let blocks = unsafe { slice_arg(blocks, count, "blocks") }?;
         let blocks = blocks.iter().map(|&block| block.into()).collect();
         Ok(tesselator.0.update_input_geometry(blocks)?)
+    })
+}
+
+/// `CpuTesselator::replace_input_geometry`: drops every voxel the tesselator
+/// holds and keeps only the ones of `groups`, e.g. what r3v-voxelizer's
+/// `get_all_points_compressed` returns. Groups sharing a key add up. Only the
+/// chunks whose voxels changed come out of the next
+/// `r3v_cpu_tesselator_get_output_geometry_delta`, the ones left without
+/// voxels with no triangles. `groups` may be NULL when `count` is 0, which
+/// clears everything.
+///
+/// `R3V_INVALID_ARGUMENT` when a group key coordinate is outside
+/// [-2^25, 2^25) (its voxels would not fit `int32_t`); none of the groups is
+/// applied then.
+#[unsafe(no_mangle)]
+pub extern "C" fn r3v_cpu_tesselator_replace_input_geometry(
+    tesselator: *mut R3vCpuTesselator,
+    groups: *const R3vVoxelGroup,
+    count: usize,
+) -> R3vStatus {
+    status(|| {
+        let tesselator = unsafe { arg_mut(tesselator, "tesselator") }?;
+        let groups = unsafe { slice_arg(groups, count, "groups") }?;
+        Ok(tesselator.0.replace_input_geometry(
+            groups
+                .iter()
+                .map(|group| (group.point.into(), &group.values)),
+        )?)
     })
 }
 

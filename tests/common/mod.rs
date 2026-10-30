@@ -100,3 +100,66 @@ impl Lcg {
         self.next_u32() % denominator < numerator
     }
 }
+
+/// Offset of a page in its voxel group packed as r3v-voxelizer packs it: bit
+/// `j` of x, y and z goes to bit `3 * j`, `3 * j + 1` and `3 * j + 2`.
+pub fn page_index(page: [i32; 3]) -> usize {
+    let mut index = 0;
+    for bit in 0..4 {
+        for (axis, coordinate) in page.iter().enumerate() {
+            index |= ((*coordinate as usize >> bit) & 1) << (3 * bit + axis);
+        }
+    }
+    index
+}
+
+/// `voxels` as the groups r3v-voxelizer's `get_all_points_compressed`
+/// returns, built voxel by voxel, sorted by key.
+pub fn voxel_groups(
+    voxels: impl IntoIterator<Item = [i32; 3]>,
+) -> Vec<r3v_renderer::geometry::VoxelGroup> {
+    use r3v_renderer::geometry::{PointI, VOXEL_GROUP_PAGES, VoxelGroup};
+    let mut groups: std::collections::BTreeMap<[i32; 3], Box<[u64; VOXEL_GROUP_PAGES]>> =
+        std::collections::BTreeMap::new();
+    for voxel in voxels {
+        let key = voxel.map(|c| c >> 6);
+        let page = voxel.map(|c| (c >> 2) & 15);
+        let local = voxel.map(|c| c & 3);
+        groups
+            .entry(key)
+            .or_insert_with(|| Box::new([0; VOXEL_GROUP_PAGES]))[page_index(page)] |=
+            1 << (local[0] + 4 * local[1] + 16 * local[2]);
+    }
+    groups
+        .into_iter()
+        .map(|(key, values)| VoxelGroup {
+            point: PointI {
+                x: key[0],
+                y: key[1],
+                z: key[2],
+                i: 0,
+            },
+            values,
+        })
+        .collect()
+}
+
+/// Voxels of 4x4x2 blocks (`PointI` with bit `x + 4 * y + 16 * z` set for the
+/// voxel at (x, y, z) of the block).
+pub fn block_voxels<'a>(
+    blocks: impl IntoIterator<Item = &'a r3v_renderer::geometry::PointI>,
+) -> std::collections::BTreeSet<[i32; 3]> {
+    let mut voxels = std::collections::BTreeSet::new();
+    for block in blocks {
+        for bit in 0..32 {
+            if block.i >> bit & 1 != 0 {
+                voxels.insert([
+                    block.x + (bit & 3),
+                    block.y + (bit >> 2 & 3),
+                    block.z + (bit >> 4),
+                ]);
+            }
+        }
+    }
+    voxels
+}
