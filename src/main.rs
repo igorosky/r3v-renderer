@@ -68,7 +68,7 @@ const MAX_STRUCTURE_GROUND: i32 = 28;
 const TREE_CELL: i32 = 16;
 
 /// Loaded when no URDF path is passed on the command line.
-const DEFAULT_ROBOT_URDF: &str = "assets/scorpio8.urdf.xacro";
+const DEFAULT_ROBOT_URDF: &str = "assets/scorpio9.urdf.xacro";
 /// World metres per URDF metre.
 const ROBOT_SCALE: f32 = 1.0;
 /// Rover driving speed along its loop, in metres per second.
@@ -87,7 +87,7 @@ const ROBOT_CONTINUOUS_SWEEP: f32 = 0.4;
 /// In metres.
 const ROBOT_FOCUS_DISTANCE: f32 = 3.5;
 /// Joint mounting the manipulator on the rover: every link below it belongs to the arm.
-const ROBOT_ARM_MOUNT_JOINT: &str = "mani_base_offset_joint";
+const ROBOT_ARM_MOUNT_JOINT: &str = "mani_base_joint";
 const ROBOT_SHOW_SHAPES: bool = false;
 
 // Camera framing is relative to the voxel world, so it follows VOXEL_SIZE.
