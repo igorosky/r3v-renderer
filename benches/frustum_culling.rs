@@ -4,7 +4,10 @@ use r3v_renderer::{
     Camera, Renderer, Tesselator,
     camera::OrbitCamera,
     geometry::PointI,
-    renderer::{WgpuAccelerated, WgpuAcceleratedConfiguration},
+    renderer::{
+        DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE, WgpuAccelerated,
+        WgpuAcceleratedConfiguration,
+    },
     tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext},
 };
 
@@ -109,6 +112,8 @@ fn main() {
         renderer.configure(WgpuAcceleratedConfiguration {
             width: SIZE[0],
             height: SIZE[1],
+            background_color: DEFAULT_BACKGROUND_COLOR,
+            color_depth_range: DEFAULT_COLOR_DEPTH_RANGE,
         });
         while let Some(delta) = tesselator.get_output_geometry_delta(&ALL_CHUNKS) {
             renderer.update_geometry(delta);

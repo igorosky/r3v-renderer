@@ -840,6 +840,8 @@ mod tests {
         renderer.configure(WgpuAcceleratedConfiguration {
             width: size,
             height: size,
+            background_color: super::DEFAULT_BACKGROUND_COLOR,
+            color_depth_range: super::DEFAULT_COLOR_DEPTH_RANGE,
         });
         let [a, b, c, d] = [
             [-0.5, -0.5, 0.0],
@@ -897,6 +899,8 @@ mod tests {
         renderer.configure(WgpuAcceleratedConfiguration {
             width: size,
             height: size,
+            background_color: super::DEFAULT_BACKGROUND_COLOR,
+            color_depth_range: super::DEFAULT_COLOR_DEPTH_RANGE,
         });
         let square = |x: f32, z: f32| {
             let [a, b, c, d] = [
