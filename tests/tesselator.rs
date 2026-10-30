@@ -679,16 +679,11 @@ fn marching_cubes_is_scaled_by_fractional_voxel_size() {
             }
         }
     }
-    // The smoothed surface stays within one voxel of the brick's bounds.
-    let lower = [3.0, -9.0, 1.0].map(|c| c * voxel_size);
-    let upper = [9.0, -3.0, 5.0].map(|c| c * voxel_size);
+    let lower = [4.0, -8.0, 2.0].map(|c| c * voxel_size);
+    let upper = [8.0, -4.0, 4.0].map(|c| c * voxel_size);
     for a in 0..3 {
-        assert!(
-            max[a] > min[a],
-            "geometry collapsed on axis {a}: {min:?} {max:?}"
-        );
-        assert!(min[a] >= lower[a] - 1.0e-4, "{min:?}");
-        assert!(max[a] <= upper[a] + 1.0e-4, "{max:?}");
+        assert!((min[a] - lower[a]).abs() < 1.0e-4, "{min:?}");
+        assert!((max[a] - upper[a]).abs() < 1.0e-4, "{max:?}");
     }
 }
 

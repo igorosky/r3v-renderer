@@ -3,10 +3,7 @@ use std::collections::VecDeque;
 
 #[path = "marching_cubes.rs"]
 mod marching_cubes;
-use marching_cubes::{
-    MC_CUBE_CORNERS, MC_GRID_SIZE, MC_GRID_VOLUME, MC_PADDED_GRID_SIZE, MC_PADDED_GRID_VOLUME,
-    MC_X_SUM_VOLUME, MC_XY_SUM_VOLUME, polygonize_cube,
-};
+use marching_cubes::{MC_CUBE_CORNERS, MC_GRID_SIZE, polygonize_cube};
 
 #[cfg(feature = "multi-threaded")]
 use rayon::prelude::*;
@@ -188,36 +185,13 @@ impl CpuTesselator {
         let mut dirty = Vec::new();
         for (&chunk, stored) in &self.chunks {
             dirty.push(chunk);
-            for z in -1..=1 {
-                for y in -1..=1 {
-                    for x in -1..=1 {
+            for z in -1..=0 {
+                for y in -1..=0 {
+                    for x in -1..=0 {
                         if x == 0 && y == 0 && z == 0 {
                             continue;
                         }
-                        let boundary = [
-                            if x < 0 {
-                                -1
-                            } else if x > 0 {
-                                1
-                            } else {
-                                0
-                            },
-                            if y < 0 {
-                                -1
-                            } else if y > 0 {
-                                1
-                            } else {
-                                0
-                            },
-                            if z < 0 {
-                                -1
-                            } else if z > 0 {
-                                1
-                            } else {
-                                0
-                            },
-                        ];
-                        if !stored.has_voxel_on_boundary(boundary) {
+                        if !stored.has_voxel_on_boundary([x as i8, y as i8, z as i8]) {
                             continue;
                         }
                         dirty.push(DiscretePoint {
@@ -250,7 +224,10 @@ impl CpuTesselator {
                 directions[axis as usize][counts[axis as usize]] = -1;
                 counts[axis as usize] += 1;
             }
-            if subchunk[axis] == CHUNK_SUBCHUNKS[axis] - 1 && changed & high_layer != 0 {
+            if !self.marching_cubes_enabled
+                && subchunk[axis] == CHUNK_SUBCHUNKS[axis] - 1
+                && changed & high_layer != 0
+            {
                 directions[axis as usize][counts[axis as usize]] = 1;
                 counts[axis as usize] += 1;
             }
@@ -385,41 +362,35 @@ impl CpuTesselator {
         chunk: DiscretePoint,
         voxel_size: RealUnit,
     ) -> Vec<RealTriangle> {
-        let mut field = [0u8; MC_GRID_VOLUME];
-        self.marching_cubes_field(chunk, &mut field);
-        let grid_index = |x: usize, y: usize, z: usize| (z * MC_GRID_SIZE + y) * MC_GRID_SIZE + x;
-        if !field.iter().any(|&value| value != 0) || field.iter().all(|&value| value != 0) {
-            return Vec::new();
-        }
-
+        let rows = self.marching_cubes_rows(chunk);
         let mut triangles = Vec::new();
         for z in 0..CHUNK_WIDTH {
             for y in 0..CHUNK_WIDTH {
-                for x in 0..CHUNK_WIDTH {
+                let quad = [
+                    [rows[z][y], rows[z][y + 1]],
+                    [rows[z + 1][y], rows[z + 1][y + 1]],
+                ];
+                let any = quad[0][0] | quad[0][1] | quad[1][0] | quad[1][1];
+                let all = quad[0][0] & quad[0][1] & quad[1][0] & quad[1][1];
+                let mut cubes = (any | any >> 1) & !(all & all >> 1) & CHUNK_MASK;
+                while cubes != 0 {
+                    let x = cubes.trailing_zeros() as usize;
+                    cubes &= cubes - 1;
                     let mut case_index = 0usize;
-                    let mut corner_values = [0u8; 8];
                     for (corner, offset) in MC_CUBE_CORNERS.iter().enumerate() {
-                        let cx = x + offset[0];
-                        let cy = y + offset[1];
-                        let cz = z + offset[2];
-                        let value = field[grid_index(cx, cy, cz)];
-                        corner_values[corner] = value;
-                        if value != 0 {
-                            case_index |= 1 << corner;
-                        }
-                    }
-                    if case_index == 0 || case_index == u8::MAX as usize {
-                        continue;
+                        let solid = quad[offset[2]][offset[1]] >> (x + offset[0]) & 1;
+                        case_index |= (solid as usize) << corner;
                     }
 
                     let corners = MC_CUBE_CORNERS.map(|offset| {
                         [
-                            (chunk.x + (x + offset[0]) as DiscreteUnit) as RealUnit,
-                            (chunk.y + (y + offset[1]) as DiscreteUnit) as RealUnit,
-                            (chunk.z + (z + offset[2]) as DiscreteUnit) as RealUnit,
+                            (chunk.x + (x + offset[0]) as DiscreteUnit) as RealUnit + 0.5,
+                            (chunk.y + (y + offset[1]) as DiscreteUnit) as RealUnit + 0.5,
+                            (chunk.z + (z + offset[2]) as DiscreteUnit) as RealUnit + 0.5,
                         ]
                     });
-                    let values = corner_values.map(|value| value as RealUnit);
+                    let values =
+                        std::array::from_fn(|corner| (case_index >> corner & 1) as RealUnit);
                     polygonize_cube(case_index, &corners, values, voxel_size, &mut triangles);
                 }
             }
@@ -427,107 +398,36 @@ impl CpuTesselator {
         triangles
     }
 
-    fn marching_cubes_field(&self, chunk: DiscretePoint, field: &mut [u8; MC_GRID_VOLUME]) {
-        let source_chunks: [Option<&Chunk>; 27] = std::array::from_fn(|index| {
-            let x = (index % 3) as DiscreteUnit - 1;
-            let y = ((index / 3) % 3) as DiscreteUnit - 1;
-            let z = (index / 9) as DiscreteUnit - 1;
-            self.chunks
-                .get(&DiscretePoint {
-                    x: chunk.x + x * CHUNK_WIDTH as DiscreteUnit,
-                    y: chunk.y + y * CHUNK_WIDTH as DiscreteUnit,
-                    z: chunk.z + z * CHUNK_WIDTH as DiscreteUnit,
-                })
-                .map(Box::as_ref)
-        });
-        let mut voxels = [0u8; MC_PADDED_GRID_VOLUME];
-        let padded_coordinate = |chunk_offset: usize, local: usize| match chunk_offset {
-            0 => (local == CHUNK_WIDTH - 1).then_some(0),
-            1 => Some(local + 1),
-            2 => (local == 0).then_some(MC_PADDED_GRID_SIZE - 1),
-            _ => unreachable!(),
-        };
-        for (source_index, source) in source_chunks.into_iter().enumerate() {
-            let Some(source) = source else {
+    fn marching_cubes_rows(&self, chunk: DiscretePoint) -> [[u32; MC_GRID_SIZE]; MC_GRID_SIZE] {
+        let mut rows = [[0u32; MC_GRID_SIZE]; MC_GRID_SIZE];
+        for source_index in 0..8 {
+            let offset = Point {
+                x: source_index & 1,
+                y: source_index >> 1 & 1,
+                z: source_index >> 2,
+            };
+            let Some(source) = self.chunks.get(&DiscretePoint {
+                x: chunk.x + (offset.x * CHUNK_WIDTH) as DiscreteUnit,
+                y: chunk.y + (offset.y * CHUNK_WIDTH) as DiscreteUnit,
+                z: chunk.z + (offset.z * CHUNK_WIDTH) as DiscreteUnit,
+            }) else {
                 continue;
             };
-            let chunk_x = source_index % 3;
-            let chunk_y = source_index / 3 % 3;
-            let chunk_z = source_index / 9;
-            for (subchunk_index, &stored_mask) in source.subchunks.iter().enumerate() {
-                let subchunk_x = subchunk_index % CHUNK_SUBCHUNKS.x;
-                let subchunk_y = subchunk_index / CHUNK_SUBCHUNKS.x % CHUNK_SUBCHUNKS.y;
-                let subchunk_z = subchunk_index / (CHUNK_SUBCHUNKS.x * CHUNK_SUBCHUNKS.y);
-                let mut mask = stored_mask;
-                for (axis, chunk_offset, subchunk_coordinate) in [
-                    (0, chunk_x, subchunk_x),
-                    (1, chunk_y, subchunk_y),
-                    (2, chunk_z, subchunk_z),
-                ] {
-                    if chunk_offset == 1 {
-                        continue;
-                    }
-                    let is_before = chunk_offset == 0;
-                    let boundary_subchunk = if is_before {
-                        CHUNK_SUBCHUNKS.get(Axis::ALL[axis]) - 1
+            let columns = &source.columns[Axis::X as usize];
+            let range = |offset: usize| 0..if offset == 0 { CHUNK_WIDTH } else { 1 };
+            for z in range(offset.z) {
+                for y in range(offset.y) {
+                    let bits = columns[z][y];
+                    rows[offset.z * CHUNK_WIDTH + z][offset.y * CHUNK_WIDTH + y] |= if offset.x == 0
+                    {
+                        bits
                     } else {
-                        0
+                        (bits & 1) << CHUNK_WIDTH
                     };
-                    if subchunk_coordinate != boundary_subchunk {
-                        mask = 0;
-                        break;
-                    }
-                    mask &= BOUNDARY_LAYERS[axis][is_before as usize];
-                }
-                while mask != 0 {
-                    let bit = mask.trailing_zeros();
-                    mask &= mask - 1;
-                    let local = PointI::voxel_local(bit);
-                    let voxel_x = subchunk_x * SUBCHUNK_SIZE.x + local.x;
-                    let voxel_y = subchunk_y * SUBCHUNK_SIZE.y + local.y;
-                    let voxel_z = subchunk_z * SUBCHUNK_SIZE.z + local.z;
-                    let (Some(x), Some(y), Some(z)) = (
-                        padded_coordinate(chunk_x, voxel_x),
-                        padded_coordinate(chunk_y, voxel_y),
-                        padded_coordinate(chunk_z, voxel_z),
-                    ) else {
-                        continue;
-                    };
-                    voxels[(z * MC_PADDED_GRID_SIZE + y) * MC_PADDED_GRID_SIZE + x] = 1;
                 }
             }
         }
-
-        let mut x_sums = [0u8; MC_X_SUM_VOLUME];
-        for z in 0..MC_PADDED_GRID_SIZE {
-            for y in 0..MC_PADDED_GRID_SIZE {
-                for x in 0..MC_GRID_SIZE {
-                    let input = (z * MC_PADDED_GRID_SIZE + y) * MC_PADDED_GRID_SIZE + x;
-                    let output = (z * MC_PADDED_GRID_SIZE + y) * MC_GRID_SIZE + x;
-                    x_sums[output] = voxels[input] + voxels[input + 1];
-                }
-            }
-        }
-
-        let mut xy_sums = [0u8; MC_XY_SUM_VOLUME];
-        for z in 0..MC_PADDED_GRID_SIZE {
-            for y in 0..MC_GRID_SIZE {
-                for x in 0..MC_GRID_SIZE {
-                    let input = (z * MC_PADDED_GRID_SIZE + y) * MC_GRID_SIZE + x;
-                    let output = (z * MC_GRID_SIZE + y) * MC_GRID_SIZE + x;
-                    xy_sums[output] = x_sums[input] + x_sums[input + MC_GRID_SIZE];
-                }
-            }
-        }
-
-        for z in 0..MC_GRID_SIZE {
-            for y in 0..MC_GRID_SIZE {
-                for x in 0..MC_GRID_SIZE {
-                    let index = (z * MC_GRID_SIZE + y) * MC_GRID_SIZE + x;
-                    field[index] = xy_sums[index] + xy_sums[index + MC_GRID_SIZE * MC_GRID_SIZE];
-                }
-            }
-        }
+        rows
     }
 }
 
