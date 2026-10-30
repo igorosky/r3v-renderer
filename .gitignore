@@ -1,3 +1,4 @@
 /target
 assets
 tests/js/node_modules/
+.vscode/

@@ -3,12 +3,6 @@ use crate::geometry::{RealTriangle, RealUnit};
 use super::CHUNK_WIDTH;
 
 pub(super) const MC_GRID_SIZE: usize = CHUNK_WIDTH + 1;
-pub(super) const MC_PADDED_GRID_SIZE: usize = CHUNK_WIDTH + 2;
-pub(super) const MC_GRID_VOLUME: usize = MC_GRID_SIZE * MC_GRID_SIZE * MC_GRID_SIZE;
-pub(super) const MC_X_SUM_VOLUME: usize = MC_GRID_SIZE * MC_PADDED_GRID_SIZE * MC_PADDED_GRID_SIZE;
-pub(super) const MC_XY_SUM_VOLUME: usize = MC_GRID_SIZE * MC_GRID_SIZE * MC_PADDED_GRID_SIZE;
-pub(super) const MC_PADDED_GRID_VOLUME: usize =
-    MC_PADDED_GRID_SIZE * MC_PADDED_GRID_SIZE * MC_PADDED_GRID_SIZE;
 pub(super) const MC_CUBE_CORNERS: [[usize; 3]; 8] = [
     [0, 0, 0],
     [1, 0, 0],

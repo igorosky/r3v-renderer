@@ -1,4 +1,4 @@
-use std::ops::{Index, IndexMut, Mul, Sub};
+use std::ops::{Add, Index, IndexMut, Mul, Sub};
 
 use cgmath::num_traits;
 
@@ -124,6 +124,21 @@ impl<T> Point<T> {
             x: f(self.x),
             y: f(self.y),
             z: f(self.z),
+        }
+    }
+}
+
+impl<U> Add for Point<U>
+where
+    U: Add<Output = U>,
+{
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+            z: self.z + rhs.z,
         }
     }
 }

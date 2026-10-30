@@ -243,6 +243,11 @@ impl PyWgpuRenderer {
         Ok(self.renderer.set_asset_visibility(instance_id, visible)?)
     }
 
+    fn set_asset_color(&mut self, instance_id: u64, color: Vec3) -> PyResult<()> {
+        let (r, g, b) = color;
+        Ok(self.renderer.set_asset_color(instance_id, [r, g, b])?)
+    }
+
     /// `Renderer::render`: renders a frame seen by `camera_state` and writes
     /// the previous one to `out` (frames are read back one call late). After
     /// `configure` changed the frame size, and on the first call, `out` is

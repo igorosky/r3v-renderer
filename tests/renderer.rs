@@ -10,7 +10,7 @@ use r3v_renderer::{
         WgpuAcceleratedConfiguration,
     },
     stl::StlMesh,
-    tesselator::{CpuTesselator, CpuTesselatorConfiguration},
+    tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext},
 };
 
 const SIZE: u32 = 32;
@@ -49,7 +49,11 @@ fn add_block(renderer: &mut WgpuAccelerated) {
         z: 0,
         i: u32::MAX,
     }]);
-    renderer.update_geometry(tesselator.get_output_geometry_delta().expect("a delta"));
+    let context = CpuTesselatorContext {
+        camera_frustum: None,
+    };
+    let delta = tesselator.get_output_geometry_delta(&context);
+    renderer.update_geometry(delta.expect("a delta"));
 }
 
 fn scene() -> WgpuAccelerated {

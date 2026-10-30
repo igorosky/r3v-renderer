@@ -101,9 +101,21 @@ impl JsCpuTesselator {
     }
 
     /// `Tesselator::get_output_geometry_delta`: the chunks changed since the
-    /// last call, `undefined` when nothing changed.
-    pub fn get_output_geometry_delta(&mut self) -> Result<Option<JsGeometryDelta>> {
-        let delta = self.0.get_output_geometry_delta()?;
+    /// last call, `undefined` when nothing changed. With a `camera_state`,
+    /// only the chunks in its view; the others stay changed for a later call.
+    pub fn get_output_geometry_delta(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "CameraStateLike | undefined")]
+        camera_state: &JsValue,
+    ) -> Result<Option<JsGeometryDelta>> {
+        let camera_state = if camera_state.is_undefined() || camera_state.is_null() {
+            None
+        } else {
+            Some(super::camera_state(camera_state, &|| {
+                "camera_state".to_owned()
+            })?)
+        };
+        let delta = self.0.get_output_geometry_delta(camera_state.as_ref())?;
         Ok(delta.map(|delta| JsGeometryDelta(Some(delta))))
     }
 }

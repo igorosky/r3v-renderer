@@ -204,12 +204,56 @@ fn reads_materials_inline_and_top_level() {
 
     let reference = visuals[1].material.as_ref().unwrap();
     assert_eq!(reference.name.as_deref(), Some("red"));
+    assert_eq!(reference.color.as_ref().unwrap().rgba, [1.0, 0.0, 0.0, 1.0]);
 
     let unnamed = visuals[2].material.as_ref().unwrap();
     assert_eq!(unnamed.name, None);
     assert_eq!(unnamed.color.as_ref().unwrap().rgba, [0.0, 1.0, 0.0, 1.0]);
 
     assert!(visuals[3].material.is_none());
+}
+
+#[test]
+fn material_references_take_the_first_color_defined_for_the_name() {
+    let robot = read_str(
+        r#"<robot name="materials">
+            <link name="base">
+                <visual>
+                    <geometry><sphere radius="1"/></geometry>
+                    <material name="orange"/>
+                </visual>
+                <visual>
+                    <geometry><sphere radius="1"/></geometry>
+                    <material name="unknown"/>
+                </visual>
+                <visual>
+                    <geometry><sphere radius="1"/></geometry>
+                    <material name="orange"><color rgba="0 1 0 1"/></material>
+                </visual>
+            </link>
+            <link name="arm">
+                <visual>
+                    <geometry><sphere radius="1"/></geometry>
+                    <material name="orange"><color rgba="1 0.5 0 1"/></material>
+                </visual>
+            </link>
+            <material name="orange"><color rgba="1 0.4 0 1"/></material>
+        </robot>"#,
+    )
+    .unwrap();
+    let color = |link: usize, visual: usize| {
+        robot.links[link].visuals[visual]
+            .material
+            .as_ref()
+            .unwrap()
+            .color
+            .as_ref()
+            .map(|color| color.rgba)
+    };
+    assert_eq!(color(0, 0), Some([1.0, 0.4, 0.0, 1.0]));
+    assert_eq!(color(0, 1), None);
+    assert_eq!(color(0, 2), Some([0.0, 1.0, 0.0, 1.0]));
+    assert_eq!(color(1, 0), Some([1.0, 0.5, 0.0, 1.0]));
 }
 
 #[test]
@@ -436,4 +480,28 @@ fn read_file_reports_missing_and_invalid_files() {
 
     // A directory is not a URDF file.
     assert!(read_file(dir.path()).is_err());
+}
+
+#[test]
+fn material_defined_in_one_link_colors_references_in_others() {
+    let robot = read_str(
+        r#"<robot name="materials">
+            <link name="base">
+                <visual>
+                    <geometry><box size="1 1 1"/></geometry>
+                    <material name="steel"><color rgba="0.5 0.5 0.6 1"/></material>
+                </visual>
+            </link>
+            <link name="arm">
+                <visual>
+                    <geometry><box size="1 1 1"/></geometry>
+                    <material name="steel"/>
+                </visual>
+            </link>
+        </robot>"#,
+    )
+    .unwrap();
+    let material = robot.links[1].visuals[0].material.as_ref().unwrap();
+    assert_eq!(material.name.as_deref(), Some("steel"));
+    assert_eq!(material.color.as_ref().unwrap().rgba, [0.5, 0.5, 0.6, 1.0]);
 }

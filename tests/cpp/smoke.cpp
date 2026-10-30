@@ -40,7 +40,7 @@ int main() {
     const R3vPointI block{4, 4, 2, 0xFFFFFFFFu};
     CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, &block, 1));
     R3vGeometryDelta *delta = nullptr;
-    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
     CHECK(r3v_geometry_delta_chunk_count(delta) == 1);
 
     const uint32_t width = 16, height = 16;
@@ -55,6 +55,7 @@ int main() {
     R3vStlMesh *mesh = r3v_stl_mesh_from_triangles(&triangle, 1);
     uint64_t id = 0;
     CHECK_OK(r3v_wgpu_renderer_upload_asset(renderer, mesh, 1, &id));
+    CHECK_OK(r3v_wgpu_renderer_set_asset_color(renderer, id, R3vVec3{1.0f, 0.5f, 0.0f}));
     CHECK_OK(r3v_wgpu_renderer_set_asset_visibility(renderer, id, false));
     r3v_stl_mesh_drop(mesh);
 

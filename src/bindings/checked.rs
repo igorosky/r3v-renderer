@@ -8,7 +8,7 @@ use crate::{
     geometry::{PointI, RealTwist, TriangleChunk},
     renderer::{TerrainColoring, WgpuAccelerated, WgpuAcceleratedConfiguration},
     stl::StlMesh,
-    tesselator::{CpuTesselator, CpuTesselatorConfiguration, SUBCHUNK_SIZE},
+    tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext, SUBCHUNK_SIZE},
 };
 
 /// Bytes per pixel of a rendered frame.
@@ -169,9 +169,16 @@ impl CheckedTesselator {
         Ok(())
     }
 
-    pub(crate) fn get_output_geometry_delta(&mut self) -> Result<Option<Vec<TriangleChunk>>> {
+    /// Only the chunks in view of `camera_state` when there is one.
+    pub(crate) fn get_output_geometry_delta(
+        &mut self,
+        camera_state: Option<&CameraState>,
+    ) -> Result<Option<Vec<TriangleChunk>>> {
         self.check_configured()?;
-        Ok(self.tesselator.get_output_geometry_delta())
+        let context = CpuTesselatorContext {
+            camera_frustum: camera_state.map(CameraState::frustum),
+        };
+        Ok(self.tesselator.get_output_geometry_delta(&context))
     }
 }
 
@@ -305,6 +312,17 @@ impl CheckedRenderer {
     pub(crate) fn set_asset_visibility(&mut self, instance_id: u64, visible: bool) -> Result<()> {
         self.check_instance(instance_id)?;
         self.renderer.set_asset_visibility(instance_id, visible);
+        Ok(())
+    }
+
+    pub(crate) fn set_asset_color(&mut self, instance_id: u64, color: [f32; 3]) -> Result<()> {
+        self.check_instance(instance_id)?;
+        if !color.iter().all(|channel| (0.0..=1.0).contains(channel)) {
+            return Err(Error::invalid_argument(format!(
+                "color channels must be between 0 and 1, got {color:?}"
+            )));
+        }
+        self.renderer.set_asset_color(instance_id, color);
         Ok(())
     }
 

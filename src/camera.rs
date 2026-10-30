@@ -42,6 +42,45 @@ pub struct CameraState {
     pub forward: cgmath::Vector3<f32>,
 }
 
+impl CameraState {
+    pub fn frustum(&self) -> Frustum {
+        Frustum::from_view_proj(&self.view_proj)
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct Frustum {
+    planes: [cgmath::Vector4<f32>; 6],
+}
+
+impl Frustum {
+    pub fn from_view_proj(view_proj: &cgmath::Matrix4<f32>) -> Self {
+        let row = |i| view_proj.row(i);
+        Self {
+            planes: [
+                row(3) + row(0),
+                row(3) - row(0),
+                row(3) + row(1),
+                row(3) - row(1),
+                row(2),
+                row(3) - row(2),
+            ],
+        }
+    }
+
+    pub fn intersects_box(&self, min: [f32; 3], max: [f32; 3]) -> bool {
+        self.planes.iter().all(|plane| {
+            let corner = cgmath::Vector4::new(
+                if plane.x >= 0.0 { max[0] } else { min[0] },
+                if plane.y >= 0.0 { max[1] } else { min[1] },
+                if plane.z >= 0.0 { max[2] } else { min[2] },
+                1.0,
+            );
+            plane.dot(corner) >= 0.0
+        })
+    }
+}
+
 #[rustfmt::skip]
 pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
     1.0, 0.0, 0.0, 0.0,

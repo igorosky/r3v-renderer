@@ -8,10 +8,11 @@ use pyo3::{
 
 use crate::{
     bindings::checked::CheckedTesselator,
+    camera::CameraState,
     geometry::{PointI, TriangleChunk},
 };
 
-use super::{PyPointI, PyTriangle};
+use super::{PyCameraState, PyPointI, PyTriangle};
 
 /// `tesselator::CpuTesselatorConfiguration`: `voxel_size` is the edge length
 /// of a voxel in world units, `marching_cubes_enabled` smooths the surface
@@ -135,9 +136,16 @@ impl PyCpuTesselator {
     }
 
     /// `Tesselator::get_output_geometry_delta`: the chunks changed since the
-    /// last call, `None` when nothing changed.
-    fn get_output_geometry_delta(&mut self, py: Python<'_>) -> PyResult<Option<PyGeometryDelta>> {
-        let delta = py.detach(|| self.0.get_output_geometry_delta())?;
+    /// last call, `None` when nothing changed. With a `camera_state`, only the
+    /// chunks in its view; the others stay changed for a later call.
+    #[pyo3(signature = (camera_state=None))]
+    fn get_output_geometry_delta(
+        &mut self,
+        py: Python<'_>,
+        camera_state: Option<PyCameraState>,
+    ) -> PyResult<Option<PyGeometryDelta>> {
+        let camera_state = camera_state.map(CameraState::from);
+        let delta = py.detach(|| self.0.get_output_geometry_delta(camera_state.as_ref()))?;
         Ok(delta.map(|delta| PyGeometryDelta(Some(delta))))
     }
 }

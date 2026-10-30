@@ -405,6 +405,21 @@ async function tesselator_full_block_is_a_box() {
     check(cleared.length === 1 && cleared.chunk(0).triangles.length === 0);
 }
 
+function tesselator_culls_chunks_out_of_view() {
+    const tesselator = makeTesselator(0.5);
+    // Inside their chunks, 20 chunks apart, so no neighbouring chunks come along.
+    tesselator.update_input_geometry([new rr.PointI(4, 4, 2, U32_MAX), new rr.PointI(324, 4, 2, U32_MAX)]);
+    // Close to the far block, with a far plane well short of the other one.
+    const camera = new rr.OrbitCamera([163, 2.5, 1.5], 10, 30, 30).with_clip_planes(0.1, 30);
+    const state = camera.get_state(1.0);
+    const indices = (delta) => Array.from({ length: delta.length }, (_, k) => Array.from(delta.chunk(k).index));
+    check(same(indices(tesselator.get_output_geometry_delta(state)), [[320, 0, 0]]));
+    // The chunk out of view stays changed for a call without a camera.
+    check(tesselator.get_output_geometry_delta(state) === undefined);
+    check(same(indices(tesselator.get_output_geometry_delta()), [[0, 0, 0]]));
+    check(tesselator.get_output_geometry_delta(null) === undefined);
+}
+
 async function tesselator_toggles_marching_cubes() {
     const tesselator = makeTesselator(1.0);
     check(tesselator.marching_cubes_enabled() === false);
@@ -693,6 +708,27 @@ async function renderer_draws_assets() {
     check(lit(await renderNow(renderer, camera, w, h), w, w / 2, h / 2));
 }
 
+async function renderer_colors_assets() {
+    const [w, h] = [32, 32];
+    const renderer = await makeRenderer(w, h);
+    const [instance] = renderer.upload_asset(new rr.StlMesh([FRONT_TRIANGLE]), 1);
+    const camera = new rr.OrbitCamera();
+    const center = (h / 2 * w + w / 2) * 4;
+    const rgb = (frame) => [frame[center + 2], frame[center + 1], frame[center]];
+
+    const [white, g, b] = rgb(await renderNow(renderer, camera, w, h));
+    check(white !== 0 && g === white && b === white);
+
+    renderer.set_asset_color(instance, [1, 0, 0]);
+    check(same(rgb(await renderNow(renderer, camera, w, h)), [white, 0, 0]));
+
+    await throws(() => renderer.set_asset_color(instance, [1.5, 0, 0]), RangeError, "between 0 and 1");
+    await throws(() => renderer.set_asset_color(instance, [NaN, 0, 0]), RangeError, "between 0 and 1");
+    await throws(() => renderer.set_asset_color(instance + 1, [1, 0, 0]), RangeError, "instance 1");
+    await throws(() => renderer.set_asset_color(instance, [1, 0]), TypeError, "color");
+    check(same(rgb(await renderNow(renderer, camera, w, h)), [white, 0, 0]));
+}
+
 async function renderer_rejects_unknown_instances() {
     const renderer = await makeRenderer(4, 4);
     await throws(() => renderer.set_asset_transform(0, IDENTITY), RangeError, "instance 0");
@@ -902,6 +938,7 @@ const TEST_CASES = [
     tesselator_checks_voxel_size,
     tesselator_rejects_unaligned_blocks,
     tesselator_full_block_is_a_box,
+    tesselator_culls_chunks_out_of_view,
     tesselator_toggles_marching_cubes,
     tesselator_takes_voxelizer_points,
     tesselator_rejects_other_objects,
@@ -918,6 +955,7 @@ const TEST_CASES = [
     renderer_draws_voxels,
     renderer_update_geometry_takes_the_delta,
     renderer_draws_assets,
+    renderer_colors_assets,
     renderer_rejects_unknown_instances,
     renderer_upload_checks_arguments,
     renderer_resize_restarts_readback,

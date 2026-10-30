@@ -87,9 +87,7 @@ struct RenderTargets {
 }
 
 const INITIAL_ASSET_VERTEX_CAPACITY: usize = 1 << 20;
-const INITIAL_ASSET_TRANSFORM_CAPACITY: usize = 1024;
-const ASSET_TRANSFORM_STRIDE: wgpu::BufferAddress =
-    std::mem::size_of::<geometry::RealTwist>() as wgpu::BufferAddress;
+const INITIAL_ASSET_INSTANCE_CAPACITY: usize = 1024;
 
 struct Asset {
     vertex_offset: u32,
@@ -98,14 +96,67 @@ struct Asset {
     instance_count: u32,
 }
 
+struct InstanceData<T> {
+    label: &'static str,
+    buffer: wgpu::Buffer,
+    capacity: usize,
+    values: Vec<T>,
+    dirty: bool,
+}
+
+impl<T: bytemuck::Pod + PartialEq> InstanceData<T> {
+    const STRIDE: wgpu::BufferAddress = std::mem::size_of::<T>() as wgpu::BufferAddress;
+
+    fn new(device: &wgpu::Device, label: &'static str) -> Self {
+        Self {
+            label,
+            buffer: create_instance_buffer::<T>(device, label, INITIAL_ASSET_INSTANCE_CAPACITY),
+            capacity: INITIAL_ASSET_INSTANCE_CAPACITY,
+            values: Vec::new(),
+            dirty: false,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    fn extend(&mut self, device: &wgpu::Device, value: T, count: usize) {
+        let required = self.values.len() + count;
+        if required > self.capacity {
+            while self.capacity < required {
+                self.capacity *= 2;
+            }
+            self.buffer = create_instance_buffer::<T>(device, self.label, self.capacity);
+        }
+        self.values.extend(std::iter::repeat_n(value, count));
+        self.dirty = true;
+    }
+
+    fn set(&mut self, instance: usize, value: T) {
+        let current = &mut self.values[instance];
+        if *current == value {
+            return;
+        }
+        *current = value;
+        self.dirty = true;
+    }
+
+    fn flush(&mut self, queue: &wgpu::Queue) {
+        if !self.dirty {
+            return;
+        }
+        queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&self.values));
+        self.dirty = false;
+    }
+}
+
 struct Assets {
     vertex_buffer: wgpu::Buffer,
     vertex_capacity: usize,
     vertex_count: usize,
-    transform_buffer: wgpu::Buffer,
-    transform_capacity: usize,
-    transforms: Vec<geometry::RealTwist>,
-    transforms_dirty: bool,
+    transforms: InstanceData<geometry::RealTwist>,
+    colors: InstanceData<[f32; 3]>,
     visible: Vec<bool>,
     assets: Vec<Asset>,
 }
@@ -121,10 +172,14 @@ fn visible_runs(visible: &[bool], first: u32) -> impl Iterator<Item = Range<u32>
         .flatten()
 }
 
-fn create_asset_transform_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+fn create_instance_buffer<T>(
+    device: &wgpu::Device,
+    label: &'static str,
+    capacity: usize,
+) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Asset Transform Buffer"),
-        size: capacity as wgpu::BufferAddress * ASSET_TRANSFORM_STRIDE,
+        label: Some(label),
+        size: (capacity * std::mem::size_of::<T>()) as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
@@ -136,13 +191,8 @@ impl Assets {
             vertex_buffer: create_vertex_buffer(device, INITIAL_ASSET_VERTEX_CAPACITY),
             vertex_capacity: INITIAL_ASSET_VERTEX_CAPACITY,
             vertex_count: 0,
-            transform_buffer: create_asset_transform_buffer(
-                device,
-                INITIAL_ASSET_TRANSFORM_CAPACITY,
-            ),
-            transform_capacity: INITIAL_ASSET_TRANSFORM_CAPACITY,
-            transforms: Vec::new(),
-            transforms_dirty: false,
+            transforms: InstanceData::new(device, "Asset Transform Buffer"),
+            colors: InstanceData::new(device, "Asset Color Buffer"),
             visible: Vec::new(),
             assets: Vec::new(),
         }
@@ -165,13 +215,11 @@ impl Assets {
             self.vertex_count as wgpu::BufferAddress * VERTEX_STRIDE,
             bytemuck::cast_slice(vertices),
         );
-        self.reserve_transforms(device, instances);
         let first_instance = self.transforms.len();
-        self.transforms.extend(std::iter::repeat_n(
-            geometry::RealTwist::identity(),
-            instances,
-        ));
-        self.transforms_dirty = true;
+        self.transforms
+            .extend(device, geometry::RealTwist::identity(), instances);
+        self.colors
+            .extend(device, geometry::Vertex::DEFAULT_COLOR, instances);
         self.visible.extend(std::iter::repeat_n(true, instances));
         self.assets.push(Asset {
             vertex_offset: self.vertex_count as u32,
@@ -184,12 +232,11 @@ impl Assets {
     }
 
     fn set_transform(&mut self, instance: usize, transform: geometry::RealTwist) {
-        let current = &mut self.transforms[instance];
-        if *current == transform {
-            return;
-        }
-        *current = transform;
-        self.transforms_dirty = true;
+        self.transforms.set(instance, transform);
+    }
+
+    fn set_color(&mut self, instance: usize, color: [f32; 3]) {
+        self.colors.set(instance, color);
     }
 
     fn set_visible(&mut self, instance: usize, visible: bool) {
@@ -204,16 +251,9 @@ impl Assets {
         )
     }
 
-    fn flush_transforms(&mut self, queue: &wgpu::Queue) {
-        if !self.transforms_dirty {
-            return;
-        }
-        queue.write_buffer(
-            &self.transform_buffer,
-            0,
-            bytemuck::cast_slice(&self.transforms),
-        );
-        self.transforms_dirty = false;
+    fn flush_instances(&mut self, queue: &wgpu::Queue) {
+        self.transforms.flush(queue);
+        self.colors.flush(queue);
     }
 
     fn reserve_vertices(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, additional: usize) {
@@ -242,20 +282,6 @@ impl Assets {
         self.vertex_buffer = new_buffer;
         self.vertex_capacity = new_capacity;
     }
-
-    fn reserve_transforms(&mut self, device: &wgpu::Device, additional: usize) {
-        let required = self.transforms.len() + additional;
-        if required <= self.transform_capacity {
-            return;
-        }
-        let mut new_capacity = self.transform_capacity;
-        while new_capacity < required {
-            new_capacity *= 2;
-        }
-        self.transform_buffer = create_asset_transform_buffer(device, new_capacity);
-        self.transform_capacity = new_capacity;
-        self.transforms_dirty = true;
-    }
 }
 
 pub struct WgpuAccelerated {
@@ -265,9 +291,23 @@ pub struct WgpuAccelerated {
     vertex_arena: VertexArena,
     assets: Assets,
     frame_index: usize,
+    frustum_culling: bool,
+    drawn_chunks: u32,
 }
 
 impl WgpuAccelerated {
+    pub fn set_frustum_culling(&mut self, enabled: bool) {
+        self.frustum_culling = enabled;
+    }
+
+    pub fn frustum_culling(&self) -> bool {
+        self.frustum_culling
+    }
+
+    pub fn drawn_chunks(&self) -> (u32, u32) {
+        (self.drawn_chunks, self.vertex_arena.draw_count())
+    }
+
     pub fn new() -> Option<Self> {
         pollster::block_on(Self::new_async())
     }
@@ -421,13 +461,17 @@ impl WgpuAccelerated {
                 buffers: &[
                     Some(BASIC_VERTEX_BUFFER_LAYOUT),
                     Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<geometry::RealTwist>()
-                            as wgpu::BufferAddress,
+                        array_stride: InstanceData::<geometry::RealTwist>::STRIDE,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &wgpu::vertex_attr_array![
                             3 => Float32x3, // linear.x, linear.y, linear.z
                             4 => Float32x4, // rotational.x, rotational.y, rotational.z, rotational.w
                         ],
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: InstanceData::<[f32; 3]>::STRIDE,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![5 => Float32x3],
                     }),
                 ],
             },
@@ -479,6 +523,8 @@ impl WgpuAccelerated {
             vertex_arena,
             assets,
             frame_index: 0,
+            frustum_culling: true,
+            drawn_chunks: 0,
         })
     }
 
@@ -565,7 +611,16 @@ impl WgpuAccelerated {
         if needs_rebuild {
             self.rebuild_targets();
         }
-        self.assets.flush_transforms(&self.state.queue);
+        self.assets.flush_instances(&self.state.queue);
+        self.drawn_chunks = if self.frustum_culling {
+            self.vertex_arena.cull(
+                &self.state.device,
+                &self.state.queue,
+                &camera_state.frustum(),
+            )
+        } else {
+            self.vertex_arena.draw_count()
+        };
 
         let [r, g, b] = config.background_color.map(srgb_to_linear);
         let background = wgpu::Color { r, g, b, a: 1.0 };
@@ -640,19 +695,25 @@ impl WgpuAccelerated {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            let draw_count = self.vertex_arena.draw_count();
+            let draw_count = self.drawn_chunks;
+            let draw_buffer = if self.frustum_culling {
+                self.vertex_arena.visible_buffer()
+            } else {
+                self.vertex_arena.draw_buffer()
+            };
             if draw_count > 0 {
                 render_pass.set_pipeline(&self.state.environment_pipeline);
                 render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
                 render_pass.set_bind_group(1, &self.state.colormap_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.vertex_arena.vertex_buffer().slice(..));
-                render_pass.multi_draw_indirect(self.vertex_arena.draw_buffer(), 0, draw_count);
+                render_pass.multi_draw_indirect(draw_buffer, 0, draw_count);
             }
             if !self.assets.is_empty() {
                 render_pass.set_pipeline(&self.state.asset_pipeline);
                 render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.assets.vertex_buffer.slice(..));
-                render_pass.set_vertex_buffer(1, self.assets.transform_buffer.slice(..));
+                render_pass.set_vertex_buffer(1, self.assets.transforms.buffer.slice(..));
+                render_pass.set_vertex_buffer(2, self.assets.colors.buffer.slice(..));
                 for asset in &self.assets.assets {
                     for instances in self.assets.visible_instances(asset) {
                         render_pass.draw(
@@ -762,6 +823,10 @@ impl Renderer for WgpuAccelerated {
     fn set_asset_visibility(&mut self, instance_id: Self::AssetInstanceId, visible: bool) {
         self.assets.set_visible(instance_id as usize, visible);
     }
+
+    fn set_asset_color(&mut self, instance_id: Self::AssetInstanceId, color: [f32; 3]) {
+        self.assets.set_color(instance_id as usize, color);
+    }
 }
 
 #[cfg(test)]
@@ -793,5 +858,127 @@ mod tests {
         );
         assert_eq!(runs(&[false, true, true], 0), [(1, 3)]);
         assert_eq!(runs(&[true, true, false], 0), [(0, 2)]);
+    }
+
+    #[test]
+    fn asset_color_tints_only_its_instance() {
+        use super::{WgpuAccelerated, WgpuAcceleratedConfiguration};
+        use crate::{
+            Camera, Renderer,
+            camera::OrbitCamera,
+            geometry::{RealTriangle, RealTwist, Vector3D},
+            stl::StlMesh,
+            wgpu_utils::test_support::TestGpu,
+        };
+
+        let _lock = TestGpu::new();
+        let mut renderer = WgpuAccelerated::new().expect("no wgpu adapter available");
+        let size = 32;
+        renderer.configure(WgpuAcceleratedConfiguration {
+            width: size,
+            height: size,
+            background_color: super::DEFAULT_BACKGROUND_COLOR,
+            color_depth_range: super::DEFAULT_COLOR_DEPTH_RANGE,
+            terrain_coloring: super::TerrainColoring::default(),
+        });
+        let [a, b, c, d] = [
+            [-0.5, -0.5, 0.0],
+            [0.5, -0.5, 0.0],
+            [0.5, 0.5, 0.0],
+            [-0.5, 0.5, 0.0],
+        ];
+        let triangles = [[a, b, c], [a, c, d], [a, c, b], [a, d, c]]
+            .map(|[v0, v1, v2]| RealTriangle { v0, v1, v2 })
+            .to_vec();
+        let ids = renderer.upload_asset(StlMesh { triangles }, 2);
+        for (id, x) in ids.iter().zip([-0.6, 0.6]) {
+            let mut transform = RealTwist::identity();
+            transform.linear = Vector3D { x, y: 0.0, z: 0.0 };
+            renderer.set_asset_transform(*id, transform);
+        }
+
+        let camera = OrbitCamera::default().get_state(1.0);
+        let frame = |renderer: &mut WgpuAccelerated| {
+            let mut output = vec![0; (size * size * 4) as usize];
+            renderer.render(&camera, &mut output);
+            renderer.render(&camera, &mut output);
+            let pixel = |x: u32| {
+                let offset = ((size / 2 * size + x) * 4) as usize;
+                let [b, g, r, _] = output[offset..offset + 4] else {
+                    unreachable!()
+                };
+                [r, g, b]
+            };
+            (pixel(size * 3 / 8), pixel(size * 5 / 8))
+        };
+        let (left, right) = frame(&mut renderer);
+        assert!(left[0] > 0 && left == right, "{left:?} and {right:?}");
+        let white = left;
+
+        renderer.set_asset_color(ids[0], [1.0, 0.0, 0.0]);
+        let (left, right) = frame(&mut renderer);
+        assert_eq!(left, [white[0], 0, 0]);
+        assert_eq!(right, white);
+    }
+
+    #[test]
+    fn culling_does_not_change_the_image() {
+        use super::{WgpuAccelerated, WgpuAcceleratedConfiguration};
+        use crate::{
+            Camera, Renderer,
+            camera::OrbitCamera,
+            geometry::{DiscretePoint, RealTriangle, TriangleChunk},
+            wgpu_utils::test_support::TestGpu,
+        };
+
+        let _lock = TestGpu::new();
+        let mut renderer = WgpuAccelerated::new().expect("no wgpu adapter available");
+        let size = 64;
+        renderer.configure(WgpuAcceleratedConfiguration {
+            width: size,
+            height: size,
+            background_color: super::DEFAULT_BACKGROUND_COLOR,
+            color_depth_range: super::DEFAULT_COLOR_DEPTH_RANGE,
+            terrain_coloring: super::TerrainColoring::default(),
+        });
+        let square = |x: f32, z: f32| {
+            let [a, b, c, d] = [
+                [x - 1.0, -1.0, z],
+                [x + 1.0, -1.0, z],
+                [x + 1.0, 1.0, z],
+                [x - 1.0, 1.0, z],
+            ];
+            [[a, b, c], [a, c, d], [a, c, b], [a, d, c]]
+                .map(|[v0, v1, v2]| RealTriangle { v0, v1, v2 })
+                .to_vec()
+        };
+        let chunks = (-8..=8)
+            .flat_map(|i| (0..4).map(move |j| (i, j)))
+            .map(|(i, j)| TriangleChunk {
+                index: DiscretePoint {
+                    x: i * 16,
+                    y: 0,
+                    z: j * 16,
+                },
+                triangles: square(i as f32 * 3.0, j as f32 * -3.0),
+            })
+            .collect();
+        renderer.update_geometry(chunks);
+
+        let camera = OrbitCamera::default().get_state(1.0);
+        let mut frame = |culling| {
+            renderer.set_frustum_culling(culling);
+            let mut output = vec![0; (size * size * 4) as usize];
+            renderer.render(&camera, &mut output);
+            renderer.render(&camera, &mut output);
+            (output, renderer.drawn_chunks())
+        };
+        let (culled, (drawn, total)) = frame(true);
+        let (all, (drawn_unculled, _)) = frame(false);
+        assert_eq!(total, 17 * 4);
+        assert_eq!(drawn_unculled, total);
+        assert!(0 < drawn && drawn < total / 2, "{drawn} of {total} drawn");
+        assert!(culled.iter().any(|&byte| byte != 0), "nothing was drawn");
+        assert!(culled == all, "culling changed the image");
     }
 }
