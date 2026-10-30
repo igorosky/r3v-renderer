@@ -163,6 +163,20 @@ function value_classes_have_properties() {
     check(rendererConfiguration.color_depth_range === 10);
     const colored = new rr.WgpuRendererConfiguration(4, 4, [0, 0, 1], 5);
     check(same(colored.background_color, [0, 0, 1]) && colored.color_depth_range === 5);
+    const coloring = {
+        height_coloring_enabled: false, relative_to_robot: false, robot_height: 0, height_offset: 0, height_knee: 0.5,
+        height_bands: 0,
+    };
+    const defaults = rendererConfiguration.terrain_coloring;
+    close([defaults.height_gain], [0.35]);
+    delete defaults.height_gain;
+    check(same(Object.entries(defaults).sort(), Object.entries(coloring).sort()));
+    rendererConfiguration.terrain_coloring = { height_coloring_enabled: true, height_bands: 8 };
+    check(rendererConfiguration.terrain_coloring.height_coloring_enabled === true);
+    check(rendererConfiguration.terrain_coloring.height_bands === 8);
+    check(rendererConfiguration.terrain_coloring.height_knee === 0.5);
+    const byHeight = new rr.WgpuRendererConfiguration(4, 4, undefined, undefined, { relative_to_robot: true });
+    check(byHeight.terrain_coloring.relative_to_robot === true);
 
     const identity = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
     const state = new rr.CameraState(identity, [0, 0, 5], [0, 0, -1]);
@@ -492,6 +506,25 @@ async function renderer_configure_checks_colors() {
         "configuration.color_depth_range");
 }
 
+async function renderer_configure_checks_terrain_coloring() {
+    const renderer = await makeRenderer(8, 8);
+    const configure = (terrain_coloring) => renderer.configure({ width: 8, height: 8, terrain_coloring });
+    for (const bad of [0, -1, NaN, Infinity]) {
+        await throws(() => configure({ height_knee: bad }), RangeError, "height knee");
+        await throws(() => configure({ height_gain: bad }), RangeError, "height gain");
+    }
+    for (const bad of [NaN, Infinity, -Infinity]) {
+        await throws(() => configure({ height_offset: bad }), RangeError, "height offset");
+        await throws(() => configure({ robot_height: bad }), RangeError, "robot height");
+    }
+    await throws(() => configure({ height_knee: "2" }), TypeError, "configuration.terrain_coloring.height_knee");
+    await throws(() => configure({ height_coloring_enabled: 1 }), TypeError,
+        "configuration.terrain_coloring.height_coloring_enabled");
+    await throws(() => configure({ height_bands: 1.5 }), RangeError, "configuration.terrain_coloring.height_bands");
+    await throws(() => configure("height"), TypeError, "configuration.terrain_coloring");
+    configure({});
+}
+
 async function renderer_clears_to_background_color() {
     const [w, h] = [8, 8];
     const renderer = await makeRenderer(w, h);
@@ -520,6 +553,31 @@ async function renderer_color_depth_range_recolors_voxels() {
     renderer.configure({ width: w, height: h, color_depth_range: 5 });
     frame = await renderNow(renderer, camera, w, h);
     check(frame[centre + 2] > frame[centre]);
+}
+
+async function renderer_height_coloring_recolors_voxels() {
+    const [w, h] = [32, 32];
+    const renderer = await makeRenderer(w, h);
+    addBlock(renderer, 1.0, 4, 4, 2);
+    const camera = new rr.OrbitCamera([6, 6, 3], 10);
+    const centre = 4 * ((h / 2) * w + w / 2);
+    const depth = await renderNow(renderer, camera, w, h);
+    const rendered = (terrain_coloring) => {
+        renderer.configure({ width: w, height: h, terrain_coloring });
+        return renderNow(renderer, camera, w, h);
+    };
+    const byHeight = { height_coloring_enabled: true };
+
+    let frame = await rendered(byHeight);
+    check(frame[centre + 2] > frame[centre]);
+    frame = await rendered({ ...byHeight, robot_height: 11 });
+    check(frame[centre + 2] > frame[centre]);
+    const fromRobot = { ...byHeight, relative_to_robot: true, robot_height: 11 };
+    frame = await rendered(fromRobot);
+    check(frame[centre] > frame[centre + 2]);
+    frame = await rendered({ ...fromRobot, height_offset: -10 });
+    check(frame[centre + 2] > frame[centre]);
+    check(same([...await rendered({ height_knee: 2 })], [...depth]));
 }
 
 async function renderer_render_checks_arguments() {
@@ -886,8 +944,10 @@ const TEST_CASES = [
     tesselator_rejects_other_objects,
     renderer_configure_checks_size,
     renderer_configure_checks_colors,
+    renderer_configure_checks_terrain_coloring,
     renderer_clears_to_background_color,
     renderer_color_depth_range_recolors_voxels,
+    renderer_height_coloring_recolors_voxels,
     renderer_render_checks_arguments,
     renderer_writes_any_byte_array,
     renderer_render_rgba_swaps_channels,

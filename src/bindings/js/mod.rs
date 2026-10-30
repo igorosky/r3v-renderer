@@ -52,6 +52,16 @@ export interface TriangleLike { v0: Vec3; v1: Vec3; v2: Vec3 }
 /** A `CameraState` or a plain object. */
 export interface CameraStateLike { view_proj: Mat4; position: Vec3; forward: Vec3 }
 
+export interface TerrainColoring {
+    height_coloring_enabled?: boolean;
+    relative_to_robot?: boolean;
+    robot_height?: number;
+    height_offset?: number;
+    height_knee?: number;
+    height_gain?: number;
+    height_bands?: number;
+}
+
 /** All triangles of one chunk of 16x16x16 voxels, whose origin in voxels is
  * `index`. The triangles are in world units, counter-clockwise when seen from
  * their front side. They replace what the chunk had before, no triangles

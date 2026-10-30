@@ -269,7 +269,7 @@ mod r3v_renderer {
     use super::{
         PyCameraState, PyPointI, PyTriangle, PyTwist,
         camera::PyOrbitCamera,
-        renderer::{PyWgpuRenderer, PyWgpuRendererConfiguration},
+        renderer::{PyTerrainColoring, PyWgpuRenderer, PyWgpuRendererConfiguration},
         robot::{
             PyRobotTransforms, PyUrdfBox, PyUrdfCapsule, PyUrdfColor, PyUrdfCylinder,
             PyUrdfDescription, PyUrdfJoint, PyUrdfJointLimit, PyUrdfLink, PyUrdfMaterial,

@@ -99,6 +99,16 @@ struct R3vCameraState {
   R3vVec3 forward;
 };
 
+struct R3vTerrainColoring {
+  bool height_coloring_enabled;
+  bool relative_to_robot;
+  float robot_height;
+  float height_offset;
+  float height_knee;
+  float height_gain;
+  uint32_t height_bands;
+};
+
 /// `renderer::WgpuAcceleratedConfiguration`.
 struct R3vWgpuRendererConfiguration {
   /// Frame width in pixels.
@@ -111,6 +121,7 @@ struct R3vWgpuRendererConfiguration {
   /// Distance along the camera's forward axis over which the voxel colormap
   /// runs once. Has to be positive.
   float color_depth_range;
+  R3vTerrainColoring terrain_coloring;
 };
 
 /// Rotation quaternion.
@@ -304,13 +315,17 @@ R3vStatus r3v_orbit_camera_get_state(R3vOrbitCamera camera,
                                      float aspect_ratio,
                                      R3vCameraState *out);
 
+R3vTerrainColoring r3v_terrain_coloring_default();
+
 /// `WgpuAccelerated::new`: blocks until a device of the default GPU adapter
 /// is ready. NULL when there is no adapter or no device. Configure it before
 /// rendering.
 R3vWgpuRenderer *r3v_wgpu_renderer_create();
 
-/// `Renderer::configure`: sets the frame size, the background color and the
-/// colormap depth range. Both sides have to be between 1 and 8192.
+/// `Renderer::configure`: sets the frame size, the background color, the
+/// colormap depth range and the terrain's coloring. Both sides have to be
+/// between 1 and 8192. At an unchanged frame size only the settings change,
+/// from the next frame on.
 R3vStatus r3v_wgpu_renderer_configure(R3vWgpuRenderer *renderer,
                                       R3vWgpuRendererConfiguration configuration);
 

@@ -6,7 +6,7 @@ use crate::{
     Camera, Renderer, Tesselator,
     camera::{CameraState, OrbitCamera},
     geometry::{PointI, RealTwist, TriangleChunk},
-    renderer::{WgpuAccelerated, WgpuAcceleratedConfiguration},
+    renderer::{TerrainColoring, WgpuAccelerated, WgpuAcceleratedConfiguration},
     stl::StlMesh,
     tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext, SUBCHUNK_SIZE},
 };
@@ -68,6 +68,35 @@ pub(crate) fn camera_state(camera: &OrbitCamera, aspect_ratio: f32) -> Result<Ca
         )));
     }
     Ok(camera.get_state(aspect_ratio))
+}
+
+fn check_terrain_coloring(coloring: &TerrainColoring) -> Result<()> {
+    let positive = |value: f32| value.is_finite() && value > 0.0;
+    if !positive(coloring.height_knee) {
+        return Err(Error::invalid_argument(format!(
+            "height knee must be positive and finite, got {}",
+            coloring.height_knee
+        )));
+    }
+    if !positive(coloring.height_gain) {
+        return Err(Error::invalid_argument(format!(
+            "height gain must be positive and finite, got {}",
+            coloring.height_gain
+        )));
+    }
+    if !coloring.height_offset.is_finite() {
+        return Err(Error::invalid_argument(format!(
+            "height offset must be finite, got {}",
+            coloring.height_offset
+        )));
+    }
+    if !coloring.robot_height.is_finite() {
+        return Err(Error::invalid_argument(format!(
+            "robot height must be finite, got {}",
+            coloring.robot_height
+        )));
+    }
+    Ok(())
 }
 
 /// `CpuTesselator`, which asserts it is configured.
@@ -189,6 +218,7 @@ impl CheckedRenderer {
         height: u32,
         background_color: [f32; 3],
         color_depth_range: f32,
+        terrain_coloring: TerrainColoring,
     ) -> Result<()> {
         // The renderer asks for a device with the default limits
         let max = wgpu::Limits::default().max_texture_dimension_2d;
@@ -210,11 +240,13 @@ impl CheckedRenderer {
                 "color depth range must be positive and finite, got {color_depth_range}"
             )));
         }
+        check_terrain_coloring(&terrain_coloring)?;
         let configuration = WgpuAcceleratedConfiguration {
             width,
             height,
             background_color,
             color_depth_range,
+            terrain_coloring,
         };
         self.renderer.configure(configuration);
         self.configuration = Some(configuration);

@@ -148,6 +148,16 @@ typedef struct R3vCameraState {
   struct R3vVec3 forward;
 } R3vCameraState;
 
+typedef struct R3vTerrainColoring {
+  bool height_coloring_enabled;
+  bool relative_to_robot;
+  float robot_height;
+  float height_offset;
+  float height_knee;
+  float height_gain;
+  uint32_t height_bands;
+} R3vTerrainColoring;
+
 /**
  * `renderer::WgpuAcceleratedConfiguration`.
  */
@@ -170,6 +180,7 @@ typedef struct R3vWgpuRendererConfiguration {
    * runs once. Has to be positive.
    */
   float color_depth_range;
+  struct R3vTerrainColoring terrain_coloring;
 } R3vWgpuRendererConfiguration;
 
 /**
@@ -450,6 +461,8 @@ enum R3vStatus r3v_orbit_camera_get_state(struct R3vOrbitCamera camera,
                                           float aspect_ratio,
                                           struct R3vCameraState *out);
 
+struct R3vTerrainColoring r3v_terrain_coloring_default(void);
+
 /**
  * `WgpuAccelerated::new`: blocks until a device of the default GPU adapter
  * is ready. NULL when there is no adapter or no device. Configure it before
@@ -458,8 +471,10 @@ enum R3vStatus r3v_orbit_camera_get_state(struct R3vOrbitCamera camera,
 struct R3vWgpuRenderer *r3v_wgpu_renderer_create(void);
 
 /**
- * `Renderer::configure`: sets the frame size, the background color and the
- * colormap depth range. Both sides have to be between 1 and 8192.
+ * `Renderer::configure`: sets the frame size, the background color, the
+ * colormap depth range and the terrain's coloring. Both sides have to be
+ * between 1 and 8192. At an unchanged frame size only the settings change,
+ * from the next frame on.
  */
 enum R3vStatus r3v_wgpu_renderer_configure(struct R3vWgpuRenderer *renderer,
                                            struct R3vWgpuRendererConfiguration configuration);
