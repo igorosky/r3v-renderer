@@ -1,0 +1,308 @@
+//! `WgpuAccelerated`'s terrain colors, on rendered frames. Needs a GPU, a software Vulkan one such
+//! as lavapipe works.
+
+use std::sync::{Mutex, MutexGuard};
+
+use cgmath::Point3;
+use r3v_renderer::{
+    Camera, Renderer, Tesselator,
+    camera::OrbitCamera,
+    geometry::{PointI, RealTriangle},
+    renderer::{
+        DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE, HeightOrigin, TerrainColorMode,
+        TerrainColoring, WgpuAccelerated, WgpuAcceleratedConfiguration,
+    },
+    stl::StlMesh,
+    tesselator::{CpuTesselator, CpuTesselatorConfiguration},
+};
+
+const SIZE: u32 = 32;
+/// Top of the block `scene` adds.
+const BLOCK_TOP: f32 = 8.0;
+
+/// Tests run one at a time: some drivers crash when several devices are used from different
+/// threads at once.
+fn gpu_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn configuration() -> WgpuAcceleratedConfiguration {
+    WgpuAcceleratedConfiguration {
+        width: SIZE,
+        height: SIZE,
+        background_color: DEFAULT_BACKGROUND_COLOR,
+        color_depth_range: DEFAULT_COLOR_DEPTH_RANGE,
+    }
+}
+
+fn renderer() -> WgpuAccelerated {
+    let mut renderer = WgpuAccelerated::new().expect("no GPU");
+    renderer.configure(configuration());
+    renderer
+}
+
+/// Adds a full 4x4x2 block with its top at `BLOCK_TOP`.
+fn add_block(renderer: &mut WgpuAccelerated) {
+    let mut tesselator = CpuTesselator::new();
+    tesselator.configure(CpuTesselatorConfiguration {
+        voxel_size: 1.0,
+        marching_cubes_enabled: false,
+    });
+    tesselator.update_input_geometry(&vec![PointI {
+        x: 0,
+        y: BLOCK_TOP as i32 - 4,
+        z: 0,
+        i: u32::MAX,
+    }]);
+    renderer.update_geometry(tesselator.get_output_geometry_delta().expect("a delta"));
+}
+
+fn scene() -> WgpuAccelerated {
+    let mut renderer = renderer();
+    add_block(&mut renderer);
+    renderer
+}
+
+/// A frame looking straight down at the block. Frames come back one call late.
+fn render(renderer: &mut WgpuAccelerated) -> Vec<u8> {
+    let camera = OrbitCamera::new(Point3::new(2.0, BLOCK_TOP, 1.0), 10.0, 0.0, 89.0);
+    let state = camera.get_state(1.0);
+    let mut frame = vec![0; (SIZE * SIZE * 4) as usize];
+    renderer.render(&state, &mut frame);
+    renderer.render(&state, &mut frame);
+    frame
+}
+
+/// Blue, green and red of the middle pixel, which is on the block's top.
+fn middle(frame: &[u8]) -> [u8; 3] {
+    let offset = (SIZE as usize * (SIZE as usize / 2) + SIZE as usize / 2) * 4;
+    [frame[offset], frame[offset + 1], frame[offset + 2]]
+}
+
+#[track_caller]
+fn assert_close(a: [u8; 3], b: [u8; 3]) {
+    assert!(
+        a.iter().zip(&b).all(|(a, b)| a.abs_diff(*b) <= 1),
+        "{a:?} and {b:?}"
+    );
+}
+
+fn by_height(neutral_height: f32) -> TerrainColoring {
+    TerrainColoring {
+        mode: TerrainColorMode::Height,
+        height_offset: neutral_height,
+        ..TerrainColoring::default()
+    }
+}
+
+#[test]
+fn depth_stays_the_default() {
+    let _gpu = gpu_lock();
+    let mut renderer = scene();
+    let depth = render(&mut renderer);
+    assert_ne!(middle(&depth), [0; 3], "the block is not in view");
+
+    renderer.set_terrain_coloring(by_height(0.0));
+    assert_ne!(render(&mut renderer), depth);
+
+    renderer.set_terrain_coloring(TerrainColoring::default());
+    assert_eq!(render(&mut renderer), depth);
+}
+
+#[test]
+fn neutral_height_separates_depths_from_heights() {
+    let _gpu = gpu_lock();
+    let mut renderer = scene();
+
+    renderer.set_terrain_coloring(by_height(BLOCK_TOP - 5.0));
+    let [b, _, r] = middle(&render(&mut renderer));
+    assert!(r > b, "above the neutral height: {r} red, {b} blue");
+
+    renderer.set_terrain_coloring(by_height(BLOCK_TOP + 5.0));
+    let [b, _, r] = middle(&render(&mut renderer));
+    assert!(b > r, "below the neutral height: {b} blue, {r} red");
+}
+
+#[test]
+fn neutral_height_is_the_middle_of_the_colormap_at_any_scale() {
+    let _gpu = gpu_lock();
+    let mut renderer = scene();
+    renderer.set_terrain_coloring(by_height(BLOCK_TOP));
+    let neutral = middle(&render(&mut renderer));
+    let [b, g, r] = neutral;
+    assert!(g > b && g > r, "{neutral:?}");
+
+    renderer.set_terrain_coloring(TerrainColoring {
+        height_knee: 0.01,
+        height_gain: 2.0,
+        ..by_height(BLOCK_TOP)
+    });
+    assert_close(middle(&render(&mut renderer)), neutral);
+}
+
+#[test]
+fn world_origin_ignores_the_robot() {
+    let _gpu = gpu_lock();
+    let mut renderer = scene();
+    renderer.set_terrain_coloring(by_height(0.0));
+    let frame = render(&mut renderer);
+
+    renderer.set_robot_height(BLOCK_TOP);
+    assert_eq!(render(&mut renderer), frame);
+}
+
+#[test]
+fn robot_origin_follows_the_robot() {
+    let _gpu = gpu_lock();
+    let mut renderer = scene();
+    renderer.set_terrain_coloring(TerrainColoring {
+        height_origin: HeightOrigin::Robot,
+        ..by_height(0.0)
+    });
+    let at_zero = render(&mut renderer);
+
+    // Not set yet the robot is at 0, which is what the world's origin gives
+    renderer.set_terrain_coloring(by_height(0.0));
+    assert_eq!(render(&mut renderer), at_zero);
+
+    renderer.set_terrain_coloring(TerrainColoring {
+        height_origin: HeightOrigin::Robot,
+        ..by_height(0.0)
+    });
+    renderer.set_robot_height(BLOCK_TOP + 5.0);
+    let [b, _, r] = middle(&render(&mut renderer));
+    assert!(b > r, "below the robot: {b} blue, {r} red");
+
+    renderer.set_robot_height(BLOCK_TOP - 5.0);
+    let [b, _, r] = middle(&render(&mut renderer));
+    assert!(r > b, "above the robot: {r} red, {b} blue");
+}
+
+#[test]
+fn offset_adds_to_the_robot() {
+    let _gpu = gpu_lock();
+    let mut renderer = scene();
+    renderer.set_robot_height(3.0);
+    renderer.set_terrain_coloring(TerrainColoring {
+        height_origin: HeightOrigin::Robot,
+        ..by_height(2.0)
+    });
+    let frame = render(&mut renderer);
+
+    renderer.set_terrain_coloring(by_height(5.0));
+    assert_eq!(render(&mut renderer), frame);
+}
+
+#[test]
+fn function_parameters_change_the_color() {
+    let _gpu = gpu_lock();
+    let mut renderer = scene();
+    let base = by_height(0.0);
+    renderer.set_terrain_coloring(base);
+    let frame = render(&mut renderer);
+    for coloring in [
+        TerrainColoring {
+            height_knee: 4.0,
+            ..base
+        },
+        TerrainColoring {
+            height_gain: 0.1,
+            ..base
+        },
+        TerrainColoring {
+            height_bands: 4,
+            ..base
+        },
+    ] {
+        renderer.set_terrain_coloring(coloring);
+        assert_ne!(
+            middle(&render(&mut renderer)),
+            middle(&frame),
+            "{coloring:?}"
+        );
+    }
+}
+
+#[test]
+fn bands_are_flat() {
+    let _gpu = gpu_lock();
+    let mut renderer = scene();
+    // Half of the colormap is one band, heights 1 m apart on the same side share it
+    let coloring = TerrainColoring {
+        height_bands: 2,
+        ..by_height(0.0)
+    };
+    renderer.set_terrain_coloring(coloring);
+    let at_zero = middle(&render(&mut renderer));
+    renderer.set_terrain_coloring(TerrainColoring {
+        height_offset: 1.0,
+        ..coloring
+    });
+    assert_eq!(middle(&render(&mut renderer)), at_zero);
+}
+
+#[test]
+fn configure_keeps_the_coloring() {
+    let _gpu = gpu_lock();
+    let mut renderer = scene();
+    renderer.set_terrain_coloring(by_height(0.0));
+    let frame = render(&mut renderer);
+
+    renderer.configure(WgpuAcceleratedConfiguration {
+        color_depth_range: 5.0,
+        ..configuration()
+    });
+    assert_eq!(render(&mut renderer), frame);
+}
+
+#[test]
+fn coloring_can_be_set_before_configuring() {
+    let _gpu = gpu_lock();
+    let mut configured_first = scene();
+    configured_first.set_terrain_coloring(by_height(0.0));
+    let frame = render(&mut configured_first);
+
+    let mut renderer = WgpuAccelerated::new().expect("no GPU");
+    renderer.set_terrain_coloring(by_height(0.0));
+    renderer.configure(configuration());
+    add_block(&mut renderer);
+    assert_eq!(render(&mut renderer), frame);
+}
+
+#[test]
+fn depth_range_still_applies_after_coming_back() {
+    let _gpu = gpu_lock();
+    let mut renderer = scene();
+    renderer.configure(WgpuAcceleratedConfiguration {
+        color_depth_range: 5.0,
+        ..configuration()
+    });
+    let frame = render(&mut renderer);
+
+    renderer.set_terrain_coloring(by_height(0.0));
+    renderer.set_terrain_coloring(TerrainColoring::default());
+    assert_eq!(render(&mut renderer), frame);
+}
+
+#[test]
+fn assets_keep_their_color() {
+    let _gpu = gpu_lock();
+    let mut renderer = renderer();
+    let triangle = RealTriangle {
+        v0: [-20.0, BLOCK_TOP, 20.0],
+        v1: [20.0, BLOCK_TOP, 20.0],
+        v2: [0.0, BLOCK_TOP, -20.0],
+    };
+    renderer.upload_asset(
+        StlMesh {
+            triangles: vec![triangle],
+        },
+        1,
+    );
+    let frame = render(&mut renderer);
+    assert_ne!(middle(&frame), [0; 3], "the asset is not in view");
+
+    renderer.set_terrain_coloring(by_height(0.0));
+    assert_eq!(render(&mut renderer), frame);
+}

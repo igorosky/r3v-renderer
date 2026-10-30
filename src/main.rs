@@ -4,7 +4,7 @@ use r3v_renderer::{
     Camera, Renderer, Robot, Tesselator,
     camera::OrbitCamera,
     geometry::{self, PointI, RealTwist},
-    renderer::{self, WgpuAccelerated},
+    renderer::{self, HeightOrigin, TerrainColorMode, TerrainColoring, WgpuAccelerated},
     robot::UrdfRobot,
     stl,
     tesselator::{CpuTesselator, CpuTesselatorConfiguration},
@@ -106,6 +106,16 @@ const BACKGROUNDS: [(&str, [f32; 3]); 4] = [
 const COLOR_DEPTH_RANGE_STEP: f32 = 1.25;
 const COLOR_DEPTH_RANGE_MIN: f32 = 5.0;
 const COLOR_DEPTH_RANGE_MAX: f32 = 2000.0;
+/// Factor of one J or K press on the height knee.
+const HEIGHT_KNEE_STEP: f32 = 1.25;
+const HEIGHT_KNEE_MIN: f32 = 0.05;
+const HEIGHT_KNEE_MAX: f32 = 20.0;
+/// Factor of one U or I press on the height gain.
+const HEIGHT_GAIN_STEP: f32 = 1.1;
+const HEIGHT_GAIN_MIN: f32 = 0.05;
+const HEIGHT_GAIN_MAX: f32 = 2.0;
+/// Cycled with V, 0 for a smooth gradient.
+const HEIGHT_BANDS: [u32; 4] = [0, 8, 16, 32];
 
 const STATS_INTERVAL_SECS: f32 = 0.25;
 const OVERLAY_SCALE: usize = 4;
@@ -126,6 +136,11 @@ Controls:
   M                 add/remove the robot arm
   B                 cycle background color
   [ / ]             shorten/lengthen the colormap depth range
+  H                 toggle coloring the terrain by height
+  G                 toggle measuring heights from the world's 0 or the robot
+  J / K             shorten/lengthen the height knee
+  U / I             lower/raise the height gain
+  V                 cycle height color bands
   P                 save snapshot
   Esc               quit";
 
@@ -171,6 +186,7 @@ struct Demo {
 
     background_index: usize,
     color_depth_range: f32,
+    terrain_coloring: TerrainColoring,
 
     width: u32,
     height: u32,
@@ -223,7 +239,10 @@ impl Demo {
             marching_cubes_enabled: false,
         });
         let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
-        let robot = match RobotScene::load(urdf_path, robot_placement(&world), &mut renderer) {
+        let placement = robot_placement(&world);
+        // The robot stays at its site, which is reserved even when no robot gets loaded.
+        renderer.set_robot_height(placement.translation.y);
+        let robot = match RobotScene::load(urdf_path, placement, &mut renderer) {
             Ok(robot) => Some(robot),
             Err(err) => {
                 eprintln!("Running without a robot: {err}");
@@ -244,6 +263,7 @@ impl Demo {
             auto_orbit: true,
             background_index: 0,
             color_depth_range: renderer::DEFAULT_COLOR_DEPTH_RANGE,
+            terrain_coloring: TerrainColoring::default(),
             width: 0,
             height: 0,
             pixel_buffer: Vec::new(),
@@ -296,6 +316,43 @@ impl Demo {
             (self.color_depth_range * factor).clamp(COLOR_DEPTH_RANGE_MIN, COLOR_DEPTH_RANGE_MAX);
         self.configure_renderer();
         println!("Colormap depth range: {:.1} m", self.color_depth_range);
+    }
+
+    fn scale_height_knee(&mut self, factor: f32) {
+        self.update_terrain_coloring(|coloring| {
+            coloring.height_knee =
+                (coloring.height_knee * factor).clamp(HEIGHT_KNEE_MIN, HEIGHT_KNEE_MAX);
+        });
+    }
+
+    fn scale_height_gain(&mut self, factor: f32) {
+        self.update_terrain_coloring(|coloring| {
+            coloring.height_gain =
+                (coloring.height_gain * factor).clamp(HEIGHT_GAIN_MIN, HEIGHT_GAIN_MAX);
+        });
+    }
+
+    fn update_terrain_coloring(&mut self, change: impl FnOnce(&mut TerrainColoring)) {
+        change(&mut self.terrain_coloring);
+        self.renderer.set_terrain_coloring(self.terrain_coloring);
+        println!("Terrain coloring: {}", self.terrain_coloring_summary());
+    }
+
+    fn terrain_coloring_summary(&self) -> String {
+        let coloring = &self.terrain_coloring;
+        match coloring.mode {
+            TerrainColorMode::Depth => "depth".to_owned(),
+            TerrainColorMode::Height => format!(
+                "height from the {}, knee {:.2} m, gain {:.2}, {} bands",
+                match coloring.height_origin {
+                    HeightOrigin::World => "world",
+                    HeightOrigin::Robot => "robot",
+                },
+                coloring.height_knee,
+                coloring.height_gain,
+                coloring.height_bands,
+            ),
+        }
     }
 
     fn redraw(&mut self) {
@@ -404,13 +461,36 @@ impl Demo {
         self.input.cursor = Some(position);
     }
 
-    /// `repeat` for presses repeated while the key is held, which only the depth range follows.
+    /// `repeat` for presses repeated while the key is held, which only the color scales follow.
     fn key_pressed(&mut self, event_loop: &ActiveEventLoop, code: KeyCode, repeat: bool) {
         match code {
             KeyCode::BracketLeft => self.scale_color_depth_range(COLOR_DEPTH_RANGE_STEP.recip()),
             KeyCode::BracketRight => self.scale_color_depth_range(COLOR_DEPTH_RANGE_STEP),
+            KeyCode::KeyJ => self.scale_height_knee(HEIGHT_KNEE_STEP.recip()),
+            KeyCode::KeyK => self.scale_height_knee(HEIGHT_KNEE_STEP),
+            KeyCode::KeyU => self.scale_height_gain(HEIGHT_GAIN_STEP.recip()),
+            KeyCode::KeyI => self.scale_height_gain(HEIGHT_GAIN_STEP),
             _ if repeat => {}
             KeyCode::KeyB => self.cycle_background(),
+            KeyCode::KeyH => self.update_terrain_coloring(|coloring| {
+                coloring.mode = match coloring.mode {
+                    TerrainColorMode::Depth => TerrainColorMode::Height,
+                    TerrainColorMode::Height => TerrainColorMode::Depth,
+                };
+            }),
+            KeyCode::KeyG => self.update_terrain_coloring(|coloring| {
+                coloring.height_origin = match coloring.height_origin {
+                    HeightOrigin::World => HeightOrigin::Robot,
+                    HeightOrigin::Robot => HeightOrigin::World,
+                };
+            }),
+            KeyCode::KeyV => self.update_terrain_coloring(|coloring| {
+                let index = HEIGHT_BANDS
+                    .iter()
+                    .position(|&bands| bands == coloring.height_bands);
+                coloring.height_bands =
+                    HEIGHT_BANDS[index.map_or(0, |index| (index + 1) % HEIGHT_BANDS.len())];
+            }),
             KeyCode::Escape => event_loop.exit(),
             KeyCode::KeyP => self.save_snapshot(),
             KeyCode::KeyO => self.auto_orbit = !self.auto_orbit,
@@ -454,13 +534,14 @@ impl Demo {
         self.overlay_text = format!("{:.0} FPS {:.1}MS {}", fps, frame_ms, smoothing);
         if let Some(window) = &self.window {
             window.set_title(&format!(
-                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated - {} background, colormap depth {:.1} m",
+                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated - {} background, colormap depth {:.1} m, {} coloring",
                 fps,
                 frame_ms,
                 self.quad_count,
                 self.chunk_count,
                 BACKGROUNDS[self.background_index].0,
                 self.color_depth_range,
+                self.terrain_coloring_summary(),
             ));
         }
         self.quad_count = 0;
