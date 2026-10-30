@@ -73,6 +73,85 @@ class VoxelizerPointI {
     }
 }
 
+/** Stands in for r3v-voxelizer's CompressedVoxelGroup: the same properties,
+ * read through getters (values as a copy, as wasm-bindgen returns it), another
+ * class. */
+class VoxelizerVoxelGroup {
+    #point;
+    #values;
+
+    constructor(point, values) {
+        this.#point = point;
+        this.#values = BigUint64Array.from(values);
+    }
+
+    get point() {
+        return this.#point;
+    }
+
+    get values() {
+        return this.#values.slice();
+    }
+}
+
+const GROUP_PAGES = 4096;
+const U64_MAX = 2n ** 64n - 1n;
+
+/** Index of the page at (x, y, z) in its group: bits of x, y and z
+ * interleaved from the lowest one, as r3v-voxelizer packs them. */
+function pageIndex(x, y, z) {
+    let index = 0;
+    for (let bit = 0; bit < 4; ++bit) {
+        [x, y, z].forEach((coordinate, axis) => {
+            index |= ((coordinate >> bit) & 1) << (3 * bit + axis);
+        });
+    }
+    return index;
+}
+
+/** `voxels` as r3v-voxelizer's get_all_points_compressed returns them, made
+ * into groups by `make(point, values)`. */
+function voxelGroups(voxels, make = (point, values) => new rr.VoxelGroup(point, values)) {
+    const groups = new Map();
+    for (const [x, y, z] of voxels) {
+        const key = [x >> 6, y >> 6, z >> 6];
+        if (!groups.has(key.join())) {
+            groups.set(key.join(), { point: new rr.PointI(...key, 0), values: new BigUint64Array(GROUP_PAGES) });
+        }
+        const page = pageIndex((x >> 2) & 15, (y >> 2) & 15, (z >> 2) & 15);
+        groups.get(key.join()).values[page] |= 1n << BigInt((x & 3) + 4 * (y & 3) + 16 * (z & 3));
+    }
+    return [...groups.values()].map(({ point, values }) => make(point, values));
+}
+
+/** Voxels of the full 4x4x2 block at (x, y, z). */
+function blockVoxels(x, y, z) {
+    const voxels = [];
+    for (let dz = 0; dz < 2; ++dz) {
+        for (let dy = 0; dy < 4; ++dy) {
+            for (let dx = 0; dx < 4; ++dx) {
+                voxels.push([x + dx, y + dy, z + dz]);
+            }
+        }
+    }
+    return voxels;
+}
+
+/** [chunk index, its triangles] of every chunk of `delta`, sorted. */
+function chunkTriangles(delta) {
+    const chunks = [];
+    for (let k = 0; k < delta.length; ++k) {
+        const chunk = delta.chunk(k);
+        chunks.push([chunk.index, chunk.triangles]);
+    }
+    return chunks.sort(([a], [b]) => fmt(a).localeCompare(fmt(b)));
+}
+
+/** [chunk index, triangle count] of every chunk of `delta`, sorted. */
+function chunkSizes(delta) {
+    return chunkTriangles(delta).map(([index, triangles]) => [index, triangles.length]);
+}
+
 /** view_proj * (point, 1), divided by w. */
 function project(state, point) {
     const v = [...point, 1.0];
@@ -101,7 +180,7 @@ function facingZ({ v0, v1, v2 }) {
 
 const CLASSES = [
     "CameraState", "CpuTesselator", "CpuTesselatorConfiguration", "GeometryDelta", "OrbitCamera", "PointI",
-    "RobotTransforms", "StlMesh", "Triangle", "Twist", "UrdfDescription", "UrdfRobot", "WgpuRenderer",
+    "RobotTransforms", "StlMesh", "Triangle", "Twist", "UrdfDescription", "UrdfRobot", "VoxelGroup", "WgpuRenderer",
     "WgpuRendererConfiguration",
 ];
 
@@ -478,6 +557,121 @@ async function tesselator_rejects_other_objects() {
     check(tesselator.get_output_geometry_delta() === undefined);
 }
 
+async function voxel_group_has_the_voxelizer_interface() {
+    const values = new BigUint64Array(GROUP_PAGES);
+    values[5] = U64_MAX;
+    const group = new rr.VoxelGroup(new rr.PointI(1, -2, 3, 0), values);
+    check(group.point instanceof rr.PointI);
+    check(same([group.point.x, group.point.y, group.point.z, group.point.i], [1, -2, 3, 0]));
+    check(group.values instanceof BigUint64Array && group.values.length === GROUP_PAGES);
+    check(group.values[5] === U64_MAX);
+    // Copies both ways.
+    values[6] = 1n;
+    group.values[7] = 1n;
+    check(group.values[6] === 0n && group.values[7] === 0n);
+    // Any PointILike works as the key.
+    const plain = new rr.VoxelGroup({ x: 1, y: -2, z: 3, i: 0 }, values);
+    check(plain.point.x === 1 && plain.values[6] === 1n);
+
+    await throws(() => new rr.VoxelGroup(new rr.PointI(0, 0, 0, 0), new BigUint64Array(GROUP_PAGES - 1)), RangeError,
+        "values holds 4095 words, a group holds 4096");
+    await throws(() => new rr.VoxelGroup(new rr.PointI(0, 0, 0, 0), new BigUint64Array(GROUP_PAGES + 1)), RangeError,
+        "values holds 4097 words");
+    await throws(() => new rr.VoxelGroup(new rr.PointI(0, 0, 0, 0), new Array(GROUP_PAGES).fill(0)), TypeError,
+        "values is not a BigUint64Array");
+    await throws(() => new rr.VoxelGroup(new rr.PointI(0, 0, 0, 0), new BigInt64Array(GROUP_PAGES)), TypeError,
+        "values is not a BigUint64Array");
+    await throws(() => new rr.VoxelGroup(null, values), TypeError, "point is not an object");
+    await throws(() => new rr.VoxelGroup({ x: 0.5, y: 0, z: 0, i: 0 }, values), RangeError, "point.x");
+}
+
+async function tesselator_replace_requires_configure() {
+    const tesselator = new rr.CpuTesselator();
+    await throws(() => tesselator.replace_input_geometry(voxelGroups([[1, 2, 3]])), Error, "configure");
+    await throws(() => tesselator.replace_input_geometry([]), Error, "configure");
+}
+
+function tesselator_replace_matches_update() {
+    const updated = makeTesselator(0.5);
+    updated.update_input_geometry([new rr.PointI(4, 4, 2, U32_MAX)]);
+    const expected = chunkTriangles(updated.get_output_geometry_delta());
+    check(same(expected.map(([, triangles]) => triangles.length), [12]));
+
+    // Groups of this module, of r3v-voxelizer (stand-ins here) or plain
+    // objects.
+    const voxels = blockVoxels(4, 4, 2);
+    const kinds = [
+        voxelGroups(voxels),
+        voxelGroups(voxels, (point, values) => new VoxelizerVoxelGroup(new VoxelizerPointI(point.x, point.y, point.z, 0),
+            values)),
+        voxelGroups(voxels, (point, values) => ({ point: { x: point.x, y: point.y, z: point.z, i: 0 }, values })),
+    ];
+    for (const groups of kinds) {
+        const tesselator = makeTesselator(0.5);
+        tesselator.replace_input_geometry(groups);
+        check(same(chunkTriangles(tesselator.get_output_geometry_delta()), expected));
+        // The same voxels again change nothing.
+        tesselator.replace_input_geometry(kinds[0]);
+        check(tesselator.get_output_geometry_delta() === undefined);
+        updated.replace_input_geometry(groups);
+        check(updated.get_output_geometry_delta() === undefined);
+    }
+
+    // Groups sharing a key add up, the i of a key is ignored.
+    const tesselator = makeTesselator(1.0);
+    const [first] = voxelGroups([[1, 1, 1]]);
+    const [second] = voxelGroups([[9, 9, 9]]);
+    tesselator.replace_input_geometry([first, { point: { x: 0, y: 0, z: 0, i: 7 }, values: second.values }]);
+    check(same(chunkSizes(tesselator.get_output_geometry_delta()), [[[0, 0, 0], 24]]));
+}
+
+function tesselator_replace_clears_old_voxels() {
+    const tesselator = makeTesselator(1.0);
+    // Inside their chunks, so no neighbouring chunks come along.
+    tesselator.update_input_geometry([new rr.PointI(4, 4, 2, U32_MAX), new rr.PointI(68, 4, 2, U32_MAX)]);
+    check(tesselator.get_output_geometry_delta().length === 2);
+
+    tesselator.replace_input_geometry(voxelGroups([...blockVoxels(36, 4, 2), ...blockVoxels(68, 4, 2)]));
+    check(same(chunkSizes(tesselator.get_output_geometry_delta()), [[[0, 0, 0], 0], [[32, 0, 0], 12]]));
+    check(tesselator.get_output_geometry_delta() === undefined);
+
+    tesselator.replace_input_geometry([]);
+    check(same(chunkSizes(tesselator.get_output_geometry_delta()), [[[32, 0, 0], 0], [[64, 0, 0], 0]]));
+    tesselator.replace_input_geometry([]);
+    check(tesselator.get_output_geometry_delta() === undefined);
+}
+
+async function tesselator_replace_rejects_bad_groups() {
+    const tesselator = makeTesselator(1.0);
+    const block = voxelGroups(blockVoxels(4, 4, 2));
+    tesselator.replace_input_geometry(block);
+    tesselator.get_output_geometry_delta();
+    // Errors leave the voxels alone, which every one of these would clear.
+    const [group] = voxelGroups([[0, 0, 0]]);
+    const zero = { x: 0, y: 0, z: 0, i: 0 };
+    await throws(() => tesselator.replace_input_geometry(5), TypeError, "groups is not an array");
+    await throws(() => tesselator.replace_input_geometry([group, null]), TypeError, "groups[1] is not an object");
+    await throws(() => tesselator.replace_input_geometry([{ values: group.values }]), TypeError,
+        "groups[0].point is not an object");
+    await throws(() => tesselator.replace_input_geometry([{ point: { x: 0, y: 0, z: 0, i: -1 }, values: group.values }]),
+        RangeError, "groups[0].point.i");
+    await throws(() => tesselator.replace_input_geometry([group, { point: zero, values: [0n, 0n] }]), TypeError,
+        "groups[1].values is not a BigUint64Array");
+    await throws(() => tesselator.replace_input_geometry([group, { point: zero, values: new BigUint64Array(3) }]),
+        RangeError, "groups[1].values holds 3 words, a group holds 4096");
+    for (const key of [[2 ** 25, 0, 0], [0, -(2 ** 25) - 1, 0], [0, 0, 2 ** 31 - 1], [-(2 ** 31), 0, 0]]) {
+        const [x, y, z] = key;
+        await throws(() => tesselator.replace_input_geometry([group, new rr.VoxelGroup({ x, y, z, i: 0 },
+            new BigUint64Array(GROUP_PAGES))]), RangeError, "groups[1] has key");
+    }
+    check(tesselator.get_output_geometry_delta() === undefined);
+    // The ends of the key range are fine.
+    for (const [x, y, z] of [[2 ** 25 - 1, 0, 0], [0, -(2 ** 25), 2 ** 25 - 1]]) {
+        tesselator.replace_input_geometry([...block, { point: { x, y, z, i: 0 }, values: new BigUint64Array(GROUP_PAGES) }]);
+    }
+    check(tesselator.get_output_geometry_delta() === undefined);
+}
+
 // -------------------------------------------------------------- renderer
 
 async function renderer_configure_checks_size() {
@@ -663,6 +857,31 @@ async function renderer_draws_voxels() {
     tesselator.update_input_geometry([new rr.PointI(4, 4, 2, 0)]);
     renderer.update_geometry(tesselator.get_output_geometry_delta());
     check(!lit(await renderNow(renderer, camera, w, h), w, w / 2, h / 2));
+}
+
+async function renderer_draws_only_replaced_voxels() {
+    const [w, h] = [32, 32];
+    const renderer = await makeRenderer(w, h);
+    // Voxels 4..8 x 4..8 x 2..4.
+    const tesselator = addBlock(renderer, 1.0, 4, 4, 2);
+    const camera = new rr.OrbitCamera([6, 6, 3], 10);
+    const block = await renderNow(renderer, camera, w, h);
+    check(lit(block, w, w / 2, h / 2));
+
+    const outOfView = voxelGroups(blockVoxels(400, 400, 400));
+    const inView = voxelGroups(blockVoxels(4, 4, 2), (point, values) => new VoxelizerVoxelGroup(point, values));
+    for (const groups of [outOfView, inView, []]) {
+        tesselator.replace_input_geometry(groups);
+        renderer.update_geometry(tesselator.get_output_geometry_delta());
+        const frame = await renderNow(renderer, camera, w, h);
+        if (groups === inView) {
+            check(same([...frame], [...block]));
+        } else {
+            for (let pixel = 0; pixel < w * h; ++pixel) {
+                check(!lit(frame, w, pixel % w, Math.floor(pixel / w)));
+            }
+        }
+    }
 }
 
 async function renderer_update_geometry_takes_the_delta() {
@@ -942,6 +1161,11 @@ const TEST_CASES = [
     tesselator_toggles_marching_cubes,
     tesselator_takes_voxelizer_points,
     tesselator_rejects_other_objects,
+    voxel_group_has_the_voxelizer_interface,
+    tesselator_replace_requires_configure,
+    tesselator_replace_matches_update,
+    tesselator_replace_clears_old_voxels,
+    tesselator_replace_rejects_bad_groups,
     renderer_configure_checks_size,
     renderer_configure_checks_colors,
     renderer_configure_checks_terrain_coloring,
@@ -953,6 +1177,7 @@ const TEST_CASES = [
     renderer_render_rgba_swaps_channels,
     renderer_first_frame_is_zeros,
     renderer_draws_voxels,
+    renderer_draws_only_replaced_voxels,
     renderer_update_geometry_takes_the_delta,
     renderer_draws_assets,
     renderer_colors_assets,

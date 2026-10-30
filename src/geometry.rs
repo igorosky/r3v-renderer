@@ -25,6 +25,80 @@ impl PointI {
     }
 }
 
+/// Bits of a page coordinate inside a [`VoxelGroup`], which is 16x16x16 pages.
+const VOXEL_GROUP_EDGE_BITS: u32 = 4;
+/// Edge length of a page of a [`VoxelGroup`] in voxels.
+const PAGE_EDGE: DiscreteUnit = 4;
+/// Layers of a page in one 4x4x2 block: its word holds 16 bits per layer.
+const BLOCK_DEPTH: DiscreteUnit = 2;
+/// Voxel coordinates shifted right by it give the key of their [`VoxelGroup`].
+pub(crate) const VOXEL_GROUP_SHIFT: u32 = VOXEL_GROUP_EDGE_BITS + PAGE_EDGE.trailing_zeros();
+/// Words in a [`VoxelGroup`], one per 4x4x4 page.
+pub const VOXEL_GROUP_PAGES: usize = 1 << (3 * VOXEL_GROUP_EDGE_BITS);
+
+/// Constructed voxels of a cube of 64x64x64 voxels, as r3v-voxelizer's
+/// `get_all_points_compressed` returns them (its `CompressedVoxelGroup`).
+///
+/// `point` is the key of the group: voxel coordinates shifted right by 6,
+/// `point.i` is ignored. Keys outside `[-2^25, 2^25)` wrap. `values[k]` is the
+/// occupancy of the 4x4x4 page whose offset in the group, bits of x, y and z
+/// interleaved from the lowest one, is `k`. Bit `x + 4 * y + 16 * z` of it is
+/// set when voxel (x, y, z) of the page is constructed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoxelGroup {
+    pub point: PointI,
+    pub values: Box<[u64; VOXEL_GROUP_PAGES]>,
+}
+
+impl VoxelGroup {
+    /// The 4x4x2 blocks of the group holding at least one voxel, as
+    /// `Tesselator::update_input_geometry` takes them.
+    pub fn blocks(&self) -> impl Iterator<Item = PointI> + '_ {
+        group_blocks(&self.point, &self.values)
+    }
+}
+
+/// Offset of page `index` of a [`VoxelGroup`] in the group, in pages.
+const fn page_offset(index: usize) -> Point<DiscreteUnit> {
+    let mut offset = [0; 3];
+    let mut bit = 0;
+    while bit < 3 * VOXEL_GROUP_EDGE_BITS as usize {
+        offset[bit % 3] |= (index >> bit & 1) << (bit / 3);
+        bit += 1;
+    }
+    Point {
+        x: offset[0] as DiscreteUnit,
+        y: offset[1] as DiscreteUnit,
+        z: offset[2] as DiscreteUnit,
+    }
+}
+
+/// [`VoxelGroup::blocks`] of the group with key `key` and words `values`.
+pub(crate) fn group_blocks<'a>(
+    key: &PointI,
+    values: &'a [u64; VOXEL_GROUP_PAGES],
+) -> impl Iterator<Item = PointI> + use<'a> {
+    // Below 2^31 - 64 even for a wrapped key, so adding the offsets can not
+    // overflow
+    let origin = Point::from_array([key.x, key.y, key.z]).map(|c| c << VOXEL_GROUP_SHIFT);
+    values
+        .iter()
+        .enumerate()
+        .filter(|(_, word)| **word != 0)
+        .flat_map(move |(index, &word)| {
+            let page = origin + page_offset(index).map(|offset| offset * PAGE_EDGE);
+            [(word as u32, 0), ((word >> u32::BITS) as u32, BLOCK_DEPTH)]
+                .into_iter()
+                .filter(|(mask, _)| *mask != 0)
+                .map(move |(mask, z)| PointI {
+                    x: page.x,
+                    y: page.y,
+                    z: page.z + z,
+                    i: mask,
+                })
+        })
+}
+
 pub type DiscreteUnit = i32;
 pub type RealUnit = f32;
 

@@ -1,6 +1,9 @@
+mod common;
+
 use std::sync::{Mutex, MutexGuard};
 
 use cgmath::Point3;
+use common::{block_voxels, voxel_groups};
 use r3v_renderer::{
     Camera, Renderer, Tesselator,
     camera::OrbitCamera,
@@ -287,4 +290,68 @@ fn assets_keep_their_color() {
 
     set_coloring(&mut renderer, by_height(0.0));
     assert_eq!(render(&mut renderer), frame);
+}
+
+/// Passes what changed in `tesselator` on to `renderer`.
+fn feed(tesselator: &mut CpuTesselator, renderer: &mut WgpuAccelerated) {
+    let context = CpuTesselatorContext {
+        camera_frustum: None,
+    };
+    if let Some(delta) = tesselator.get_output_geometry_delta(&context) {
+        renderer.update_geometry(delta);
+    }
+}
+
+#[test]
+fn replacing_the_voxels_renders_only_the_new_ones() {
+    let _gpu = gpu_lock();
+    let empty = render(&mut renderer());
+    let block = render(&mut scene());
+    assert_ne!(block, empty, "the block is not in view");
+
+    let mut tesselator = CpuTesselator::new();
+    tesselator.configure(CpuTesselatorConfiguration {
+        voxel_size: 1.0,
+        marching_cubes_enabled: false,
+    });
+    let mut renderer = renderer();
+    let in_view = PointI {
+        x: 0,
+        y: BLOCK_TOP as i32 - 4,
+        z: 0,
+        i: u32::MAX,
+    };
+    let out_of_view = PointI {
+        x: 200,
+        y: 0,
+        z: -200,
+        i: u32::MAX,
+    };
+    let groups = |blocks: &[PointI]| voxel_groups(block_voxels(blocks));
+
+    // Something else in view first, gone after the replace
+    tesselator.update_input_geometry(&vec![PointI {
+        x: 4,
+        ..in_view.clone()
+    }]);
+    feed(&mut tesselator, &mut renderer);
+    let other = render(&mut renderer);
+    assert_ne!(other, empty);
+    assert_ne!(other, block);
+
+    tesselator.replace_input_geometry(&groups(&[in_view.clone(), out_of_view.clone()]));
+    feed(&mut tesselator, &mut renderer);
+    assert_eq!(render(&mut renderer), block);
+
+    tesselator.replace_input_geometry(&groups(&[out_of_view]));
+    feed(&mut tesselator, &mut renderer);
+    assert_eq!(render(&mut renderer), empty);
+
+    tesselator.replace_input_geometry(&groups(&[in_view]));
+    feed(&mut tesselator, &mut renderer);
+    assert_eq!(render(&mut renderer), block);
+
+    tesselator.replace_input_geometry(&[]);
+    feed(&mut tesselator, &mut renderer);
+    assert_eq!(render(&mut renderer), empty);
 }

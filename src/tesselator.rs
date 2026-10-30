@@ -12,7 +12,7 @@ use crate::{
     camera::Frustum,
     geometry::{
         Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, RealTriangle, RealUnit,
-        TriangleChunk, Vector2D, Vector3D, VoxelNormal,
+        TriangleChunk, Vector2D, Vector3D, VoxelGroup, VoxelNormal,
     },
 };
 
@@ -72,6 +72,15 @@ impl Chunk {
 
     fn subchunk_index(subchunk: Point<usize>) -> usize {
         (subchunk.z * CHUNK_SUBCHUNKS.y + subchunk.y) * CHUNK_SUBCHUNKS.x + subchunk.x
+    }
+
+    /// Inverse of [`Self::subchunk_index`].
+    fn subchunk_at(index: usize) -> Point<usize> {
+        Point {
+            x: index % CHUNK_SUBCHUNKS.x,
+            y: index / CHUNK_SUBCHUNKS.x % CHUNK_SUBCHUNKS.y,
+            z: index / (CHUNK_SUBCHUNKS.x * CHUNK_SUBCHUNKS.y),
+        }
     }
 
     fn origin_of(point: DiscretePoint) -> DiscretePoint {
@@ -208,6 +217,64 @@ impl CpuTesselator {
         for chunk in dirty {
             self.mark_dirty(chunk);
         }
+    }
+
+    /// Drops every voxel the tesselator holds and keeps only the ones of
+    /// `groups`, e.g. what r3v-voxelizer's `get_all_points_compressed`
+    /// returns. Groups sharing a key add up. Only the chunks whose voxels
+    /// changed (and the chunks next to them) are tesselated again on the next
+    /// `get_output_geometry_delta`; the ones left without voxels come out with
+    /// no triangles.
+    pub fn replace_input_geometry(&mut self, groups: &[VoxelGroup]) {
+        self.replace_input_blocks(groups.iter().flat_map(VoxelGroup::blocks));
+    }
+
+    /// [`Self::replace_input_geometry`] with the groups already split into
+    /// blocks. Masks of blocks at the same origin add up.
+    pub(crate) fn replace_input_blocks(&mut self, blocks: impl IntoIterator<Item = PointI>) {
+        assert!(
+            self.config.is_some(),
+            "Tesselator must be configured before replacing input geometry"
+        );
+        let mut masks: FxHashMap<DiscretePoint, u32> = FxHashMap::default();
+        for block in blocks {
+            *masks
+                .entry(DiscretePoint {
+                    x: block.x,
+                    y: block.y,
+                    z: block.z,
+                })
+                .or_default() |= block.i;
+        }
+        let mut delta = Vec::new();
+        for (&chunk, stored) in &self.chunks {
+            for (index, &mask) in stored.subchunks.iter().enumerate() {
+                if mask == 0 {
+                    continue;
+                }
+                let subchunk = Chunk::subchunk_at(index);
+                let origin = Point::from_fn(|axis| {
+                    chunk[axis] + (subchunk[axis] * SUBCHUNK_SIZE[axis]) as DiscreteUnit
+                });
+                if !masks.contains_key(&origin) {
+                    delta.push(PointI {
+                        x: origin.x,
+                        y: origin.y,
+                        z: origin.z,
+                        i: 0,
+                    });
+                }
+            }
+        }
+        delta.extend(masks.into_iter().map(|(origin, mask)| PointI {
+            x: origin.x,
+            y: origin.y,
+            z: origin.z,
+            i: mask,
+        }));
+        // Blocks that keep their mask are skipped there, so only what changed
+        // gets dirty
+        self.update_input_geometry(&delta);
     }
 
     fn mark_dirty(&mut self, chunk: DiscretePoint) {

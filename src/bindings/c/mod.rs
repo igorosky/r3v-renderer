@@ -281,6 +281,27 @@ pub struct R3vPointI {
     pub i: u32,
 }
 
+/// Words in an `R3vVoxelGroup`, one per 4x4x4 page.
+// A literal, cbindgen does not follow paths to other modules
+pub const R3V_VOXEL_GROUP_PAGES: usize = 4096;
+const _: () = assert!(R3V_VOXEL_GROUP_PAGES == geometry::VOXEL_GROUP_PAGES);
+
+/// Constructed voxels of a cube of 64x64x64 voxels (`geometry::VoxelGroup`).
+/// Same layout as `VoxelGroup` of r3v-voxelizer, whose
+/// `get_all_points_compressed` output can be passed on as it is.
+///
+/// `point` is the key of the group: voxel coordinates shifted right by 6,
+/// `point.i` is ignored. `values[k]` is the occupancy of the 4x4x4 page whose
+/// offset in the group, bits of x, y and z interleaved from the lowest one, is
+/// `k`. Bit `x + 4 * y + 16 * z` of it is set when voxel (x, y, z) of the page
+/// is constructed.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct R3vVoxelGroup {
+    pub point: R3vPointI,
+    pub values: [u64; R3V_VOXEL_GROUP_PAGES],
+}
+
 /// Triangle (`geometry::RealTriangle`), counter-clockwise when seen from
 /// its front side.
 #[repr(C)]

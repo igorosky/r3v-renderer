@@ -1,9 +1,11 @@
 mod common;
 
-use common::{close, close3};
+use std::collections::{BTreeSet, HashSet};
+
+use common::{Lcg, block_voxels, close, close3, page_index, voxel_groups};
 use r3v_renderer::geometry::{
     Axis, DiscretePoint, DiscreteQuad, Point, PointI, RealQuad, RealTriangle, RealTwist, Triangle,
-    Vector2D, Vector3D, Vertex, VoxelNormal, Winding,
+    VOXEL_GROUP_PAGES, Vector2D, Vector3D, Vertex, VoxelGroup, VoxelNormal, Winding,
 };
 
 fn vec3(v: Vector3D<f32>) -> [f32; 3] {
@@ -573,4 +575,159 @@ fn gpu_types_have_packed_layouts() {
     let twist = RealTwist::identity();
     let floats: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&twist));
     assert_eq!(floats, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+}
+
+fn voxel_group(key: [i32; 3], words: &[(usize, u64)]) -> VoxelGroup {
+    let mut values = Box::new([0; VOXEL_GROUP_PAGES]);
+    for &(index, word) in words {
+        values[index] = word;
+    }
+    VoxelGroup {
+        point: PointI {
+            x: key[0],
+            y: key[1],
+            z: key[2],
+            i: 0,
+        },
+        values,
+    }
+}
+
+fn block(x: i32, y: i32, z: i32, i: u32) -> PointI {
+    PointI { x, y, z, i }
+}
+
+#[test]
+fn voxel_group_has_4096_pages() {
+    assert_eq!(VOXEL_GROUP_PAGES, 4096);
+}
+
+#[test]
+fn empty_voxel_group_has_no_blocks() {
+    assert_eq!(voxel_group([0, 0, 0], &[]).blocks().count(), 0);
+    assert_eq!(voxel_group([-3, 7, 1], &[]).blocks().count(), 0);
+}
+
+#[test]
+fn first_voxel_of_a_group_is_at_its_origin() {
+    let group = voxel_group([1, 2, 3], &[(0, 1)]);
+    assert_eq!(group.blocks().collect::<Vec<_>>(), [block(64, 128, 192, 1)]);
+}
+
+#[test]
+fn upper_half_of_a_page_is_the_block_above() {
+    // Layers 2 and 3 of the page, bit 32 being voxel (0, 0, 2)
+    let group = voxel_group([0, 0, 0], &[(0, 1 << 32 | 1 << 63)]);
+    assert_eq!(
+        group.blocks().collect::<Vec<_>>(),
+        [block(0, 0, 2, 1 | 1 << 31)]
+    );
+    let group = voxel_group([0, 0, 0], &[(0, u64::MAX)]);
+    assert_eq!(
+        group.blocks().collect::<Vec<_>>(),
+        [block(0, 0, 0, u32::MAX), block(0, 0, 2, u32::MAX)]
+    );
+    let group = voxel_group([0, 0, 0], &[(0, 0xFFFF_0000_0000_FFFF)]);
+    assert_eq!(
+        group.blocks().collect::<Vec<_>>(),
+        [block(0, 0, 0, 0xFFFF), block(0, 0, 2, 0xFFFF_0000)]
+    );
+}
+
+#[test]
+fn pages_of_a_group_are_in_z_order() {
+    // Word k holds k + 1, so the mask of a block tells the word it came from
+    let words: Vec<(usize, u64)> = (0..VOXEL_GROUP_PAGES)
+        .map(|index| (index, index as u64 + 1))
+        .collect();
+    let blocks: Vec<PointI> = voxel_group([-1, 2, 0], &words).blocks().collect();
+    assert_eq!(blocks.len(), VOXEL_GROUP_PAGES);
+    let mut pages = HashSet::new();
+    for block in &blocks {
+        let index = block.i as usize - 1;
+        let page = [block.x + 64, block.y - 128, block.z].map(|c| {
+            assert_eq!(c % 4, 0, "{block:?} is not aligned to a page");
+            c / 4
+        });
+        assert!(
+            page.iter().all(|c| (0..16).contains(c)),
+            "{block:?} is outside its group"
+        );
+        assert_eq!(page_index(page), index, "word {index} is at page {page:?}");
+        assert!(pages.insert(page), "page {page:?} appears twice");
+    }
+}
+
+#[test]
+fn voxels_of_a_group_match_the_voxelizer_format() {
+    // Voxel (5, 9, 70): group (0, 0, 1), page (1, 2, 1) whose bits interleave
+    // to 0b010_101 = 21, voxel (1, 1, 2) of the page, bit 1 + 4 + 32 = 37
+    let group = voxel_group([0, 0, 1], &[(21, 1 << 37)]);
+    let blocks: Vec<PointI> = group.blocks().collect();
+    assert_eq!(blocks, [block(4, 8, 70, 1 << 5)]);
+    assert_eq!(block_voxels(&blocks), BTreeSet::from([[5, 9, 70]]));
+
+    // Voxel (-1, -1, -1): group (-1, -1, -1), page (15, 15, 15), last bit
+    let group = voxel_group([-1, -1, -1], &[(4095, 1 << 63)]);
+    let blocks: Vec<PointI> = group.blocks().collect();
+    assert_eq!(blocks, [block(-4, -4, -2, 1 << 31)]);
+    assert_eq!(block_voxels(&blocks), BTreeSet::from([[-1, -1, -1]]));
+}
+
+#[test]
+fn i_of_the_group_key_is_ignored() {
+    let mut group = voxel_group([2, -2, 0], &[(7, 0x10), (100, 1 << 40)]);
+    let expected: Vec<PointI> = group.blocks().collect();
+    for i in [1, 0xDEAD, u32::MAX] {
+        group.point.i = i;
+        assert_eq!(group.blocks().collect::<Vec<_>>(), expected);
+    }
+}
+
+#[test]
+fn extreme_group_keys_reach_the_ends_of_i32() {
+    let max = i32::MAX >> 6;
+    let group = voxel_group([max, max, max], &[(4095, 1 << 63)]);
+    let blocks: Vec<PointI> = group.blocks().collect();
+    assert_eq!(
+        block_voxels(&blocks),
+        BTreeSet::from([[i32::MAX, i32::MAX, i32::MAX]])
+    );
+    let min = i32::MIN >> 6;
+    let group = voxel_group([min, min, min], &[(0, 1)]);
+    let blocks: Vec<PointI> = group.blocks().collect();
+    assert_eq!(blocks, [block(i32::MIN, i32::MIN, i32::MIN, 1)]);
+}
+
+#[test]
+fn blocks_of_groups_round_trip_random_voxels() {
+    for seed in 0..8 {
+        let mut rng = Lcg::new(seed);
+        let voxels: BTreeSet<[i32; 3]> = (0..rng.range(1, 3000))
+            .map(|_| {
+                [
+                    rng.range(-150, 150),
+                    rng.range(-150, 150),
+                    rng.range(-70, 70),
+                ]
+            })
+            .collect();
+        let groups = voxel_groups(voxels.iter().copied());
+        let blocks: Vec<PointI> = groups.iter().flat_map(VoxelGroup::blocks).collect();
+        let mut origins = HashSet::new();
+        for block in &blocks {
+            assert_ne!(block.i, 0, "{block:?} is empty");
+            assert!(
+                block.x.rem_euclid(4) == 0
+                    && block.y.rem_euclid(4) == 0
+                    && block.z.rem_euclid(2) == 0,
+                "{block:?} is not aligned to the 4x4x2 grid"
+            );
+            assert!(
+                origins.insert([block.x, block.y, block.z]),
+                "{block:?} appears twice"
+            );
+        }
+        assert_eq!(block_voxels(&blocks), voxels, "seed {seed}");
+    }
 }

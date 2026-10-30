@@ -10,6 +10,9 @@
 namespace r3v {
 namespace renderer {
 
+/// Words in an `R3vVoxelGroup`, one per 4x4x4 page.
+constexpr static const size_t R3V_VOXEL_GROUP_PAGES = 4096;
+
 /// Result of a function that can fail. Anything but `R3V_OK` comes with a
 /// message from `r3v_renderer_last_error`.
 enum class R3vStatus {
@@ -250,6 +253,20 @@ struct R3vPointI {
   int32_t y;
   int32_t z;
   uint32_t i;
+};
+
+/// Constructed voxels of a cube of 64x64x64 voxels (`geometry::VoxelGroup`).
+/// Same layout as `VoxelGroup` of r3v-voxelizer, whose
+/// `get_all_points_compressed` output can be passed on as it is.
+///
+/// `point` is the key of the group: voxel coordinates shifted right by 6,
+/// `point.i` is ignored. `values[k]` is the occupancy of the 4x4x4 page whose
+/// offset in the group, bits of x, y and z interleaved from the lowest one, is
+/// `k`. Bit `x + 4 * y + 16 * z` of it is set when voxel (x, y, z) of the page
+/// is constructed.
+struct R3vVoxelGroup {
+  R3vPointI point;
+  uint64_t values[R3V_VOXEL_GROUP_PAGES];
 };
 
 /// Integer point, e.g. the origin of a chunk in voxels.
@@ -510,6 +527,21 @@ R3vStatus r3v_cpu_tesselator_set_marching_cubes_enabled(R3vCpuTesselator *tessel
 R3vStatus r3v_cpu_tesselator_update_input_geometry(R3vCpuTesselator *tesselator,
                                                    const R3vPointI *blocks,
                                                    size_t count);
+
+/// `CpuTesselator::replace_input_geometry`: drops every voxel the tesselator
+/// holds and keeps only the ones of `groups`, e.g. what r3v-voxelizer's
+/// `get_all_points_compressed` returns. Groups sharing a key add up. Only the
+/// chunks whose voxels changed come out of the next
+/// `r3v_cpu_tesselator_get_output_geometry_delta`, the ones left without
+/// voxels with no triangles. `groups` may be NULL when `count` is 0, which
+/// clears everything.
+///
+/// `R3V_INVALID_ARGUMENT` when a group key coordinate is outside
+/// [-2^25, 2^25) (its voxels would not fit `int32_t`); none of the groups is
+/// applied then.
+R3vStatus r3v_cpu_tesselator_replace_input_geometry(R3vCpuTesselator *tesselator,
+                                                    const R3vVoxelGroup *groups,
+                                                    size_t count);
 
 /// `Tesselator::get_output_geometry_delta`: the chunks changed since the last
 /// call, or NULL in `*out` when nothing changed. With a `camera_state`, only

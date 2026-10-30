@@ -9,7 +9,7 @@ use pyo3::{
 use crate::{
     bindings::checked::CheckedTesselator,
     camera::CameraState,
-    geometry::{PointI, TriangleChunk},
+    geometry::{PointI, TriangleChunk, VOXEL_GROUP_PAGES},
 };
 
 use super::{PyCameraState, PyPointI, PyTriangle};
@@ -59,40 +59,136 @@ impl PyCpuTesselatorConfiguration {
 #[pyclass(module = "r3v_renderer", name = "CpuTesselator")]
 pub(super) struct PyCpuTesselator(CheckedTesselator);
 
+/// `object.method()`, a `TypeError` saying `what` is no `expected` when
+/// `object` has no such method.
+fn call<'py>(
+    object: &Bound<'py, PyAny>,
+    method: &str,
+    what: &dyn Fn() -> String,
+    expected: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    object.call_method0(method).map_err(|error| {
+        if error.is_instance_of::<PyAttributeError>(object.py()) {
+            PyTypeError::new_err(format!(
+                "{} is a {}, not a {expected}",
+                what(),
+                object
+                    .get_type()
+                    .name()
+                    .map_or_else(|_| "?".to_owned(), |name| name.to_string())
+            ))
+        } else {
+            error
+        }
+    })
+}
+
+/// `object` as a `PointI`: a `r3v_renderer.PointI`, or anything else with
+/// `x()`, `y()`, `z()` and `i()` methods, e.g. `r3v_voxelizer.PointI`.
+fn point_i(object: &Bound<'_, PyAny>, what: &dyn Fn() -> String) -> PyResult<PointI> {
+    if let Ok(point) = object.cast::<PyPointI>() {
+        return Ok((*point.borrow()).into());
+    }
+    const EXPECTED: &str = "PointI (anything with x(), y(), z() and i() methods)";
+    Ok(PointI {
+        x: call(object, "x", what, EXPECTED)?.extract()?,
+        y: call(object, "y", what, EXPECTED)?.extract()?,
+        z: call(object, "z", what, EXPECTED)?.extract()?,
+        i: call(object, "i", what, EXPECTED)?.extract()?,
+    })
+}
+
 /// `blocks` as `PointI`s: `r3v_renderer.PointI`s, or anything else with
 /// `x()`, `y()`, `z()` and `i()` methods, e.g. `r3v_voxelizer.PointI`.
 fn extract_blocks(blocks: &Bound<'_, PyAny>) -> PyResult<Vec<PointI>> {
     let mut out = Vec::with_capacity(blocks.len().unwrap_or(0));
     for (k, block) in blocks.try_iter()?.enumerate() {
-        let block = block?;
-        if let Ok(point) = block.cast::<PyPointI>() {
-            out.push((*point.borrow()).into());
-            continue;
-        }
-        let call = |method: &str| {
-            block.call_method0(method).map_err(|error| {
-                if error.is_instance_of::<PyAttributeError>(block.py()) {
-                    PyTypeError::new_err(format!(
-                        "blocks[{k}] is a {}, not a PointI (anything with x(), y(), z() and i() \
-                         methods)",
-                        block
-                            .get_type()
-                            .name()
-                            .map_or_else(|_| "?".to_owned(), |name| name.to_string())
-                    ))
-                } else {
-                    error
-                }
-            })
-        };
-        out.push(PointI {
-            x: call("x")?.extract()?,
-            y: call("y")?.extract()?,
-            z: call("z")?.extract()?,
-            i: call("i")?.extract()?,
-        });
+        out.push(point_i(&block?, &|| format!("blocks[{k}]"))?);
     }
     Ok(out)
+}
+
+/// `values` as the words of a group, `ValueError` unless it holds one for
+/// every page.
+fn words(values: Vec<u64>, what: &dyn Fn() -> String) -> PyResult<Box<[u64; VOXEL_GROUP_PAGES]>> {
+    values
+        .into_boxed_slice()
+        .try_into()
+        .map_err(|values: Box<[u64]>| {
+            PyValueError::new_err(format!(
+                "{} holds {} words, a group holds {VOXEL_GROUP_PAGES}",
+                what(),
+                values.len()
+            ))
+        })
+}
+
+type Group = (PointI, Box<[u64; VOXEL_GROUP_PAGES]>);
+
+/// `groups` as keys and words: `r3v_renderer.VoxelGroup`s, or anything else
+/// with `point()` and `values()` methods, e.g.
+/// `r3v_voxelizer.CompressedVoxelGroup`.
+fn extract_groups(groups: &Bound<'_, PyAny>) -> PyResult<Vec<Group>> {
+    const EXPECTED: &str = "VoxelGroup (anything with point() and values() methods)";
+    let mut out = Vec::with_capacity(groups.len().unwrap_or(0));
+    for (k, group) in groups.try_iter()?.enumerate() {
+        let group = group?;
+        if let Ok(group) = group.cast::<PyVoxelGroup>() {
+            let group = group.borrow();
+            out.push((group.point.into(), group.values.clone()));
+            continue;
+        }
+        let what = || format!("groups[{k}]");
+        let point = call(&group, "point", &what, EXPECTED)?;
+        let values = call(&group, "values", &what, EXPECTED)?.extract()?;
+        out.push((
+            point_i(&point, &|| format!("groups[{k}].point()"))?,
+            words(values, &|| format!("groups[{k}].values()"))?,
+        ));
+    }
+    Ok(out)
+}
+
+/// Constructed voxels of a cube of 64x64x64 voxels (`geometry::VoxelGroup`):
+/// `point()` is the key of the group, voxel coordinates shifted right by 6
+/// (its `i` is ignored), `values()` the occupancy of every 4x4x4 page of the
+/// group, in z-order (bits of x, y and z interleaved from the lowest one). Bit
+/// `x + 4 * y + 16 * z` of a word is set when voxel (x, y, z) of its page is
+/// constructed. Same interface as `r3v_voxelizer.CompressedVoxelGroup`, which
+/// can be passed on as it is.
+#[pyclass(module = "r3v_renderer", name = "VoxelGroup", from_py_object, eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PyVoxelGroup {
+    point: PyPointI,
+    values: Box<[u64; VOXEL_GROUP_PAGES]>,
+}
+
+#[pymethods]
+impl PyVoxelGroup {
+    /// `point` is a `PointI` or anything else with `x()`, `y()`, `z()` and
+    /// `i()` methods. `ValueError` unless `values` holds a word for every page
+    /// of the group (4096).
+    #[new]
+    fn new(point: &Bound<'_, PyAny>, values: Vec<u64>) -> PyResult<Self> {
+        let PointI { x, y, z, i } = point_i(point, &|| "point".to_owned())?;
+        Ok(Self {
+            point: PyPointI { x, y, z, i },
+            values: words(values, &|| "values".to_owned())?,
+        })
+    }
+    fn point(&self) -> PyPointI {
+        self.point
+    }
+    fn values(&self) -> Vec<u64> {
+        self.values.to_vec()
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "VoxelGroup(point={}, values=<{} pages with voxels>)",
+            self.point.__repr__(),
+            self.values.iter().filter(|&&word| word != 0).count()
+        )
+    }
 }
 
 #[pymethods]
@@ -133,6 +229,30 @@ impl PyCpuTesselator {
     fn update_input_geometry(&mut self, py: Python<'_>, blocks: &Bound<'_, PyAny>) -> PyResult<()> {
         let blocks = extract_blocks(blocks)?;
         Ok(py.detach(|| self.0.update_input_geometry(blocks))?)
+    }
+
+    /// `CpuTesselator::replace_input_geometry`: drops every voxel the
+    /// tesselator holds and keeps only the ones of `groups`. `groups` is an
+    /// iterable of `VoxelGroup`s, or of anything else with `point()` and
+    /// `values()` methods, e.g. what `r3v_voxelizer`'s
+    /// `get_all_points_compressed` returns. Groups sharing a key add up. Only
+    /// the chunks whose voxels changed come out of the next
+    /// `get_output_geometry_delta`, the ones left without voxels with no
+    /// triangles.
+    ///
+    /// `ValueError` when a group does not hold a word for every page (4096) or
+    /// a key coordinate is outside [-2^25, 2^25); none of the groups is
+    /// applied then.
+    fn replace_input_geometry(
+        &mut self,
+        py: Python<'_>,
+        groups: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let groups = extract_groups(groups)?;
+        Ok(py.detach(|| {
+            self.0
+                .replace_input_geometry(groups.iter().map(|(key, values)| (key.clone(), &**values)))
+        })?)
     }
 
     /// `Tesselator::get_output_geometry_delta`: the chunks changed since the
