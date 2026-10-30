@@ -276,7 +276,7 @@ static void tesselator_requires_configure(void) {
     CHECK_STATUS(r3v_cpu_tesselator_update_input_geometry(tesselator, &block, 1),
                  R3V_NOT_CONFIGURED);
     R3vGeometryDelta *delta = (R3vGeometryDelta *)&block;
-    CHECK_STATUS(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta),
+    CHECK_STATUS(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta),
                  R3V_NOT_CONFIGURED);
     CHECK(delta == NULL);
     r3v_cpu_tesselator_drop(tesselator);
@@ -308,7 +308,7 @@ static void tesselator_rejects_unaligned_blocks(void) {
         CHECK_ERROR_CONTAINS("blocks[1]");
     }
     R3vGeometryDelta *delta = NULL;
-    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
     CHECK(delta == NULL);
     CHECK_STATUS(r3v_cpu_tesselator_update_input_geometry(tesselator, NULL, 1),
                  R3V_INVALID_ARGUMENT);
@@ -322,7 +322,7 @@ static void tesselator_full_block_is_a_box(void) {
     R3vPointI block = {4, 4, 2, UINT32_MAX};
     CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, &block, 1));
     R3vGeometryDelta *delta = NULL;
-    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
     CHECK(delta != NULL);
     CHECK(r3v_geometry_delta_chunk_count(delta) == 1);
     R3vTriangleChunk chunk;
@@ -348,16 +348,16 @@ static void tesselator_full_block_is_a_box(void) {
     r3v_geometry_delta_drop(delta);
 
     /* Nothing changed since, sending the same block changes nothing either. */
-    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
     CHECK(delta == NULL);
     CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, &block, 1));
-    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
     CHECK(delta == NULL);
 
     /* Clearing it leaves the chunk without triangles. */
     block.i = 0;
     CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, &block, 1));
-    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
     CHECK(delta != NULL);
     CHECK(r3v_geometry_delta_chunk_count(delta) == 1);
     CHECK_OK(r3v_geometry_delta_chunk(delta, 0, &chunk));
@@ -372,11 +372,43 @@ static void tesselator_full_block_is_a_box(void) {
 static R3vGeometryDelta *single_chunk_delta(R3vCpuTesselator *tesselator,
                                             R3vTriangleChunk *chunk) {
     R3vGeometryDelta *delta = NULL;
-    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
     CHECK(delta != NULL);
     CHECK(r3v_geometry_delta_chunk_count(delta) == 1);
     CHECK_OK(r3v_geometry_delta_chunk(delta, 0, chunk));
     return delta;
+}
+
+static void tesselator_culls_chunks_out_of_view(void) {
+    R3vCpuTesselator *tesselator = make_tesselator(0.5f);
+    /* Inside their chunks, 20 chunks apart, so no neighbouring chunks come along. */
+    R3vPointI blocks[] = {{4, 4, 2, UINT32_MAX}, {324, 4, 2, UINT32_MAX}};
+    CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, blocks, 2));
+    /* Close to the far block, with a far plane well short of the other one. */
+    R3vOrbitCamera camera = r3v_orbit_camera_with_clip_planes(
+        r3v_orbit_camera_new(vec3(163.0f, 2.5f, 1.5f), 10.0f, 30.0f, 30.0f), 0.1f, 30.0f);
+    R3vCameraState state;
+    CHECK_OK(r3v_orbit_camera_get_state(camera, 1.0f, &state));
+
+    R3vGeometryDelta *delta = NULL;
+    R3vTriangleChunk chunk;
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &state, &delta));
+    CHECK(r3v_geometry_delta_chunk_count(delta) == 1);
+    CHECK_OK(r3v_geometry_delta_chunk(delta, 0, &chunk));
+    CHECK(chunk.index.x == 320 && chunk.index.y == 0 && chunk.index.z == 0);
+    r3v_geometry_delta_drop(delta);
+
+    /* The chunk out of view stays changed for a call without a camera. */
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &state, &delta));
+    CHECK(delta == NULL);
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(r3v_geometry_delta_chunk_count(delta) == 1);
+    CHECK_OK(r3v_geometry_delta_chunk(delta, 0, &chunk));
+    CHECK(chunk.index.x == 0 && chunk.index.y == 0 && chunk.index.z == 0);
+    r3v_geometry_delta_drop(delta);
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
+    CHECK(delta == NULL);
+    r3v_cpu_tesselator_drop(tesselator);
 }
 
 static void tesselator_toggles_marching_cubes(void) {
@@ -424,11 +456,11 @@ static void tesselator_toggles_marching_cubes(void) {
 
 static void tesselator_null_arguments(void) {
     R3vGeometryDelta *delta = NULL;
-    CHECK_STATUS(r3v_cpu_tesselator_get_output_geometry_delta(NULL, &delta),
+    CHECK_STATUS(r3v_cpu_tesselator_get_output_geometry_delta(NULL, NULL, &delta),
                  R3V_INVALID_ARGUMENT);
     CHECK_ERROR_CONTAINS("`tesselator` is NULL");
     R3vCpuTesselator *tesselator = make_tesselator(1.0f);
-    CHECK_STATUS(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL),
+    CHECK_STATUS(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, NULL),
                  R3V_INVALID_ARGUMENT);
     CHECK_ERROR_CONTAINS("`out` is NULL");
     r3v_cpu_tesselator_drop(tesselator);
@@ -511,7 +543,7 @@ static void renderer_draws_voxels(void) {
     R3vPointI cleared = {4, 4, 2, 0};
     CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, &cleared, 1));
     R3vGeometryDelta *delta = NULL;
-    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
     CHECK_OK(r3v_wgpu_renderer_update_geometry(renderer, delta));
     render_now(renderer, camera, W, H, frame);
     CHECK(!lit(frame, W, W / 2, H / 2));
@@ -529,7 +561,7 @@ static void renderer_update_geometry_checks_arguments(void) {
     R3vPointI block = {0, 0, 0, 1};
     CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, &block, 1));
     R3vGeometryDelta *delta = NULL;
-    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
     CHECK_STATUS(r3v_wgpu_renderer_update_geometry(NULL, delta), R3V_INVALID_ARGUMENT);
     CHECK_ERROR_CONTAINS("`renderer` is NULL");
     r3v_cpu_tesselator_drop(tesselator);
@@ -896,6 +928,7 @@ const TestCase TEST_CASES[] = {
     TEST(tesselator_checks_voxel_size),
     TEST(tesselator_rejects_unaligned_blocks),
     TEST(tesselator_full_block_is_a_box),
+    TEST(tesselator_culls_chunks_out_of_view),
     TEST(tesselator_toggles_marching_cubes),
     TEST(tesselator_null_arguments),
     TEST(renderer_configure_checks_size),

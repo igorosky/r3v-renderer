@@ -5,7 +5,11 @@ use r3v_renderer::{
     camera::OrbitCamera,
     geometry::PointI,
     renderer::{WgpuAccelerated, WgpuAcceleratedConfiguration},
-    tesselator::{CpuTesselator, CpuTesselatorConfiguration},
+    tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext},
+};
+
+const ALL_CHUNKS: CpuTesselatorContext = CpuTesselatorContext {
+    camera_frustum: None,
 };
 
 const BRICK: [i32; 3] = [4, 4, 2];
@@ -106,7 +110,7 @@ fn main() {
             width: SIZE[0],
             height: SIZE[1],
         });
-        while let Some(delta) = tesselator.get_output_geometry_delta() {
+        while let Some(delta) = tesselator.get_output_geometry_delta(&ALL_CHUNKS) {
             renderer.update_geometry(delta);
         }
         let cameras = [

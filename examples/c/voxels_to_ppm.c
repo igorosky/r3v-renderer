@@ -58,7 +58,7 @@ static void add_stairs(R3vWgpuRenderer *renderer) {
           "update_input_geometry");
 
     R3vGeometryDelta *delta = NULL;
-    check(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta),
+    check(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta),
           "get_output_geometry_delta");
     if (delta != NULL) {
         /* Takes the delta. */

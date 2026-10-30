@@ -41,10 +41,14 @@ pub trait Tesselator {
     type Configuration;
     type InputGeometryDelta;
     type OutputGeometryDelta;
+    type TesselationContext;
 
     fn configure(&mut self, configuration: Self::Configuration);
     fn update_input_geometry(&mut self, geometry_delta: &Self::InputGeometryDelta);
-    fn get_output_geometry_delta(&mut self) -> Option<Self::OutputGeometryDelta>;
+    fn get_output_geometry_delta(
+        &mut self,
+        context: &Self::TesselationContext,
+    ) -> Option<Self::OutputGeometryDelta>;
 }
 
 pub trait Renderer {

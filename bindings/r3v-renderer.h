@@ -712,9 +712,12 @@ enum R3vStatus r3v_cpu_tesselator_update_input_geometry(struct R3vCpuTesselator 
 
 /**
  * `Tesselator::get_output_geometry_delta`: the chunks changed since the last
- * call, or NULL in `*out` when nothing changed.
+ * call, or NULL in `*out` when nothing changed. With a `camera_state`, only
+ * the chunks in its view; the others stay changed for a later call. NULL
+ * `camera_state` returns every changed chunk.
  */
 enum R3vStatus r3v_cpu_tesselator_get_output_geometry_delta(struct R3vCpuTesselator *tesselator,
+                                                            const struct R3vCameraState *camera_state,
                                                             struct R3vGeometryDelta **out);
 
 /**

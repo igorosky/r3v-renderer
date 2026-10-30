@@ -383,6 +383,21 @@ async function tesselator_full_block_is_a_box() {
     check(cleared.length === 1 && cleared.chunk(0).triangles.length === 0);
 }
 
+function tesselator_culls_chunks_out_of_view() {
+    const tesselator = makeTesselator(0.5);
+    // Inside their chunks, 20 chunks apart, so no neighbouring chunks come along.
+    tesselator.update_input_geometry([new rr.PointI(4, 4, 2, U32_MAX), new rr.PointI(324, 4, 2, U32_MAX)]);
+    // Close to the far block, with a far plane well short of the other one.
+    const camera = new rr.OrbitCamera([163, 2.5, 1.5], 10, 30, 30).with_clip_planes(0.1, 30);
+    const state = camera.get_state(1.0);
+    const indices = (delta) => Array.from({ length: delta.length }, (_, k) => Array.from(delta.chunk(k).index));
+    check(same(indices(tesselator.get_output_geometry_delta(state)), [[320, 0, 0]]));
+    // The chunk out of view stays changed for a call without a camera.
+    check(tesselator.get_output_geometry_delta(state) === undefined);
+    check(same(indices(tesselator.get_output_geometry_delta()), [[0, 0, 0]]));
+    check(tesselator.get_output_geometry_delta(null) === undefined);
+}
+
 async function tesselator_toggles_marching_cubes() {
     const tesselator = makeTesselator(1.0);
     check(tesselator.marching_cubes_enabled() === false);
@@ -813,6 +828,7 @@ const TEST_CASES = [
     tesselator_checks_voxel_size,
     tesselator_rejects_unaligned_blocks,
     tesselator_full_block_is_a_box,
+    tesselator_culls_chunks_out_of_view,
     tesselator_toggles_marching_cubes,
     tesselator_takes_voxelizer_points,
     tesselator_rejects_other_objects,

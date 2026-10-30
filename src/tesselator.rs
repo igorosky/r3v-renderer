@@ -1,5 +1,4 @@
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::VecDeque;
 
 #[path = "marching_cubes.rs"]
 mod marching_cubes;
@@ -10,6 +9,7 @@ use rayon::prelude::*;
 
 use crate::{
     Tesselator,
+    camera::Frustum,
     geometry::{
         Axis, DiscretePoint, DiscreteQuad, DiscreteUnit, Point, PointI, RealTriangle, RealUnit,
         TriangleChunk, Vector2D, Vector3D, VoxelNormal,
@@ -148,10 +148,14 @@ pub struct CpuTesselatorConfiguration {
     pub marching_cubes_enabled: bool,
 }
 
+pub struct CpuTesselatorContext {
+    pub camera_frustum: Option<Frustum>,
+}
+
 pub struct CpuTesselator {
     config: Option<CpuTesselatorConfiguration>,
     chunks: FxHashMap<DiscretePoint, Box<Chunk>>,
-    dirty_queue: VecDeque<DiscretePoint>,
+    dirty_set: FxHashSet<DiscretePoint>,
     in_queue: FxHashSet<DiscretePoint>,
     marching_cubes_enabled: bool,
 }
@@ -167,7 +171,7 @@ impl CpuTesselator {
         Self {
             config: None,
             chunks: FxHashMap::default(),
-            dirty_queue: VecDeque::new(),
+            dirty_set: FxHashSet::default(),
             in_queue: FxHashSet::default(),
             marching_cubes_enabled: false,
         }
@@ -210,7 +214,7 @@ impl CpuTesselator {
 
     fn mark_dirty(&mut self, chunk: DiscretePoint) {
         if self.in_queue.insert(chunk) {
-            self.dirty_queue.push_back(chunk);
+            self.dirty_set.insert(chunk);
         }
     }
 
@@ -435,6 +439,7 @@ impl Tesselator for CpuTesselator {
     type Configuration = CpuTesselatorConfiguration;
     type InputGeometryDelta = Vec<PointI>;
     type OutputGeometryDelta = Vec<TriangleChunk>;
+    type TesselationContext = CpuTesselatorContext;
 
     fn update_input_geometry(&mut self, geometry_delta: &Self::InputGeometryDelta) {
         assert!(
@@ -474,16 +479,33 @@ impl Tesselator for CpuTesselator {
         }
     }
 
-    fn get_output_geometry_delta(&mut self) -> Option<Self::OutputGeometryDelta> {
+    fn get_output_geometry_delta(
+        &mut self,
+        context: &Self::TesselationContext,
+    ) -> Option<Self::OutputGeometryDelta> {
         assert!(
             self.config.is_some(),
             "Tesselator must be configured before generating output geometry"
         );
-        if self.dirty_queue.is_empty() {
+        if self.dirty_set.is_empty() {
             return None;
         }
         self.in_queue.clear();
-        let dirty: Vec<DiscretePoint> = self.dirty_queue.drain(..).collect();
+        let voxel_size = self.config.as_ref().unwrap().voxel_size;
+        let chunk_extent = CHUNK_WIDTH as f32 * voxel_size;
+        let dirty: Vec<DiscretePoint> = self
+            .dirty_set
+            .extract_if(|chunk| {
+                let min = [chunk.x, chunk.y, chunk.z].map(|c| c as f32 * voxel_size);
+                let max = min.map(|c| c + chunk_extent);
+                context
+                    .camera_frustum
+                    .is_none_or(|frustum| frustum.intersects_box(min, max))
+            })
+            .collect();
+        if dirty.is_empty() {
+            return None;
+        }
         #[cfg(feature = "multi-threaded")]
         let dirty = dirty.into_par_iter();
         #[cfg(not(feature = "multi-threaded"))]

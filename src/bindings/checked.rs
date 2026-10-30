@@ -8,7 +8,7 @@ use crate::{
     geometry::{PointI, RealTwist, TriangleChunk},
     renderer::{WgpuAccelerated, WgpuAcceleratedConfiguration},
     stl::StlMesh,
-    tesselator::{CpuTesselator, CpuTesselatorConfiguration, SUBCHUNK_SIZE},
+    tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext, SUBCHUNK_SIZE},
 };
 
 /// Bytes per pixel of a rendered frame.
@@ -140,9 +140,16 @@ impl CheckedTesselator {
         Ok(())
     }
 
-    pub(crate) fn get_output_geometry_delta(&mut self) -> Result<Option<Vec<TriangleChunk>>> {
+    /// Only the chunks in view of `camera_state` when there is one.
+    pub(crate) fn get_output_geometry_delta(
+        &mut self,
+        camera_state: Option<&CameraState>,
+    ) -> Result<Option<Vec<TriangleChunk>>> {
         self.check_configured()?;
-        Ok(self.tesselator.get_output_geometry_delta())
+        let context = CpuTesselatorContext {
+            camera_frustum: camera_state.map(CameraState::frustum),
+        };
+        Ok(self.tesselator.get_output_geometry_delta(&context))
     }
 }
 

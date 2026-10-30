@@ -40,7 +40,7 @@ int main() {
     const R3vPointI block{4, 4, 2, 0xFFFFFFFFu};
     CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, &block, 1));
     R3vGeometryDelta *delta = nullptr;
-    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
     CHECK(r3v_geometry_delta_chunk_count(delta) == 1);
 
     const uint32_t width = 16, height = 16;

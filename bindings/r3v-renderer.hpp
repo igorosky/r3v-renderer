@@ -491,8 +491,11 @@ R3vStatus r3v_cpu_tesselator_update_input_geometry(R3vCpuTesselator *tesselator,
                                                    size_t count);
 
 /// `Tesselator::get_output_geometry_delta`: the chunks changed since the last
-/// call, or NULL in `*out` when nothing changed.
+/// call, or NULL in `*out` when nothing changed. With a `camera_state`, only
+/// the chunks in its view; the others stay changed for a later call. NULL
+/// `camera_state` returns every changed chunk.
 R3vStatus r3v_cpu_tesselator_get_output_geometry_delta(R3vCpuTesselator *tesselator,
+                                                       const R3vCameraState *camera_state,
                                                        R3vGeometryDelta **out);
 
 /// Frees a tesselator. NULL is ignored.

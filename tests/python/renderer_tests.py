@@ -454,6 +454,20 @@ def tesselator_full_block_is_a_box():
     check([len(c.triangles) for c in delta] == [0])
 
 
+def tesselator_culls_chunks_out_of_view():
+    tesselator = make_tesselator(0.5)
+    # Inside their chunks, 20 chunks apart, so no neighbouring chunks come along.
+    tesselator.update_input_geometry([rr.PointI(4, 4, 2, U32_MAX), rr.PointI(324, 4, 2, U32_MAX)])
+    # Close to the far block, with a far plane well short of the other one.
+    camera = rr.OrbitCamera((163, 2.5, 1.5), 10, 30, 30).with_clip_planes(0.1, 30)
+    state = camera.get_state(1.0)
+    check([c.index for c in tesselator.get_output_geometry_delta(state)] == [(320, 0, 0)])
+    # The chunk out of view stays changed for a call without a camera.
+    check(tesselator.get_output_geometry_delta(camera_state=state) is None)
+    check([c.index for c in tesselator.get_output_geometry_delta()] == [(0, 0, 0)])
+    check(tesselator.get_output_geometry_delta() is None)
+
+
 def tesselator_toggles_marching_cubes():
     tesselator = make_tesselator(1.0)
     check(not tesselator.marching_cubes_enabled())
@@ -798,6 +812,7 @@ TEST_CASES = [
     tesselator_checks_voxel_size,
     tesselator_rejects_unaligned_blocks,
     tesselator_full_block_is_a_box,
+    tesselator_culls_chunks_out_of_view,
     tesselator_toggles_marching_cubes,
     tesselator_takes_voxelizer_points,
     tesselator_rejects_other_objects,
