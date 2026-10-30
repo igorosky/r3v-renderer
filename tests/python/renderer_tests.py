@@ -621,6 +621,31 @@ def renderer_draws_assets():
     check(lit(render_now(renderer, camera, w, h), w, w // 2, h // 2))
 
 
+def renderer_colors_assets():
+    w, h = 32, 32
+    renderer = make_renderer(w, h)
+    (instance,) = renderer.upload_asset(rr.StlMesh([FRONT_TRIANGLE]), 1)
+    camera = rr.OrbitCamera()
+    center = (h // 2 * w + w // 2) * 4
+
+    b, g, r, _ = render_now(renderer, camera, w, h)[center:center + 4]
+    check(r != 0 and b == g == r)
+    white = r
+
+    renderer.set_asset_color(instance, (1.0, 0.0, 0.0))
+    check(tuple(render_now(renderer, camera, w, h)[center:center + 3]) == (0, 0, white))
+
+    with raises(ValueError, "between 0 and 1"):
+        renderer.set_asset_color(instance, (1.5, 0.0, 0.0))
+    with raises(ValueError):
+        renderer.set_asset_color(instance, (float("nan"), 0.0, 0.0))
+    with raises(IndexError):
+        renderer.set_asset_color(instance + 1, (1.0, 0.0, 0.0))
+    with raises(ValueError, "length 3"):
+        renderer.set_asset_color(instance, (1.0, 0.0))
+    check(tuple(render_now(renderer, camera, w, h)[center:center + 3]) == (0, 0, white))
+
+
 def renderer_rejects_unknown_instances():
     renderer = make_renderer(4, 4)
     with raises(IndexError, "instance 0"):
@@ -783,6 +808,7 @@ TEST_CASES = [
     renderer_draws_voxels,
     renderer_update_geometry_takes_the_delta,
     renderer_draws_assets,
+    renderer_colors_assets,
     renderer_rejects_unknown_instances,
     renderer_upload_checks_arguments,
     renderer_resize_restarts_readback,

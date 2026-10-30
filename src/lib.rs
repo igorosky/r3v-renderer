@@ -2,6 +2,7 @@ pub mod camera;
 pub mod geometry;
 pub mod renderer;
 pub mod robot;
+pub mod shapes;
 pub mod stl;
 pub mod tesselator;
 pub mod urdf;
@@ -69,5 +70,6 @@ pub trait Renderer {
         transform: Self::AssetTransform,
     );
     fn set_asset_visibility(&mut self, instance_id: Self::AssetInstanceId, visible: bool);
+    fn set_asset_color(&mut self, instance_id: Self::AssetInstanceId, color: [f32; 3]);
     fn render(&mut self, camera_state: &Self::CameraState, output: &mut [u8]);
 }

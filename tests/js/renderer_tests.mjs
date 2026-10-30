@@ -583,6 +583,27 @@ async function renderer_draws_assets() {
     check(lit(await renderNow(renderer, camera, w, h), w, w / 2, h / 2));
 }
 
+async function renderer_colors_assets() {
+    const [w, h] = [32, 32];
+    const renderer = await makeRenderer(w, h);
+    const [instance] = renderer.upload_asset(new rr.StlMesh([FRONT_TRIANGLE]), 1);
+    const camera = new rr.OrbitCamera();
+    const center = (h / 2 * w + w / 2) * 4;
+    const rgb = (frame) => [frame[center + 2], frame[center + 1], frame[center]];
+
+    const [white, g, b] = rgb(await renderNow(renderer, camera, w, h));
+    check(white !== 0 && g === white && b === white);
+
+    renderer.set_asset_color(instance, [1, 0, 0]);
+    check(same(rgb(await renderNow(renderer, camera, w, h)), [white, 0, 0]));
+
+    await throws(() => renderer.set_asset_color(instance, [1.5, 0, 0]), RangeError, "between 0 and 1");
+    await throws(() => renderer.set_asset_color(instance, [NaN, 0, 0]), RangeError, "between 0 and 1");
+    await throws(() => renderer.set_asset_color(instance + 1, [1, 0, 0]), RangeError, "instance 1");
+    await throws(() => renderer.set_asset_color(instance, [1, 0]), TypeError, "color");
+    check(same(rgb(await renderNow(renderer, camera, w, h)), [white, 0, 0]));
+}
+
 async function renderer_rejects_unknown_instances() {
     const renderer = await makeRenderer(4, 4);
     await throws(() => renderer.set_asset_transform(0, IDENTITY), RangeError, "instance 0");
@@ -803,6 +824,7 @@ const TEST_CASES = [
     renderer_draws_voxels,
     renderer_update_geometry_takes_the_delta,
     renderer_draws_assets,
+    renderer_colors_assets,
     renderer_rejects_unknown_instances,
     renderer_upload_checks_arguments,
     renderer_resize_restarts_readback,

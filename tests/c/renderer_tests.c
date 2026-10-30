@@ -584,6 +584,40 @@ static void renderer_draws_assets(void) {
     r3v_wgpu_renderer_drop(renderer);
 }
 
+static void renderer_colors_assets(void) {
+    enum { W = 32, H = 32 };
+    R3vWgpuRenderer *renderer = make_renderer(W, H);
+    R3vStlMesh *mesh = r3v_stl_mesh_from_triangles(&FRONT_TRIANGLE, 1);
+    uint64_t id;
+    CHECK_OK(r3v_wgpu_renderer_upload_asset(renderer, mesh, 1, &id));
+    r3v_stl_mesh_drop(mesh);
+    R3vOrbitCamera camera = r3v_orbit_camera_default();
+    static uint8_t frame[W * H * 4];
+    const uint8_t *center = frame + ((H / 2) * W + W / 2) * 4;
+
+    render_now(renderer, camera, W, H, frame);
+    uint8_t white = center[2];
+    CHECK(white != 0 && center[0] == white && center[1] == white);
+
+    R3vVec3 red = {1.0f, 0.0f, 0.0f};
+    CHECK_OK(r3v_wgpu_renderer_set_asset_color(renderer, id, red));
+    render_now(renderer, camera, W, H, frame);
+    CHECK(center[2] == white && center[1] == 0 && center[0] == 0);
+
+    R3vVec3 too_bright = {1.5f, 0.0f, 0.0f};
+    CHECK_STATUS(r3v_wgpu_renderer_set_asset_color(renderer, id, too_bright),
+                 R3V_INVALID_ARGUMENT);
+    CHECK_ERROR_CONTAINS("between 0 and 1");
+    R3vVec3 not_a_number = {NAN, 0.0f, 0.0f};
+    CHECK_STATUS(r3v_wgpu_renderer_set_asset_color(renderer, id, not_a_number),
+                 R3V_INVALID_ARGUMENT);
+    CHECK_STATUS(r3v_wgpu_renderer_set_asset_color(renderer, id + 1, red), R3V_OUT_OF_RANGE);
+    render_now(renderer, camera, W, H, frame);
+    CHECK(center[2] == white && center[1] == 0 && center[0] == 0);
+
+    r3v_wgpu_renderer_drop(renderer);
+}
+
 static void renderer_rejects_unknown_instances(void) {
     R3vWgpuRenderer *renderer = make_renderer(4, 4);
     R3vTwist identity = {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
@@ -870,6 +904,7 @@ const TestCase TEST_CASES[] = {
     TEST(renderer_draws_voxels),
     TEST(renderer_update_geometry_checks_arguments),
     TEST(renderer_draws_assets),
+    TEST(renderer_colors_assets),
     TEST(renderer_rejects_unknown_instances),
     TEST(renderer_upload_checks_arguments),
     TEST(renderer_resize_restarts_readback),

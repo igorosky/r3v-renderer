@@ -1,8 +1,3 @@
-//! Frame times with and without frustum culling, on terrain the size of the demo
-//! world seen from a few distances.
-//!
-//!     cargo bench --bench frustum_culling
-
 use std::time::{Duration, Instant};
 
 use r3v_renderer::{
@@ -14,7 +9,6 @@ use r3v_renderer::{
 };
 
 const BRICK: [i32; 3] = [4, 4, 2];
-/// The demo's world, voxel size, window, clip planes and initial camera.
 const WORLD: [i32; 3] = [512, 64, 512];
 const VOXEL_SIZE: f32 = 0.2;
 const SIZE: [u32; 2] = [1200, 800];
@@ -59,7 +53,6 @@ fn millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
-/// Median frame time and the chunks drawn, over a full turn around the world centre.
 fn frames(renderer: &mut WgpuAccelerated, distance: f32, pitch: f32) -> (f64, u32) {
     let centre = cgmath::Point3::new(
         WORLD[0] as f32 / 2.0 * VOXEL_SIZE,
@@ -69,7 +62,6 @@ fn frames(renderer: &mut WgpuAccelerated, distance: f32, pitch: f32) -> (f64, u3
     let mut camera = OrbitCamera::new(centre, distance, 0.0, pitch).with_clip_planes(NEAR, FAR);
     let mut output = vec![0; (SIZE[0] * SIZE[1] * 4) as usize];
     let aspect = SIZE[0] as f32 / SIZE[1] as f32;
-    // Settles the double-buffered read back
     renderer.render(&camera.get_state(aspect), &mut output);
     let mut times = Vec::with_capacity(FRAMES);
     let mut drawn = 0;

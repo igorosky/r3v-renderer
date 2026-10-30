@@ -742,3 +742,80 @@ fn marching_cubes_updates_diagonal_chunks_after_boundary_changes() {
             z: 0
         }));
 }
+
+fn smoothed_triangles(bricks: Vec<PointI>) -> Vec<RealTriangle> {
+    let mut tesselator = CpuTesselator::new();
+    tesselator.configure(CpuTesselatorConfiguration {
+        voxel_size: 1.0,
+        marching_cubes_enabled: true,
+    });
+    tesselator.update_input_geometry(&bricks);
+    tesselator
+        .get_output_geometry_delta()
+        .unwrap()
+        .into_iter()
+        .flat_map(|chunk| chunk.triangles)
+        .collect()
+}
+
+fn smoothed_solids() -> Vec<(&'static str, Vec<PointI>, [f32; 3])> {
+    vec![
+        (
+            "single voxel",
+            vec![brick([0, 0, 0], bit([1, 1, 0]))],
+            [1.5, 1.5, 0.5],
+        ),
+        ("full brick", vec![brick([4, 8, 2], FULL)], [6.0, 10.0, 3.0]),
+        (
+            "box across chunk boundaries",
+            box_bricks([-8, -8, -4], [8, 8, 4], FULL),
+            [0.0, 0.0, 0.0],
+        ),
+    ]
+}
+
+#[test]
+fn marching_cubes_surface_is_closed() {
+    let key = |v: [f32; 3]| v.map(|c| (c * 1.0e4).round() as i64);
+    for (name, bricks, _) in smoothed_solids() {
+        let triangles = smoothed_triangles(bricks);
+        assert!(!triangles.is_empty(), "{name}: no geometry");
+        let mut edges: HashMap<([i64; 3], [i64; 3]), i32> = HashMap::new();
+        for triangle in &triangles {
+            let [a, b, c] = [triangle.v0, triangle.v1, triangle.v2].map(key);
+            if a == b || b == c || c == a {
+                continue;
+            }
+            for (from, to) in [(a, b), (b, c), (c, a)] {
+                *edges.entry((from, to)).or_default() += 1;
+                *edges.entry((to, from)).or_default() -= 1;
+            }
+        }
+        let open = edges.values().filter(|&&balance| balance != 0).count();
+        assert_eq!(
+            open, 0,
+            "{name}: {open} edges are not matched by a reversed edge"
+        );
+    }
+}
+
+#[test]
+fn marching_cubes_triangles_face_out_of_the_solid() {
+    for (name, bricks, center) in smoothed_solids() {
+        for triangle in smoothed_triangles(bricks) {
+            let normal = triangle.normal();
+            if normal.dot(normal) == 0.0 {
+                continue;
+            }
+            let centroid: [f32; 3] =
+                std::array::from_fn(|a| (triangle.v0[a] + triangle.v1[a] + triangle.v2[a]) / 3.0);
+            let outward = [
+                centroid[0] - center[0],
+                centroid[1] - center[1],
+                centroid[2] - center[2],
+            ];
+            let facing = normal.x * outward[0] + normal.y * outward[1] + normal.z * outward[2];
+            assert!(facing > 0.0, "{name}: {triangle:?} faces inwards");
+        }
+    }
+}

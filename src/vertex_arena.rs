@@ -9,7 +9,6 @@ const MIN_CLASS_SHIFT: u32 = 6;
 const INITIAL_VERTEX_CAPACITY: usize = 1 << 16;
 const INITIAL_DRAW_CAPACITY: usize = 64;
 
-/// Axis-aligned box around the vertices of a chunk.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Bounds {
     min: [f32; 3],
@@ -55,7 +54,6 @@ pub(crate) struct VertexArena {
     draw_capacity: usize,
     draws_dirty: bool,
 
-    /// The draws of the chunks the last `cull` found visible.
     visible_draws: Vec<DrawIndirectArgs>,
     visible_buffer: wgpu::Buffer,
     visible_capacity: usize,
@@ -106,8 +104,6 @@ impl VertexArena {
         &self.visible_buffer
     }
 
-    /// Writes the draws of the chunks inside `frustum` to the visible buffer, returning
-    /// how many there are.
     pub fn cull(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frustum: &Frustum) -> u32 {
         self.visible_draws.clear();
         self.visible_draws.extend(
@@ -542,7 +538,6 @@ mod tests {
         }
     }
 
-    /// A triangle per corner of the box from `min` to `max`, tagged with `tag`.
     fn box_vertices(min: [f32; 3], max: [f32; 3], tag: f32) -> Vec<Vertex> {
         (0..24)
             .map(|i| {
@@ -569,7 +564,6 @@ mod tests {
 
         let gpu = TestGpu::new();
         let mut arena = VertexArena::new(&gpu.device);
-        // From (0, 0, 5) towards negative z
         let frustum = OrbitCamera::default().get_state(1.0).frustum();
         let cull = |arena: &mut VertexArena| {
             arena.finish_update(&gpu.device, &gpu.queue);
@@ -604,10 +598,8 @@ mod tests {
         set(&mut arena, 4, &box_vertices([-0.5; 3], [0.5; 3], 4.0));
         assert_eq!(cull(&mut arena), [1.0, 4.0]);
 
-        // Moved into view, its bounds follow
         set(&mut arena, 2, &box_vertices([0.0; 3], [0.5; 3], 2.0));
         assert_eq!(cull(&mut arena), [1.0, 2.0, 4.0]);
-        // Removing the first draw moves the last one into its slot, bounds and all
         arena.remove_chunk(index(1));
         assert_eq!(cull(&mut arena), [2.0, 4.0]);
         set(
@@ -616,7 +608,6 @@ mod tests {
             &box_vertices([-0.2, -0.2, -3.0], [0.2, 0.2, -2.0], 3.0),
         );
         assert_eq!(cull(&mut arena), [2.0, 3.0, 4.0]);
-        // All draws still come from the arena when culling is off
         assert_eq!(arena.draw_count(), 3);
     }
 }

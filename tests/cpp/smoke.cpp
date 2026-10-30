@@ -52,6 +52,7 @@ int main() {
     R3vStlMesh *mesh = r3v_stl_mesh_from_triangles(&triangle, 1);
     uint64_t id = 0;
     CHECK_OK(r3v_wgpu_renderer_upload_asset(renderer, mesh, 1, &id));
+    CHECK_OK(r3v_wgpu_renderer_set_asset_color(renderer, id, R3vVec3{1.0f, 0.5f, 0.0f}));
     CHECK_OK(r3v_wgpu_renderer_set_asset_visibility(renderer, id, false));
     r3v_stl_mesh_drop(mesh);
 

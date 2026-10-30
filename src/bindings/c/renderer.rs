@@ -3,8 +3,8 @@
 use crate::bindings::checked::CheckedRenderer;
 
 use super::{
-    R3vCameraState, R3vStatus, R3vTwist, arg, arg_mut, drop_handle, new_handle, slice_arg_mut,
-    status, stl::R3vStlMesh, take_handle, tesselator::R3vGeometryDelta,
+    R3vCameraState, R3vStatus, R3vTwist, R3vVec3, arg, arg_mut, drop_handle, new_handle,
+    slice_arg_mut, status, stl::R3vStlMesh, take_handle, tesselator::R3vGeometryDelta,
 };
 
 /// Renders voxel geometry and mesh instances on the GPU
@@ -109,6 +109,19 @@ pub extern "C" fn r3v_wgpu_renderer_set_asset_visibility(
     status(|| {
         let renderer = unsafe { arg_mut(renderer, "renderer") }?;
         Ok(renderer.0.set_asset_visibility(instance_id, visible)?)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn r3v_wgpu_renderer_set_asset_color(
+    renderer: *mut R3vWgpuRenderer,
+    instance_id: u64,
+    color: R3vVec3,
+) -> R3vStatus {
+    status(|| {
+        let renderer = unsafe { arg_mut(renderer, "renderer") }?;
+        let R3vVec3 { x, y, z } = color;
+        Ok(renderer.0.set_asset_color(instance_id, [x, y, z])?)
     })
 }
 

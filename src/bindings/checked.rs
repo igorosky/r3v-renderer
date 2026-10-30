@@ -252,6 +252,17 @@ impl CheckedRenderer {
         Ok(())
     }
 
+    pub(crate) fn set_asset_color(&mut self, instance_id: u64, color: [f32; 3]) -> Result<()> {
+        self.check_instance(instance_id)?;
+        if !color.iter().all(|channel| (0.0..=1.0).contains(channel)) {
+            return Err(Error::invalid_argument(format!(
+                "color channels must be between 0 and 1, got {color:?}"
+            )));
+        }
+        self.renderer.set_asset_color(instance_id, color);
+        Ok(())
+    }
+
     /// Bytes of a frame at the configured size.
     pub(crate) fn frame_len(&self) -> Result<usize> {
         let WgpuAcceleratedConfiguration { width, height } =

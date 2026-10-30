@@ -2,7 +2,7 @@ mod common;
 
 use common::{TempDir, close3};
 use r3v_renderer::geometry::RealTriangle;
-use r3v_renderer::stl::read_file;
+use r3v_renderer::stl::{read_bytes, read_file};
 
 type Facet = ([f32; 3], [[f32; 3]; 3]);
 
@@ -225,4 +225,33 @@ fn garbage_is_an_error() {
         let path = dir.write(name, contents);
         assert!(read_file(&path).is_err(), "{name} should fail to parse");
     }
+}
+
+#[test]
+fn binary_with_solid_header_is_read_as_binary() {
+    let facets = tetrahedron();
+    let mut bytes = binary_stl(&facets);
+    bytes[..6].copy_from_slice(b"solid ");
+    let mesh = read_bytes(&bytes).unwrap();
+    assert_eq!(mesh.triangles.len(), facets.len());
+}
+
+#[test]
+fn read_bytes_matches_read_file() {
+    let dir = TempDir::new("stl");
+    let facets = tetrahedron();
+    for path in write_both(&dir, &facets) {
+        let bytes = std::fs::read(&path).unwrap();
+        let from_bytes = read_bytes(&bytes).unwrap();
+        let from_file = read_file(&path).unwrap();
+        assert_eq!(from_bytes.triangles.len(), from_file.triangles.len());
+        for (a, b) in from_bytes.triangles.iter().zip(&from_file.triangles) {
+            assert_eq!([a.v0, a.v1, a.v2], [b.v0, b.v1, b.v2]);
+        }
+    }
+}
+
+#[test]
+fn read_bytes_rejects_garbage() {
+    assert!(read_bytes(b"definitely not an stl").is_err());
 }

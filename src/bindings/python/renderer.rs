@@ -4,7 +4,7 @@ use pyo3::{buffer::PyBuffer, exceptions::PyValueError, prelude::*};
 
 use crate::bindings::checked::CheckedRenderer;
 
-use super::{PyCameraState, PyTwist, stl::PyStlMesh, tesselator::PyGeometryDelta};
+use super::{PyCameraState, PyTwist, Vec3, stl::PyStlMesh, tesselator::PyGeometryDelta};
 
 /// `renderer::WgpuAcceleratedConfiguration`: the frame size in pixels.
 #[pyclass(
@@ -101,6 +101,11 @@ impl PyWgpuRenderer {
     /// returned by `upload_asset`.
     fn set_asset_visibility(&mut self, instance_id: u64, visible: bool) -> PyResult<()> {
         Ok(self.renderer.set_asset_visibility(instance_id, visible)?)
+    }
+
+    fn set_asset_color(&mut self, instance_id: u64, color: Vec3) -> PyResult<()> {
+        let (r, g, b) = color;
+        Ok(self.renderer.set_asset_color(instance_id, [r, g, b])?)
     }
 
     /// `Renderer::render`: renders a frame seen by `camera_state` and writes

@@ -48,33 +48,28 @@ impl CameraState {
     }
 }
 
-/// The planes bounding what a camera sees, normals pointing inwards.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Frustum {
     planes: [cgmath::Vector4<f32>; 6],
 }
 
 impl Frustum {
-    /// Of a matrix projecting to wgpu clip space, where depth goes from 0 to w.
     pub fn from_view_proj(view_proj: &cgmath::Matrix4<f32>) -> Self {
         let row = |i| view_proj.row(i);
         Self {
             planes: [
-                row(3) + row(0), // left
-                row(3) - row(0), // right
-                row(3) + row(1), // bottom
-                row(3) - row(1), // top
-                row(2),          // near
-                row(3) - row(2), // far
+                row(3) + row(0),
+                row(3) - row(0),
+                row(3) + row(1),
+                row(3) - row(1),
+                row(2),
+                row(3) - row(2),
             ],
         }
     }
 
-    /// Whether the axis-aligned box from `min` to `max` may be visible: boxes near a
-    /// corner of the frustum can pass while outside it, never the other way round.
     pub fn intersects_box(&self, min: [f32; 3], max: [f32; 3]) -> bool {
         self.planes.iter().all(|plane| {
-            // The corner furthest along the plane's normal
             let corner = cgmath::Vector4::new(
                 if plane.x >= 0.0 { max[0] } else { min[0] },
                 if plane.y >= 0.0 { max[1] } else { min[1] },

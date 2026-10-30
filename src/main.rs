@@ -6,7 +6,7 @@ use r3v_renderer::{
     geometry::{self, PointI, RealTwist},
     renderer::{self, WgpuAccelerated},
     robot::UrdfRobot,
-    stl,
+    shapes, stl,
     tesselator::{CpuTesselator, CpuTesselatorConfiguration},
     urdf,
 };
@@ -79,6 +79,7 @@ const ROBOT_CONTINUOUS_SWEEP: f32 = 0.4;
 const ROBOT_FOCUS_DISTANCE: f32 = 3.5;
 /// Joint mounting the manipulator on the rover: every link below it belongs to the arm.
 const ROBOT_ARM_MOUNT_JOINT: &str = "mani_base_offset_joint";
+const ROBOT_SHOW_SHAPES: bool = false;
 
 // Camera framing is relative to the voxel world, so it follows VOXEL_SIZE.
 const CAMERA_DISTANCE: f32 = 160.0 * VOXEL_SIZE;
@@ -607,44 +608,56 @@ impl RobotScene {
         let description = urdf::read_file(urdf_path)?;
         let urdf_dir = urdf_path.parent().unwrap_or(Path::new("."));
 
-        // Visuals sharing a mesh file and scale share one upload and differ only by instance transform.
-        let mut groups: Vec<((String, [u32; 3]), Vec<(String, usize)>)> = Vec::new();
+        type Visuals = Vec<((String, usize), Option<[f32; 3]>)>;
+        let mut groups: Vec<(&urdf::UrdfGeometry, Visuals)> = Vec::new();
         let mut skipped = 0;
         for link in &description.links {
             for (visual_index, visual) in link.visuals.iter().enumerate() {
-                let Some(urdf::UrdfGeometry::Mesh(mesh)) = &visual.geometry else {
+                let Some(geometry) = &visual.geometry else {
                     skipped += 1;
                     continue;
                 };
-                let scale = mesh.scale.unwrap_or(urdf::Vector3 {
-                    x: 1.0,
-                    y: 1.0,
-                    z: 1.0,
-                });
-                let key = (
-                    mesh.filename.clone(),
-                    [scale.x, scale.y, scale.z].map(f32::to_bits),
-                );
-                let visual_key = (link.name.clone(), visual_index);
-                match groups.iter_mut().find(|(group_key, _)| *group_key == key) {
+                let color = visual
+                    .material
+                    .as_ref()
+                    .and_then(|material| material.color.as_ref())
+                    .map(|color| [color.rgba[0], color.rgba[1], color.rgba[2]]);
+                let visual_key = ((link.name.clone(), visual_index), color);
+                match groups.iter_mut().find(|(group, _)| *group == geometry) {
                     Some((_, visuals)) => visuals.push(visual_key),
-                    None => groups.push((key, vec![visual_key])),
+                    None => groups.push((geometry, vec![visual_key])),
                 }
             }
         }
 
         let mut instances = Vec::new();
         let mut triangle_count = 0;
-        for ((filename, scale), visuals) in groups {
-            let path = resolve_mesh_file(&filename, urdf_dir);
-            let mut mesh = stl::read_file(&path)?;
-            scale_mesh(
-                &mut mesh,
-                scale.map(f32::from_bits).map(|axis| axis * placement.scale),
-            );
+        for (geometry, visuals) in groups {
+            let mut mesh = match geometry {
+                urdf::UrdfGeometry::Mesh(mesh) => {
+                    let path = resolve_mesh_file(&mesh.filename, urdf_dir);
+                    let mut stl_mesh = stl::read_file(&path)?;
+                    let scale = mesh
+                        .scale
+                        .map_or([1.0; 3], |scale| [scale.x, scale.y, scale.z]);
+                    scale_mesh(&mut stl_mesh, scale);
+                    stl_mesh
+                }
+                primitive => shapes::tessellate(primitive).expect("only meshes are files"),
+            };
+            scale_mesh(&mut mesh, [placement.scale; 3]);
             triangle_count += mesh.triangles.len();
+            let is_shape = !matches!(geometry, urdf::UrdfGeometry::Mesh(_));
             let ids = renderer.upload_asset(mesh, visuals.len());
-            instances.extend(visuals.into_iter().zip(ids));
+            for ((visual_key, color), id) in visuals.into_iter().zip(ids) {
+                if let Some(color) = color {
+                    renderer.set_asset_color(id, color);
+                }
+                if is_shape && !ROBOT_SHOW_SHAPES {
+                    renderer.set_asset_visibility(id, false);
+                }
+                instances.push((visual_key, id));
+            }
         }
 
         let parent_links = description
@@ -657,10 +670,6 @@ impl RobotScene {
             .iter()
             .enumerate()
             .filter_map(|(index, joint)| {
-                // This joint is a mounting adjustment, not an animated articulation.
-                if joint.name == ROBOT_ARM_MOUNT_JOINT {
-                    return None;
-                }
                 let phase = index as f32 * 0.7;
                 let motion = match (joint.joint_type.as_str(), joint.limit) {
                     // Only leaf links (wheels) spin freely; spinning a rocker would lift its wheels off the ground.
@@ -672,13 +681,11 @@ impl RobotScene {
                         center: 0.0,
                         amplitude: ROBOT_CONTINUOUS_SWEEP,
                     },
-                    ("revolute" | "prismatic", Some(limit)) if limit.upper > limit.lower => {
-                        JointMotion::Sweep {
-                            phase,
-                            center: (limit.upper + limit.lower) * 0.5,
-                            amplitude: (limit.upper - limit.lower) * 0.5,
-                        }
-                    }
+                    ("revolute", Some(limit)) if limit.upper > limit.lower => JointMotion::Sweep {
+                        phase,
+                        center: (limit.upper + limit.lower) * 0.5,
+                        amplitude: (limit.upper - limit.lower) * 0.5,
+                    },
                     _ => return None,
                 };
                 Some((joint.name.clone(), motion))
@@ -698,7 +705,7 @@ impl RobotScene {
             .find(|link| !link.visuals.is_empty())
             .map(|link| link.name.clone());
         println!(
-            "Loaded robot '{}' in {:.0} ms: {} visuals ({} skipped, only meshes are supported), {} triangles, {} animated joints",
+            "Loaded robot '{}' in {:.0} ms: {} visuals ({} without geometry skipped), {} triangles, {} animated joints",
             description.name,
             load_start.elapsed().as_secs_f32() * 1000.0,
             instances.len(),
