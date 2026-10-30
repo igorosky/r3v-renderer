@@ -1,6 +1,6 @@
 //! `renderer::WgpuAccelerated` (trait `Renderer`).
 
-use crate::bindings::checked::CheckedRenderer;
+use crate::{bindings::checked::CheckedRenderer, renderer::TerrainColoring};
 
 use super::{
     R3vCameraState, R3vStatus, R3vTwist, R3vVec3, arg, arg_mut, drop_handle, new_handle,
@@ -10,6 +10,69 @@ use super::{
 /// Renders voxel geometry and mesh instances on the GPU
 /// (`renderer::WgpuAccelerated`).
 pub struct R3vWgpuRenderer(CheckedRenderer);
+
+/// `renderer::TerrainColoring`: what colors the terrain. Start from
+/// `r3v_terrain_coloring_default`, zeros are not a valid coloring.
+///
+/// The position in the colormap of a height at the distance `d` from the
+/// neutral height is
+/// `0.5 + 0.5 * sign(d) * tanh(height_gain * ln(1 + |d| / height_knee))`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct R3vTerrainColoring {
+    /// Colors the terrain by its height on the world's Y axis, as on a
+    /// topographic map, rather than by the distance along the camera's
+    /// forward axis.
+    pub height_coloring_enabled: bool,
+    /// Measures heights from `robot_height` rather than from the world's
+    /// Y = 0.
+    pub relative_to_robot: bool,
+    /// Where the robot is on the world's Y axis, in metres. To follow it call
+    /// `r3v_wgpu_renderer_configure` again, which at an unchanged frame size
+    /// only changes the settings. Has to be finite.
+    pub robot_height: f32,
+    /// Neutral height above what heights are measured from, in metres. Has to
+    /// be finite.
+    pub height_offset: f32,
+    /// Distance from the neutral height, in metres, from which on colors
+    /// follow its logarithm rather than the distance itself. Has to be
+    /// positive.
+    pub height_knee: f32,
+    /// How fast colors run towards the ends of the colormap. Has to be
+    /// positive.
+    pub height_gain: f32,
+    /// Flat bands of color the colormap is split into, 0 for a smooth
+    /// gradient.
+    pub height_bands: u32,
+}
+
+impl From<R3vTerrainColoring> for TerrainColoring {
+    fn from(coloring: R3vTerrainColoring) -> Self {
+        Self {
+            height_coloring_enabled: coloring.height_coloring_enabled,
+            relative_to_robot: coloring.relative_to_robot,
+            robot_height: coloring.robot_height,
+            height_offset: coloring.height_offset,
+            height_knee: coloring.height_knee,
+            height_gain: coloring.height_gain,
+            height_bands: coloring.height_bands,
+        }
+    }
+}
+
+impl From<TerrainColoring> for R3vTerrainColoring {
+    fn from(coloring: TerrainColoring) -> Self {
+        Self {
+            height_coloring_enabled: coloring.height_coloring_enabled,
+            relative_to_robot: coloring.relative_to_robot,
+            robot_height: coloring.robot_height,
+            height_offset: coloring.height_offset,
+            height_knee: coloring.height_knee,
+            height_gain: coloring.height_gain,
+            height_bands: coloring.height_bands,
+        }
+    }
+}
 
 /// `renderer::WgpuAcceleratedConfiguration`.
 #[repr(C)]
@@ -25,6 +88,15 @@ pub struct R3vWgpuRendererConfiguration {
     /// Distance along the camera's forward axis over which the voxel colormap
     /// runs once. Has to be positive.
     pub color_depth_range: f32,
+    /// Checked whether or not heights color the terrain yet.
+    pub terrain_coloring: R3vTerrainColoring,
+}
+
+/// `TerrainColoring::default`: the terrain colored by depth, and if turned on
+/// by height, from the world's Y = 0, as a smooth gradient.
+#[unsafe(no_mangle)]
+pub extern "C" fn r3v_terrain_coloring_default() -> R3vTerrainColoring {
+    TerrainColoring::default().into()
 }
 
 /// `WgpuAccelerated::new`: blocks until a device of the default GPU adapter
@@ -35,8 +107,10 @@ pub extern "C" fn r3v_wgpu_renderer_create() -> *mut R3vWgpuRenderer {
     new_handle(|| Ok(R3vWgpuRenderer(CheckedRenderer::new()?)))
 }
 
-/// `Renderer::configure`: sets the frame size, the background color and the
-/// colormap depth range. Both sides have to be between 1 and 8192.
+/// `Renderer::configure`: sets the frame size, the background color, the
+/// colormap depth range and the terrain's coloring. Both sides have to be
+/// between 1 and 8192. At an unchanged frame size only the settings change,
+/// from the next frame on.
 #[unsafe(no_mangle)]
 pub extern "C" fn r3v_wgpu_renderer_configure(
     renderer: *mut R3vWgpuRenderer,
@@ -50,6 +124,7 @@ pub extern "C" fn r3v_wgpu_renderer_configure(
             configuration.height,
             [x, y, z],
             configuration.color_depth_range,
+            configuration.terrain_coloring.into(),
         )?)
     })
 }

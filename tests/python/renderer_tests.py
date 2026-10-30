@@ -84,7 +84,7 @@ def project(state, point):
 
 CLASSES = [
     "CameraState", "CpuTesselator", "CpuTesselatorConfiguration", "GeometryDelta", "OrbitCamera", "PointI",
-    "RobotTransforms", "StlMesh", "Triangle", "TriangleChunk", "Twist", "UrdfBox", "UrdfCapsule",
+    "RobotTransforms", "StlMesh", "TerrainColoring", "Triangle", "TriangleChunk", "Twist", "UrdfBox", "UrdfCapsule",
     "UrdfColor", "UrdfCylinder", "UrdfDescription", "UrdfJoint", "UrdfJointLimit", "UrdfLink", "UrdfMaterial",
     "UrdfMesh", "UrdfOrigin", "UrdfRobot", "UrdfSphere", "UrdfVisual", "WgpuRenderer", "WgpuRendererConfiguration",
 ]
@@ -260,13 +260,25 @@ def value_classes_have_properties():
     check((configuration.width, configuration.height) == (640, 480))
     check(configuration.background_color == (0.0, 0.0, 0.0))
     check(configuration.color_depth_range == 50.0)
+    check(configuration.terrain_coloring == rr.TerrainColoring())
     check(repr(configuration)
-          == "WgpuRendererConfiguration(width=640, height=480, background_color=(0.0, 0.0, 0.0), color_depth_range=50.0)")
+          == "WgpuRendererConfiguration(width=640, height=480, background_color=(0.0, 0.0, 0.0), color_depth_range=50.0, "
+             "terrain_coloring=TerrainColoring(height_coloring_enabled=False, relative_to_robot=False, robot_height=0.0, "
+             "height_offset=0.0, height_knee=0.5, height_gain=0.35, height_bands=0))")
     configuration.background_color = (1, 0.5, 0)
     configuration.color_depth_range = 10
     check(configuration == rr.WgpuRendererConfiguration(640, 480, (1.0, 0.5, 0.0), 10.0))
     with raises(OverflowError):
         rr.WgpuRendererConfiguration(-1, 1)
+    coloring = rr.TerrainColoring(height_coloring_enabled=True, height_knee=2.0)
+    check((coloring.height_coloring_enabled, coloring.relative_to_robot) == (True, False))
+    check((coloring.height_knee, coloring.height_bands) == (2.0, 0))
+    check(math.isclose(coloring.height_gain, 0.35, rel_tol=1e-6))
+    coloring.robot_height = 3
+    coloring.height_bands = 8
+    configuration.terrain_coloring = coloring
+    check(configuration.terrain_coloring
+          == rr.TerrainColoring(True, False, 3.0, 0.0, 2.0, 0.35, 8))
 
     state = rr.CameraState([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], (0, 0, 5), (0, 0, -1))
     check(state.view_proj[3] == [0.0, 0.0, 0.0, 1.0])
@@ -533,6 +545,20 @@ def renderer_configure_checks_colors():
             renderer.configure(rr.WgpuRendererConfiguration(8, 8, background_color=background_color))
 
 
+def renderer_configure_checks_terrain_coloring():
+    renderer = make_renderer(8, 8)
+    for bad in (0.0, -1.0, math.nan, math.inf):
+        with raises(ValueError, "height knee"):
+            renderer.configure(rr.WgpuRendererConfiguration(8, 8, terrain_coloring=rr.TerrainColoring(height_knee=bad)))
+        with raises(ValueError, "height gain"):
+            renderer.configure(rr.WgpuRendererConfiguration(8, 8, terrain_coloring=rr.TerrainColoring(height_gain=bad)))
+    for bad in (math.nan, math.inf, -math.inf):
+        with raises(ValueError, "height offset"):
+            renderer.configure(rr.WgpuRendererConfiguration(8, 8, terrain_coloring=rr.TerrainColoring(height_offset=bad)))
+        with raises(ValueError, "robot height"):
+            renderer.configure(rr.WgpuRendererConfiguration(8, 8, terrain_coloring=rr.TerrainColoring(robot_height=bad)))
+
+
 def renderer_clears_to_background_color():
     w = h = 8
     renderer = make_renderer(w, h)
@@ -561,6 +587,38 @@ def renderer_color_depth_range_recolors_voxels():
     renderer.configure(rr.WgpuRendererConfiguration(w, h, color_depth_range=5.0))
     blue, _, red = render_now(renderer, camera, w, h)[centre:centre + 3]
     check(red > blue)
+
+
+def renderer_height_coloring_recolors_voxels():
+    w = h = 32
+    renderer = make_renderer(w, h)
+    add_block(renderer, 1.0, 4, 4, 2)
+    camera = rr.OrbitCamera((6, 6, 3), 10)
+    centre = 4 * ((h // 2) * w + w // 2)
+    depth = render_now(renderer, camera, w, h)
+
+    def rendered(**coloring):
+        renderer.configure(rr.WgpuRendererConfiguration(w, h, terrain_coloring=rr.TerrainColoring(**coloring)))
+        return render_now(renderer, camera, w, h)
+
+    def blue_and_red(**coloring):
+        blue, _, red = rendered(height_coloring_enabled=True, **coloring)[centre:centre + 3]
+        return blue, red
+
+    # 6 m above the world's 0: the colormap's warm side (BGRA).
+    blue, red = blue_and_red()
+    check(red > blue)
+    # The robot only counts when heights are relative to it.
+    blue, red = blue_and_red(robot_height=11)
+    check(red > blue)
+    # 5 m below the robot: the colormap's blue side, at the same frame size.
+    blue, red = blue_and_red(robot_height=11, relative_to_robot=True)
+    check(blue > red)
+    # The offset moves the neutral height back below the block.
+    blue, red = blue_and_red(robot_height=11, relative_to_robot=True, height_offset=-10)
+    check(red > blue)
+    # Turned off it is the frame of before.
+    check(rendered(height_knee=2) == depth)
 
 
 def renderer_render_checks_arguments():
@@ -826,8 +884,10 @@ TEST_CASES = [
     tesselator_rejects_other_objects,
     renderer_configure_checks_size,
     renderer_configure_checks_colors,
+    renderer_configure_checks_terrain_coloring,
     renderer_clears_to_background_color,
     renderer_color_depth_range_recolors_voxels,
+    renderer_height_coloring_recolors_voxels,
     renderer_render_checks_arguments,
     renderer_writes_any_byte_buffer,
     renderer_first_frame_is_zeros,

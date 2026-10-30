@@ -52,6 +52,29 @@ export interface TriangleLike { v0: Vec3; v1: Vec3; v2: Vec3 }
 /** A `CameraState` or a plain object. */
 export interface CameraStateLike { view_proj: Mat4; position: Vec3; forward: Vec3 }
 
+/** What colors the terrain (`renderer::TerrainColoring`), a plain object.
+ * What is left out takes its default. With `height_coloring_enabled` it is
+ * the height on the world's Y axis, as on a topographic map, rather than the
+ * distance along the camera's forward axis. Heights are measured from the
+ * world's Y = 0, or with `relative_to_robot` from `robot_height`; to follow
+ * the robot `configure` the renderer again, which at an unchanged frame size
+ * only changes the settings.
+ *
+ * The position in the colormap of a height at the distance `d` from the
+ * neutral height, `height_offset` above what heights are measured from, is
+ * `0.5 + 0.5 * sign(d) * tanh(height_gain * ln(1 + |d| / height_knee))`.
+ * `height_bands` splits the colormap into flat bands, 0 for a smooth
+ * gradient. */
+export interface TerrainColoring {
+    height_coloring_enabled?: boolean;
+    relative_to_robot?: boolean;
+    robot_height?: number;
+    height_offset?: number;
+    height_knee?: number;
+    height_gain?: number;
+    height_bands?: number;
+}
+
 /** All triangles of one chunk of 16x16x16 voxels, whose origin in voxels is
  * `index`. The triangles are in world units, counter-clockwise when seen from
  * their front side. They replace what the chunk had before, no triangles

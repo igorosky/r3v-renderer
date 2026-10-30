@@ -137,14 +137,41 @@ class TriangleChunk:
 # ---------------------------------------------------------------- renderer
 
 @final
+class TerrainColoring:
+    __hash__: ClassVar[None]  # type: ignore[assignment]
+    height_coloring_enabled: bool
+    relative_to_robot: bool
+    robot_height: float
+    height_offset: float
+    height_knee: float
+    height_gain: float
+    height_bands: int
+    def __new__(
+        cls,
+        height_coloring_enabled: bool = False,
+        relative_to_robot: bool = False,
+        robot_height: float = 0.0,
+        height_offset: float = 0.0,
+        height_knee: float = ...,
+        height_gain: float = ...,
+        height_bands: int = 0,
+    ) -> TerrainColoring: ...
+
+@final
 class WgpuRendererConfiguration:
     __hash__: ClassVar[None]  # type: ignore[assignment]
     width: int
     height: int
     background_color: _Vec3
     color_depth_range: float
+    terrain_coloring: TerrainColoring
     def __new__(
-        cls, width: int, height: int, background_color: _Vec3 = ..., color_depth_range: float = ...
+        cls,
+        width: int,
+        height: int,
+        background_color: _Vec3 = ...,
+        color_depth_range: float = ...,
+        terrain_coloring: TerrainColoring = ...,
     ) -> WgpuRendererConfiguration: ...
 
 @final

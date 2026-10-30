@@ -65,8 +65,8 @@ R3vVec3 vec3(float x, float y, float z);
 const char *temp_path(const char *name);
 void write_file(const char *path, const char *contents);
 
-/* A width x height configuration with a black background and the default
- * colormap depth range. */
+/* A width x height configuration with a black background, the default
+ * colormap depth range and the default terrain coloring. */
 R3vWgpuRendererConfiguration renderer_configuration(uint32_t width, uint32_t height);
 
 /* Creates a renderer configured to width x height. Fails the test on

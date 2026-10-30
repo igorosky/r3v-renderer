@@ -4,7 +4,7 @@ use r3v_renderer::{
     Camera, Renderer, Robot, Tesselator,
     camera::OrbitCamera,
     geometry::{self, PointI, RealTwist},
-    renderer::{self, HeightOrigin, TerrainColorMode, TerrainColoring, WgpuAccelerated},
+    renderer::{self, TerrainColoring, WgpuAccelerated},
     robot::UrdfRobot,
     stl,
     tesselator::{CpuTesselator, CpuTesselatorConfiguration},
@@ -241,7 +241,7 @@ impl Demo {
         let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
         let placement = robot_placement(&world);
         // The robot stays at its site, which is reserved even when no robot gets loaded.
-        renderer.set_robot_height(placement.translation.y);
+        let robot_height = placement.translation.y;
         let robot = match RobotScene::load(urdf_path, placement, &mut renderer) {
             Ok(robot) => Some(robot),
             Err(err) => {
@@ -263,7 +263,10 @@ impl Demo {
             auto_orbit: true,
             background_index: 0,
             color_depth_range: renderer::DEFAULT_COLOR_DEPTH_RANGE,
-            terrain_coloring: TerrainColoring::default(),
+            terrain_coloring: TerrainColoring {
+                robot_height,
+                ..TerrainColoring::default()
+            },
             width: 0,
             height: 0,
             pixel_buffer: Vec::new(),
@@ -302,6 +305,7 @@ impl Demo {
                 height: self.height,
                 background_color: BACKGROUNDS[self.background_index].1,
                 color_depth_range: self.color_depth_range,
+                terrain_coloring: self.terrain_coloring,
             });
     }
 
@@ -334,25 +338,26 @@ impl Demo {
 
     fn update_terrain_coloring(&mut self, change: impl FnOnce(&mut TerrainColoring)) {
         change(&mut self.terrain_coloring);
-        self.renderer.set_terrain_coloring(self.terrain_coloring);
+        self.configure_renderer();
         println!("Terrain coloring: {}", self.terrain_coloring_summary());
     }
 
     fn terrain_coloring_summary(&self) -> String {
         let coloring = &self.terrain_coloring;
-        match coloring.mode {
-            TerrainColorMode::Depth => "depth".to_owned(),
-            TerrainColorMode::Height => format!(
-                "height from the {}, knee {:.2} m, gain {:.2}, {} bands",
-                match coloring.height_origin {
-                    HeightOrigin::World => "world",
-                    HeightOrigin::Robot => "robot",
-                },
-                coloring.height_knee,
-                coloring.height_gain,
-                coloring.height_bands,
-            ),
+        if !coloring.height_coloring_enabled {
+            return "depth".to_owned();
         }
+        format!(
+            "height from the {}, knee {:.2} m, gain {:.2}, {} bands",
+            if coloring.relative_to_robot {
+                "robot"
+            } else {
+                "world"
+            },
+            coloring.height_knee,
+            coloring.height_gain,
+            coloring.height_bands,
+        )
     }
 
     fn redraw(&mut self) {
@@ -473,16 +478,10 @@ impl Demo {
             _ if repeat => {}
             KeyCode::KeyB => self.cycle_background(),
             KeyCode::KeyH => self.update_terrain_coloring(|coloring| {
-                coloring.mode = match coloring.mode {
-                    TerrainColorMode::Depth => TerrainColorMode::Height,
-                    TerrainColorMode::Height => TerrainColorMode::Depth,
-                };
+                coloring.height_coloring_enabled = !coloring.height_coloring_enabled;
             }),
             KeyCode::KeyG => self.update_terrain_coloring(|coloring| {
-                coloring.height_origin = match coloring.height_origin {
-                    HeightOrigin::World => HeightOrigin::Robot,
-                    HeightOrigin::Robot => HeightOrigin::World,
-                };
+                coloring.relative_to_robot = !coloring.relative_to_robot;
             }),
             KeyCode::KeyV => self.update_terrain_coloring(|coloring| {
                 let index = HEIGHT_BANDS

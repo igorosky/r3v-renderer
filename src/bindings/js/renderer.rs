@@ -9,19 +9,44 @@ use wasm_bindgen_futures::future_to_promise;
 use crate::{
     bindings::checked::CheckedRenderer,
     camera::CameraState,
-    renderer::{DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE},
+    renderer::{DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE, TerrainColoring},
 };
 
 use super::{
-    Result, U32_MAX, error, f32_property, index, integer_property, number, numbers, property,
-    range_error, stl::JsStlMesh, tesselator::JsGeometryDelta, twist, type_error, vector,
-    vector_property,
+    Result, U32_MAX, What, error, f32_property, flag_property, index, integer_property, number,
+    numbers, object, property, range_error, stl::JsStlMesh, tesselator::JsGeometryDelta, twist,
+    type_error, vector, vector_property,
 };
 
+/// `renderer::TerrainColoring` from what `value` has of its properties.
+fn terrain_coloring(value: &JsValue, what: What) -> Result<TerrainColoring> {
+    let default = TerrainColoring::default();
+    let number_or = |key: &str, default: f32| {
+        if property(value, key, what)?.is_undefined() {
+            Ok(default)
+        } else {
+            f32_property(value, key, what)
+        }
+    };
+    Ok(TerrainColoring {
+        height_coloring_enabled: flag_property(value, "height_coloring_enabled", what)?,
+        relative_to_robot: flag_property(value, "relative_to_robot", what)?,
+        robot_height: number_or("robot_height", default.robot_height)?,
+        height_offset: number_or("height_offset", default.height_offset)?,
+        height_knee: number_or("height_knee", default.height_knee)?,
+        height_gain: number_or("height_gain", default.height_gain)?,
+        height_bands: if property(value, "height_bands", what)?.is_undefined() {
+            default.height_bands
+        } else {
+            integer_property(value, "height_bands", 0.0, U32_MAX, what)? as u32
+        },
+    })
+}
+
 /// `renderer::WgpuAcceleratedConfiguration`: the frame size in pixels, the
-/// opaque sRGB background color (components between 0 and 1) and the
-/// distance along the camera's forward axis over which the voxel colormap
-/// runs once.
+/// opaque sRGB background color (components between 0 and 1), the distance
+/// along the camera's forward axis over which the voxel colormap runs once
+/// and the terrain's coloring.
 #[wasm_bindgen(js_name = WgpuRendererConfiguration)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct JsWgpuRendererConfiguration {
@@ -29,17 +54,22 @@ pub struct JsWgpuRendererConfiguration {
     pub height: u32,
     background_color: [f32; 3],
     pub color_depth_range: f32,
+    terrain_coloring: TerrainColoring,
 }
 
 #[wasm_bindgen(js_class = WgpuRendererConfiguration)]
 impl JsWgpuRendererConfiguration {
-    /// Without them the background is black and the depth range 50.
+    /// Without them the background is black, the depth range 50 and the
+    /// terrain colored by depth.
     #[wasm_bindgen(constructor)]
     pub fn new(
         width: u32,
         height: u32,
         #[wasm_bindgen(unchecked_optional_param_type = "Vec3")] background_color: Option<JsValue>,
         #[wasm_bindgen(unchecked_optional_param_type = "number")] color_depth_range: Option<
+            JsValue,
+        >,
+        #[wasm_bindgen(unchecked_optional_param_type = "TerrainColoring")] terrain_coloring: Option<
             JsValue,
         >,
     ) -> Result<JsWgpuRendererConfiguration> {
@@ -53,6 +83,12 @@ impl JsWgpuRendererConfiguration {
             color_depth_range: match color_depth_range {
                 Some(range) => number(&range, &|| "color_depth_range".to_owned())? as f32,
                 None => DEFAULT_COLOR_DEPTH_RANGE,
+            },
+            terrain_coloring: match terrain_coloring {
+                Some(coloring) => {
+                    self::terrain_coloring(&coloring, &|| "terrain_coloring".to_owned())?
+                }
+                None => TerrainColoring::default(),
             },
         })
     }
@@ -68,6 +104,34 @@ impl JsWgpuRendererConfiguration {
         #[wasm_bindgen(unchecked_param_type = "Vec3")] background_color: JsValue,
     ) -> Result<()> {
         self.background_color = vector(&background_color, &|| "background_color".to_owned())?;
+        Ok(())
+    }
+
+    /// A plain object: changing it changes nothing here, assign it back.
+    #[wasm_bindgen(getter, unchecked_return_type = "Required<TerrainColoring>")]
+    pub fn terrain_coloring(&self) -> JsValue {
+        let coloring = &self.terrain_coloring;
+        object(&[
+            (
+                "height_coloring_enabled",
+                coloring.height_coloring_enabled.into(),
+            ),
+            ("relative_to_robot", coloring.relative_to_robot.into()),
+            ("robot_height", coloring.robot_height.into()),
+            ("height_offset", coloring.height_offset.into()),
+            ("height_knee", coloring.height_knee.into()),
+            ("height_gain", coloring.height_gain.into()),
+            ("height_bands", coloring.height_bands.into()),
+        ])
+        .into()
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_terrain_coloring(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "TerrainColoring")] coloring: JsValue,
+    ) -> Result<()> {
+        self.terrain_coloring = terrain_coloring(&coloring, &|| "terrain_coloring".to_owned())?;
         Ok(())
     }
 }
@@ -195,14 +259,17 @@ impl JsWgpuRenderer {
         })))))
     }
 
-    /// `Renderer::configure`: sets the frame size, the background color and
-    /// the colormap depth range (black and 50 when left out). `RangeError`
-    /// unless both sides are between 1 and 8192, the color components between
-    /// 0 and 1 and the depth range positive.
+    /// `Renderer::configure`: sets the frame size, the background color, the
+    /// colormap depth range and the terrain's coloring (black, 50 and by
+    /// depth when left out). At an unchanged frame size only the settings
+    /// change, from the next frame on. `RangeError` unless both sides are
+    /// between 1 and 8192, the color components between 0 and 1, the depth
+    /// range, `height_knee` and `height_gain` positive and `height_offset` and
+    /// `robot_height` finite.
     pub fn configure(
         &self,
         #[wasm_bindgen(
-            unchecked_param_type = "{ width: number; height: number; background_color?: Vec3; color_depth_range?: number }"
+            unchecked_param_type = "{ width: number; height: number; background_color?: Vec3; color_depth_range?: number; terrain_coloring?: TerrainColoring }"
         )]
         configuration: JsValue,
     ) -> Result<()> {
@@ -221,8 +288,20 @@ impl JsWgpuRenderer {
             } else {
                 f32_property(&configuration, "color_depth_range", &what)?
             };
+        let coloring = property(&configuration, "terrain_coloring", &what)?;
+        let terrain_coloring = if coloring.is_undefined() {
+            TerrainColoring::default()
+        } else {
+            terrain_coloring(&coloring, &|| "configuration.terrain_coloring".to_owned())?
+        };
         self.with(|renderer| {
-            Ok(renderer.configure(width, height, background_color, color_depth_range)?)
+            Ok(renderer.configure(
+                width,
+                height,
+                background_color,
+                color_depth_range,
+                terrain_coloring,
+            )?)
         })
     }
 

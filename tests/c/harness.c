@@ -64,7 +64,8 @@ void write_file(const char *path, const char *contents) {
 }
 
 R3vWgpuRendererConfiguration renderer_configuration(uint32_t width, uint32_t height) {
-    R3vWgpuRendererConfiguration configuration = {width, height, {0.0f, 0.0f, 0.0f}, 50.0f};
+    R3vWgpuRendererConfiguration configuration = {width, height, {0.0f, 0.0f, 0.0f}, 50.0f,
+                                                  r3v_terrain_coloring_default()};
     return configuration;
 }
 

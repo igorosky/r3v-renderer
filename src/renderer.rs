@@ -16,38 +16,23 @@ pub struct WgpuAcceleratedConfiguration {
     pub background_color: [f32; 3],
     /// Distance along the camera's forward axis over which the colormap runs once.
     pub color_depth_range: f32,
+    pub terrain_coloring: TerrainColoring,
 }
 
-/// What colors the terrain.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TerrainColorMode {
-    /// The distance along the camera's forward axis.
-    #[default]
-    Depth,
-    /// The height on the world's Y axis, as on a topographic map.
-    Height,
-}
-
-/// What `TerrainColorMode::Height` measures heights from.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum HeightOrigin {
-    /// The world's Y = 0.
-    #[default]
-    World,
-    /// The height of `WgpuAccelerated::set_robot_height`.
-    Robot,
-}
-
-/// The terrain's colors, which can change between any two frames.
+/// What colors the terrain: the distance along the camera's forward axis, or with
+/// `height_coloring_enabled` the height on the world's Y axis, as on a topographic map.
 ///
-/// For `TerrainColorMode::Height` the colormap's position of a height, at the distance `d` from
-/// the neutral height `origin + height_offset`, is
+/// The position in the colormap of a height at the distance `d` from the neutral height is
 /// `0.5 + 0.5 * sign(d) * tanh(height_gain * ln(1 + |d| / height_knee))`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerrainColoring {
-    pub mode: TerrainColorMode,
-    pub height_origin: HeightOrigin,
-    /// Neutral height above the origin, in metres.
+    pub height_coloring_enabled: bool,
+    /// Measures heights from `robot_height` rather than from the world's Y = 0.
+    pub relative_to_robot: bool,
+    /// Where the robot is on the world's Y axis, in metres. To follow it call `configure` again,
+    /// which at an unchanged frame size only changes the settings.
+    pub robot_height: f32,
+    /// Neutral height above what heights are measured from, in metres.
     pub height_offset: f32,
     /// Distance from the neutral height, in metres, from which on colors follow its logarithm
     /// rather than the distance itself. Has to be positive.
@@ -61,13 +46,32 @@ pub struct TerrainColoring {
 impl Default for TerrainColoring {
     fn default() -> Self {
         Self {
-            mode: TerrainColorMode::default(),
-            height_origin: HeightOrigin::default(),
+            height_coloring_enabled: false,
+            relative_to_robot: false,
+            robot_height: 0.0,
             height_offset: 0.0,
             height_knee: DEFAULT_HEIGHT_KNEE,
             height_gain: DEFAULT_HEIGHT_GAIN,
             height_bands: 0,
         }
+    }
+}
+
+fn colormap_params(configuration: &WgpuAcceleratedConfiguration) -> ColormapParams {
+    let coloring = &configuration.terrain_coloring;
+    let origin = if coloring.relative_to_robot {
+        coloring.robot_height
+    } else {
+        0.0
+    };
+    ColormapParams {
+        depth_range: configuration.color_depth_range,
+        color_by_height: coloring.height_coloring_enabled as u32,
+        neutral_height: origin + coloring.height_offset,
+        height_knee: coloring.height_knee,
+        height_gain: coloring.height_gain,
+        height_bands: coloring.height_bands,
+        _pad: [0.0; 2],
     }
 }
 
@@ -274,8 +278,6 @@ pub struct WgpuAccelerated {
     vertex_arena: VertexArena,
     assets: Assets,
     frame_index: usize,
-    terrain_coloring: TerrainColoring,
-    robot_height: f32,
 }
 
 impl WgpuAccelerated {
@@ -490,46 +492,7 @@ impl WgpuAccelerated {
             vertex_arena,
             assets,
             frame_index: 0,
-            terrain_coloring: TerrainColoring::default(),
-            robot_height: 0.0,
         })
-    }
-
-    /// Applies from the next frame on, whether or not the renderer is configured yet.
-    pub fn set_terrain_coloring(&mut self, coloring: TerrainColoring) {
-        self.terrain_coloring = coloring;
-        self.write_colormap_params();
-    }
-
-    /// The height the robot is at, what `HeightOrigin::Robot` measures from. Starts at 0. Applies
-    /// from the next frame on.
-    pub fn set_robot_height(&mut self, height: f32) {
-        self.robot_height = height;
-        self.write_colormap_params();
-    }
-
-    fn write_colormap_params(&self) {
-        let coloring = &self.terrain_coloring;
-        let origin = match coloring.height_origin {
-            HeightOrigin::World => 0.0,
-            HeightOrigin::Robot => self.robot_height,
-        };
-        let params = ColormapParams {
-            depth_range: self
-                .active_configuration
-                .map_or(DEFAULT_COLOR_DEPTH_RANGE, |config| config.color_depth_range),
-            color_by_height: (coloring.mode == TerrainColorMode::Height) as u32,
-            neutral_height: origin + coloring.height_offset,
-            height_knee: coloring.height_knee,
-            height_gain: coloring.height_gain,
-            height_bands: coloring.height_bands,
-            _pad: [0.0; 2],
-        };
-        self.state.queue.write_buffer(
-            &self.state.colormap_buffer,
-            COLORMAP_PARAMS_OFFSET,
-            bytemuck::bytes_of(&params),
-        );
     }
 
     fn rebuild_targets(&mut self) {
@@ -756,8 +719,12 @@ impl Renderer for WgpuAccelerated {
     type CameraState = camera::CameraState;
 
     fn configure(&mut self, configuration: Self::Configuration) {
+        self.state.queue.write_buffer(
+            &self.state.colormap_buffer,
+            COLORMAP_PARAMS_OFFSET,
+            bytemuck::bytes_of(&colormap_params(&configuration)),
+        );
         self.active_configuration = Some(configuration);
-        self.write_colormap_params();
     }
 
     fn render(&mut self, camera_state: &Self::CameraState, output: &mut [u8]) {

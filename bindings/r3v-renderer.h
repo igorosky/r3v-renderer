@@ -149,6 +149,55 @@ typedef struct R3vCameraState {
 } R3vCameraState;
 
 /**
+ * `renderer::TerrainColoring`: what colors the terrain. Start from
+ * `r3v_terrain_coloring_default`, zeros are not a valid coloring.
+ *
+ * The position in the colormap of a height at the distance `d` from the
+ * neutral height is
+ * `0.5 + 0.5 * sign(d) * tanh(height_gain * ln(1 + |d| / height_knee))`.
+ */
+typedef struct R3vTerrainColoring {
+  /**
+   * Colors the terrain by its height on the world's Y axis, as on a
+   * topographic map, rather than by the distance along the camera's
+   * forward axis.
+   */
+  bool height_coloring_enabled;
+  /**
+   * Measures heights from `robot_height` rather than from the world's
+   * Y = 0.
+   */
+  bool relative_to_robot;
+  /**
+   * Where the robot is on the world's Y axis, in metres. To follow it call
+   * `r3v_wgpu_renderer_configure` again, which at an unchanged frame size
+   * only changes the settings. Has to be finite.
+   */
+  float robot_height;
+  /**
+   * Neutral height above what heights are measured from, in metres. Has to
+   * be finite.
+   */
+  float height_offset;
+  /**
+   * Distance from the neutral height, in metres, from which on colors
+   * follow its logarithm rather than the distance itself. Has to be
+   * positive.
+   */
+  float height_knee;
+  /**
+   * How fast colors run towards the ends of the colormap. Has to be
+   * positive.
+   */
+  float height_gain;
+  /**
+   * Flat bands of color the colormap is split into, 0 for a smooth
+   * gradient.
+   */
+  uint32_t height_bands;
+} R3vTerrainColoring;
+
+/**
  * `renderer::WgpuAcceleratedConfiguration`.
  */
 typedef struct R3vWgpuRendererConfiguration {
@@ -170,6 +219,10 @@ typedef struct R3vWgpuRendererConfiguration {
    * runs once. Has to be positive.
    */
   float color_depth_range;
+  /**
+   * Checked whether or not heights color the terrain yet.
+   */
+  struct R3vTerrainColoring terrain_coloring;
 } R3vWgpuRendererConfiguration;
 
 /**
@@ -451,6 +504,12 @@ enum R3vStatus r3v_orbit_camera_get_state(struct R3vOrbitCamera camera,
                                           struct R3vCameraState *out);
 
 /**
+ * `TerrainColoring::default`: the terrain colored by depth, and if turned on
+ * by height, from the world's Y = 0, as a smooth gradient.
+ */
+struct R3vTerrainColoring r3v_terrain_coloring_default(void);
+
+/**
  * `WgpuAccelerated::new`: blocks until a device of the default GPU adapter
  * is ready. NULL when there is no adapter or no device. Configure it before
  * rendering.
@@ -458,8 +517,10 @@ enum R3vStatus r3v_orbit_camera_get_state(struct R3vOrbitCamera camera,
 struct R3vWgpuRenderer *r3v_wgpu_renderer_create(void);
 
 /**
- * `Renderer::configure`: sets the frame size, the background color and the
- * colormap depth range. Both sides have to be between 1 and 8192.
+ * `Renderer::configure`: sets the frame size, the background color, the
+ * colormap depth range and the terrain's coloring. Both sides have to be
+ * between 1 and 8192. At an unchanged frame size only the settings change,
+ * from the next frame on.
  */
 enum R3vStatus r3v_wgpu_renderer_configure(struct R3vWgpuRenderer *renderer,
                                            struct R3vWgpuRendererConfiguration configuration);

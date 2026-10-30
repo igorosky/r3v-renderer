@@ -9,8 +9,8 @@ use r3v_renderer::{
     camera::OrbitCamera,
     geometry::{PointI, RealTriangle},
     renderer::{
-        DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE, HeightOrigin, TerrainColorMode,
-        TerrainColoring, WgpuAccelerated, WgpuAcceleratedConfiguration,
+        DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE, TerrainColoring, WgpuAccelerated,
+        WgpuAcceleratedConfiguration,
     },
     stl::StlMesh,
     tesselator::{CpuTesselator, CpuTesselatorConfiguration},
@@ -33,6 +33,7 @@ fn configuration() -> WgpuAcceleratedConfiguration {
         height: SIZE,
         background_color: DEFAULT_BACKGROUND_COLOR,
         color_depth_range: DEFAULT_COLOR_DEPTH_RANGE,
+        terrain_coloring: TerrainColoring::default(),
     }
 }
 
@@ -90,10 +91,25 @@ fn assert_close(a: [u8; 3], b: [u8; 3]) {
 
 fn by_height(neutral_height: f32) -> TerrainColoring {
     TerrainColoring {
-        mode: TerrainColorMode::Height,
+        height_coloring_enabled: true,
         height_offset: neutral_height,
         ..TerrainColoring::default()
     }
+}
+
+fn from_robot(robot_height: f32) -> TerrainColoring {
+    TerrainColoring {
+        relative_to_robot: true,
+        robot_height,
+        ..by_height(0.0)
+    }
+}
+
+fn set_coloring(renderer: &mut WgpuAccelerated, terrain_coloring: TerrainColoring) {
+    renderer.configure(WgpuAcceleratedConfiguration {
+        terrain_coloring,
+        ..configuration()
+    });
 }
 
 #[test]
@@ -103,10 +119,10 @@ fn depth_stays_the_default() {
     let depth = render(&mut renderer);
     assert_ne!(middle(&depth), [0; 3], "the block is not in view");
 
-    renderer.set_terrain_coloring(by_height(0.0));
+    set_coloring(&mut renderer, by_height(0.0));
     assert_ne!(render(&mut renderer), depth);
 
-    renderer.set_terrain_coloring(TerrainColoring::default());
+    set_coloring(&mut renderer, TerrainColoring::default());
     assert_eq!(render(&mut renderer), depth);
 }
 
@@ -115,11 +131,11 @@ fn neutral_height_separates_depths_from_heights() {
     let _gpu = gpu_lock();
     let mut renderer = scene();
 
-    renderer.set_terrain_coloring(by_height(BLOCK_TOP - 5.0));
+    set_coloring(&mut renderer, by_height(BLOCK_TOP - 5.0));
     let [b, _, r] = middle(&render(&mut renderer));
     assert!(r > b, "above the neutral height: {r} red, {b} blue");
 
-    renderer.set_terrain_coloring(by_height(BLOCK_TOP + 5.0));
+    set_coloring(&mut renderer, by_height(BLOCK_TOP + 5.0));
     let [b, _, r] = middle(&render(&mut renderer));
     assert!(b > r, "below the neutral height: {b} blue, {r} red");
 }
@@ -128,53 +144,48 @@ fn neutral_height_separates_depths_from_heights() {
 fn neutral_height_is_the_middle_of_the_colormap_at_any_scale() {
     let _gpu = gpu_lock();
     let mut renderer = scene();
-    renderer.set_terrain_coloring(by_height(BLOCK_TOP));
+    set_coloring(&mut renderer, by_height(BLOCK_TOP));
     let neutral = middle(&render(&mut renderer));
     let [b, g, r] = neutral;
     assert!(g > b && g > r, "{neutral:?}");
 
-    renderer.set_terrain_coloring(TerrainColoring {
-        height_knee: 0.01,
-        height_gain: 2.0,
-        ..by_height(BLOCK_TOP)
-    });
+    set_coloring(
+        &mut renderer,
+        TerrainColoring {
+            height_knee: 0.01,
+            height_gain: 2.0,
+            ..by_height(BLOCK_TOP)
+        },
+    );
     assert_close(middle(&render(&mut renderer)), neutral);
 }
 
 #[test]
-fn world_origin_ignores_the_robot() {
+fn robot_height_only_counts_relative_to_the_robot() {
     let _gpu = gpu_lock();
     let mut renderer = scene();
-    renderer.set_terrain_coloring(by_height(0.0));
+    set_coloring(&mut renderer, by_height(0.0));
     let frame = render(&mut renderer);
 
-    renderer.set_robot_height(BLOCK_TOP);
+    set_coloring(
+        &mut renderer,
+        TerrainColoring {
+            robot_height: BLOCK_TOP,
+            ..by_height(0.0)
+        },
+    );
     assert_eq!(render(&mut renderer), frame);
 }
 
 #[test]
-fn robot_origin_follows_the_robot() {
+fn colors_follow_the_robot() {
     let _gpu = gpu_lock();
     let mut renderer = scene();
-    renderer.set_terrain_coloring(TerrainColoring {
-        height_origin: HeightOrigin::Robot,
-        ..by_height(0.0)
-    });
-    let at_zero = render(&mut renderer);
-
-    // Not set yet the robot is at 0, which is what the world's origin gives
-    renderer.set_terrain_coloring(by_height(0.0));
-    assert_eq!(render(&mut renderer), at_zero);
-
-    renderer.set_terrain_coloring(TerrainColoring {
-        height_origin: HeightOrigin::Robot,
-        ..by_height(0.0)
-    });
-    renderer.set_robot_height(BLOCK_TOP + 5.0);
+    set_coloring(&mut renderer, from_robot(BLOCK_TOP + 5.0));
     let [b, _, r] = middle(&render(&mut renderer));
     assert!(b > r, "below the robot: {b} blue, {r} red");
 
-    renderer.set_robot_height(BLOCK_TOP - 5.0);
+    set_coloring(&mut renderer, from_robot(BLOCK_TOP - 5.0));
     let [b, _, r] = middle(&render(&mut renderer));
     assert!(r > b, "above the robot: {r} red, {b} blue");
 }
@@ -183,14 +194,16 @@ fn robot_origin_follows_the_robot() {
 fn offset_adds_to_the_robot() {
     let _gpu = gpu_lock();
     let mut renderer = scene();
-    renderer.set_robot_height(3.0);
-    renderer.set_terrain_coloring(TerrainColoring {
-        height_origin: HeightOrigin::Robot,
-        ..by_height(2.0)
-    });
+    set_coloring(
+        &mut renderer,
+        TerrainColoring {
+            height_offset: 2.0,
+            ..from_robot(3.0)
+        },
+    );
     let frame = render(&mut renderer);
 
-    renderer.set_terrain_coloring(by_height(5.0));
+    set_coloring(&mut renderer, by_height(5.0));
     assert_eq!(render(&mut renderer), frame);
 }
 
@@ -199,7 +212,7 @@ fn function_parameters_change_the_color() {
     let _gpu = gpu_lock();
     let mut renderer = scene();
     let base = by_height(0.0);
-    renderer.set_terrain_coloring(base);
+    set_coloring(&mut renderer, base);
     let frame = render(&mut renderer);
     for coloring in [
         TerrainColoring {
@@ -215,7 +228,7 @@ fn function_parameters_change_the_color() {
             ..base
         },
     ] {
-        renderer.set_terrain_coloring(coloring);
+        set_coloring(&mut renderer, coloring);
         assert_ne!(
             middle(&render(&mut renderer)),
             middle(&frame),
@@ -233,55 +246,30 @@ fn bands_are_flat() {
         height_bands: 2,
         ..by_height(0.0)
     };
-    renderer.set_terrain_coloring(coloring);
+    set_coloring(&mut renderer, coloring);
     let at_zero = middle(&render(&mut renderer));
-    renderer.set_terrain_coloring(TerrainColoring {
-        height_offset: 1.0,
-        ..coloring
-    });
+    set_coloring(
+        &mut renderer,
+        TerrainColoring {
+            height_offset: 1.0,
+            ..coloring
+        },
+    );
     assert_eq!(middle(&render(&mut renderer)), at_zero);
 }
 
 #[test]
-fn configure_keeps_the_coloring() {
+fn depth_range_leaves_height_coloring_alone() {
     let _gpu = gpu_lock();
     let mut renderer = scene();
-    renderer.set_terrain_coloring(by_height(0.0));
+    set_coloring(&mut renderer, by_height(0.0));
     let frame = render(&mut renderer);
 
     renderer.configure(WgpuAcceleratedConfiguration {
         color_depth_range: 5.0,
+        terrain_coloring: by_height(0.0),
         ..configuration()
     });
-    assert_eq!(render(&mut renderer), frame);
-}
-
-#[test]
-fn coloring_can_be_set_before_configuring() {
-    let _gpu = gpu_lock();
-    let mut configured_first = scene();
-    configured_first.set_terrain_coloring(by_height(0.0));
-    let frame = render(&mut configured_first);
-
-    let mut renderer = WgpuAccelerated::new().expect("no GPU");
-    renderer.set_terrain_coloring(by_height(0.0));
-    renderer.configure(configuration());
-    add_block(&mut renderer);
-    assert_eq!(render(&mut renderer), frame);
-}
-
-#[test]
-fn depth_range_still_applies_after_coming_back() {
-    let _gpu = gpu_lock();
-    let mut renderer = scene();
-    renderer.configure(WgpuAcceleratedConfiguration {
-        color_depth_range: 5.0,
-        ..configuration()
-    });
-    let frame = render(&mut renderer);
-
-    renderer.set_terrain_coloring(by_height(0.0));
-    renderer.set_terrain_coloring(TerrainColoring::default());
     assert_eq!(render(&mut renderer), frame);
 }
 
@@ -303,6 +291,6 @@ fn assets_keep_their_color() {
     let frame = render(&mut renderer);
     assert_ne!(middle(&frame), [0; 3], "the asset is not in view");
 
-    renderer.set_terrain_coloring(by_height(0.0));
+    set_coloring(&mut renderer, by_height(0.0));
     assert_eq!(render(&mut renderer), frame);
 }
