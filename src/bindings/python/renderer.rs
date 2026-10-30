@@ -12,18 +12,6 @@ use crate::{
 
 use super::{PyCameraState, PyTwist, Vec3, stl::PyStlMesh, tesselator::PyGeometryDelta};
 
-/// `renderer::TerrainColoring`: what colors the terrain. With
-/// `height_coloring_enabled` that is its height on the world's Y axis, as on a
-/// topographic map, rather than the distance along the camera's forward axis.
-/// Heights are measured from the world's Y = 0, or with `relative_to_robot`
-/// from `robot_height`; to follow the robot `configure` the renderer again,
-/// which at an unchanged frame size only changes the settings.
-///
-/// The position in the colormap of a height at the distance `d` from the
-/// neutral height, `height_offset` above what heights are measured from, is
-/// `0.5 + 0.5 * sign(d) * tanh(height_gain * ln(1 + |d| / height_knee))`.
-/// `height_bands` splits the colormap into flat bands, 0 for a smooth
-/// gradient.
 #[pyclass(
     module = "r3v_renderer",
     name = "TerrainColoring",

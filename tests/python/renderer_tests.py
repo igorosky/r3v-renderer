@@ -605,19 +605,14 @@ def renderer_height_coloring_recolors_voxels():
         blue, _, red = rendered(height_coloring_enabled=True, **coloring)[centre:centre + 3]
         return blue, red
 
-    # 6 m above the world's 0: the colormap's warm side (BGRA).
     blue, red = blue_and_red()
     check(red > blue)
-    # The robot only counts when heights are relative to it.
     blue, red = blue_and_red(robot_height=11)
     check(red > blue)
-    # 5 m below the robot: the colormap's blue side, at the same frame size.
     blue, red = blue_and_red(robot_height=11, relative_to_robot=True)
     check(blue > red)
-    # The offset moves the neutral height back below the block.
     blue, red = blue_and_red(robot_height=11, relative_to_robot=True, height_offset=-10)
     check(red > blue)
-    # Turned off it is the frame of before.
     check(rendered(height_knee=2) == depth)
 
 

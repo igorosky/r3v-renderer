@@ -19,27 +19,14 @@ pub struct WgpuAcceleratedConfiguration {
     pub terrain_coloring: TerrainColoring,
 }
 
-/// What colors the terrain: the distance along the camera's forward axis, or with
-/// `height_coloring_enabled` the height on the world's Y axis, as on a topographic map.
-///
-/// The position in the colormap of a height at the distance `d` from the neutral height is
-/// `0.5 + 0.5 * sign(d) * tanh(height_gain * ln(1 + |d| / height_knee))`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerrainColoring {
     pub height_coloring_enabled: bool,
-    /// Measures heights from `robot_height` rather than from the world's Y = 0.
     pub relative_to_robot: bool,
-    /// Where the robot is on the world's Y axis, in metres. To follow it call `configure` again,
-    /// which at an unchanged frame size only changes the settings.
     pub robot_height: f32,
-    /// Neutral height above what heights are measured from, in metres.
     pub height_offset: f32,
-    /// Distance from the neutral height, in metres, from which on colors follow its logarithm
-    /// rather than the distance itself. Has to be positive.
     pub height_knee: f32,
-    /// How fast colors run towards the ends of the colormap. Has to be positive.
     pub height_gain: f32,
-    /// Flat bands of color the colormap is split into, 0 for a smooth gradient.
     pub height_bands: u32,
 }
 

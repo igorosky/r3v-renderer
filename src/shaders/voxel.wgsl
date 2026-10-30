@@ -34,8 +34,6 @@ fn sample_colormap(first: u32, x: f32) -> vec3<f32> {
     return mix(colormap.colors[first + index].rgb, colormap.colors[first + index + 1u].rgb, position - f32(index));
 }
 
-// Where a height falls in the hypsometric colormap: the neutral height at 0.5, both sides reaching
-// for the ends as a sigmoid of the logarithm of their distance from it.
 fn hypsometric_position(height: f32) -> f32 {
     let distance = height - colormap.neutral_height;
     let scaled = log(1.0 + abs(distance) / colormap.height_knee);

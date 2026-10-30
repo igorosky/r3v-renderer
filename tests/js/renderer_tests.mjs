@@ -553,20 +553,15 @@ async function renderer_height_coloring_recolors_voxels() {
     };
     const byHeight = { height_coloring_enabled: true };
 
-    // 6 m above the world's 0: the colormap's warm side (BGRA).
     let frame = await rendered(byHeight);
     check(frame[centre + 2] > frame[centre]);
-    // The robot only counts when heights are relative to it.
     frame = await rendered({ ...byHeight, robot_height: 11 });
     check(frame[centre + 2] > frame[centre]);
-    // 5 m below the robot: the colormap's blue side, at the same frame size.
     const fromRobot = { ...byHeight, relative_to_robot: true, robot_height: 11 };
     frame = await rendered(fromRobot);
     check(frame[centre] > frame[centre + 2]);
-    // The offset moves the neutral height back below the block.
     frame = await rendered({ ...fromRobot, height_offset: -10 });
     check(frame[centre + 2] > frame[centre]);
-    // Turned off it is the frame of before.
     check(same([...await rendered({ height_knee: 2 })], [...depth]));
 }
 

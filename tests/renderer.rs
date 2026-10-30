@@ -1,6 +1,3 @@
-//! `WgpuAccelerated`'s terrain colors, on rendered frames. Needs a GPU, a software Vulkan one such
-//! as lavapipe works.
-
 use std::sync::{Mutex, MutexGuard};
 
 use cgmath::Point3;
@@ -17,11 +14,8 @@ use r3v_renderer::{
 };
 
 const SIZE: u32 = 32;
-/// Top of the block `scene` adds.
 const BLOCK_TOP: f32 = 8.0;
 
-/// Tests run one at a time: some drivers crash when several devices are used from different
-/// threads at once.
 fn gpu_lock() -> MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -43,7 +37,6 @@ fn renderer() -> WgpuAccelerated {
     renderer
 }
 
-/// Adds a full 4x4x2 block with its top at `BLOCK_TOP`.
 fn add_block(renderer: &mut WgpuAccelerated) {
     let mut tesselator = CpuTesselator::new();
     tesselator.configure(CpuTesselatorConfiguration {
@@ -65,7 +58,6 @@ fn scene() -> WgpuAccelerated {
     renderer
 }
 
-/// A frame looking straight down at the block. Frames come back one call late.
 fn render(renderer: &mut WgpuAccelerated) -> Vec<u8> {
     let camera = OrbitCamera::new(Point3::new(2.0, BLOCK_TOP, 1.0), 10.0, 0.0, 89.0);
     let state = camera.get_state(1.0);
@@ -75,7 +67,6 @@ fn render(renderer: &mut WgpuAccelerated) -> Vec<u8> {
     frame
 }
 
-/// Blue, green and red of the middle pixel, which is on the block's top.
 fn middle(frame: &[u8]) -> [u8; 3] {
     let offset = (SIZE as usize * (SIZE as usize / 2) + SIZE as usize / 2) * 4;
     [frame[offset], frame[offset + 1], frame[offset + 2]]
@@ -241,7 +232,6 @@ fn function_parameters_change_the_color() {
 fn bands_are_flat() {
     let _gpu = gpu_lock();
     let mut renderer = scene();
-    // Half of the colormap is one band, heights 1 m apart on the same side share it
     let coloring = TerrainColoring {
         height_bands: 2,
         ..by_height(0.0)

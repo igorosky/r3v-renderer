@@ -106,15 +106,12 @@ const BACKGROUNDS: [(&str, [f32; 3]); 4] = [
 const COLOR_DEPTH_RANGE_STEP: f32 = 1.25;
 const COLOR_DEPTH_RANGE_MIN: f32 = 5.0;
 const COLOR_DEPTH_RANGE_MAX: f32 = 2000.0;
-/// Factor of one J or K press on the height knee.
 const HEIGHT_KNEE_STEP: f32 = 1.25;
 const HEIGHT_KNEE_MIN: f32 = 0.05;
 const HEIGHT_KNEE_MAX: f32 = 20.0;
-/// Factor of one U or I press on the height gain.
 const HEIGHT_GAIN_STEP: f32 = 1.1;
 const HEIGHT_GAIN_MIN: f32 = 0.05;
 const HEIGHT_GAIN_MAX: f32 = 2.0;
-/// Cycled with V, 0 for a smooth gradient.
 const HEIGHT_BANDS: [u32; 4] = [0, 8, 16, 32];
 
 const STATS_INTERVAL_SECS: f32 = 0.25;
@@ -240,7 +237,6 @@ impl Demo {
         });
         let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
         let placement = robot_placement(&world);
-        // The robot stays at its site, which is reserved even when no robot gets loaded.
         let robot_height = placement.translation.y;
         let robot = match RobotScene::load(urdf_path, placement, &mut renderer) {
             Ok(robot) => Some(robot),

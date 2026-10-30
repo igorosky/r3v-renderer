@@ -500,7 +500,6 @@ static void renderer_configure_checks_terrain_coloring(void) {
         CHECK_STATUS(r3v_wgpu_renderer_configure(renderer, configuration), R3V_INVALID_ARGUMENT);
         CHECK_ERROR_CONTAINS("robot height");
     }
-    /* Zeros are no coloring, even while the terrain is colored by depth. */
     R3vWgpuRendererConfiguration zeroed = renderer_configuration(8, 8);
     memset(&zeroed.terrain_coloring, 0, sizeof zeroed.terrain_coloring);
     CHECK_STATUS(r3v_wgpu_renderer_configure(renderer, zeroed), R3V_INVALID_ARGUMENT);
@@ -558,32 +557,27 @@ static void renderer_height_coloring_recolors_voxels(void) {
     const uint8_t *centre = frame + 4 * ((H / 2) * W + W / 2);
     render_now(renderer, camera, W, H, depth);
 
-    /* 6 m above the world's 0: the colormap's warm side (BGRA). */
     R3vWgpuRendererConfiguration configuration = renderer_configuration(W, H);
     configuration.terrain_coloring.height_coloring_enabled = true;
     CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
     render_now(renderer, camera, W, H, frame);
     CHECK(centre[2] > centre[0]);
 
-    /* The robot only counts when heights are relative to it. */
     configuration.terrain_coloring.robot_height = 11.0f;
     CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
     render_now(renderer, camera, W, H, frame);
     CHECK(centre[2] > centre[0]);
 
-    /* 5 m below the robot: the colormap's blue side, at the same frame size. */
     configuration.terrain_coloring.relative_to_robot = true;
     CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
     render_now(renderer, camera, W, H, frame);
     CHECK(centre[0] > centre[2]);
 
-    /* The offset moves the neutral height back below the block. */
     configuration.terrain_coloring.height_offset = -10.0f;
     CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
     render_now(renderer, camera, W, H, frame);
     CHECK(centre[2] > centre[0]);
 
-    /* Turned off it is the frame of before. */
     configuration.terrain_coloring.height_coloring_enabled = false;
     CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
     render_now(renderer, camera, W, H, frame);

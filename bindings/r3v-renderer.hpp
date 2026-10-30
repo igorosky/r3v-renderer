@@ -99,36 +99,13 @@ struct R3vCameraState {
   R3vVec3 forward;
 };
 
-/// `renderer::TerrainColoring`: what colors the terrain. Start from
-/// `r3v_terrain_coloring_default`, zeros are not a valid coloring.
-///
-/// The position in the colormap of a height at the distance `d` from the
-/// neutral height is
-/// `0.5 + 0.5 * sign(d) * tanh(height_gain * ln(1 + |d| / height_knee))`.
 struct R3vTerrainColoring {
-  /// Colors the terrain by its height on the world's Y axis, as on a
-  /// topographic map, rather than by the distance along the camera's
-  /// forward axis.
   bool height_coloring_enabled;
-  /// Measures heights from `robot_height` rather than from the world's
-  /// Y = 0.
   bool relative_to_robot;
-  /// Where the robot is on the world's Y axis, in metres. To follow it call
-  /// `r3v_wgpu_renderer_configure` again, which at an unchanged frame size
-  /// only changes the settings. Has to be finite.
   float robot_height;
-  /// Neutral height above what heights are measured from, in metres. Has to
-  /// be finite.
   float height_offset;
-  /// Distance from the neutral height, in metres, from which on colors
-  /// follow its logarithm rather than the distance itself. Has to be
-  /// positive.
   float height_knee;
-  /// How fast colors run towards the ends of the colormap. Has to be
-  /// positive.
   float height_gain;
-  /// Flat bands of color the colormap is split into, 0 for a smooth
-  /// gradient.
   uint32_t height_bands;
 };
 
@@ -144,7 +121,6 @@ struct R3vWgpuRendererConfiguration {
   /// Distance along the camera's forward axis over which the voxel colormap
   /// runs once. Has to be positive.
   float color_depth_range;
-  /// Checked whether or not heights color the terrain yet.
   R3vTerrainColoring terrain_coloring;
 };
 
@@ -339,8 +315,6 @@ R3vStatus r3v_orbit_camera_get_state(R3vOrbitCamera camera,
                                      float aspect_ratio,
                                      R3vCameraState *out);
 
-/// `TerrainColoring::default`: the terrain colored by depth, and if turned on
-/// by height, from the world's Y = 0, as a smooth gradient.
 R3vTerrainColoring r3v_terrain_coloring_default();
 
 /// `WgpuAccelerated::new`: blocks until a device of the default GPU adapter

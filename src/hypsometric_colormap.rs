@@ -1,10 +1,5 @@
-// Hypsometric tints as on a topographic map: blues for what lies below the neutral height at 0.5,
-// then greens, browns and snow for what rises above it.
-
-/// Colors of the colormap.
 pub const HYPSOMETRIC_COLORMAP_LEN: usize = 256;
 
-/// Positions in 0..1, rising, with the sRGB color there.
 const STOPS: [(f32, [f32; 3]); 10] = [
     (0.00, [0.05, 0.07, 0.30]),
     (0.20, [0.07, 0.25, 0.60]),
@@ -18,7 +13,6 @@ const STOPS: [(f32, [f32; 3]); 10] = [
     (1.00, [0.97, 0.97, 0.97]),
 ];
 
-/// The sRGB color at `position` in 0..1.
 fn color_at(position: f32) -> [f32; 3] {
     let upper = STOPS
         .iter()
@@ -31,7 +25,6 @@ fn color_at(position: f32) -> [f32; 3] {
     std::array::from_fn(|k| from[k] + (to[k] - from[k]) * t)
 }
 
-/// The colors, sRGB.
 pub fn hypsometric_colormap() -> impl Iterator<Item = [f32; 3]> {
     (0..HYPSOMETRIC_COLORMAP_LEN)
         .map(|index| color_at(index as f32 / (HYPSOMETRIC_COLORMAP_LEN - 1) as f32))

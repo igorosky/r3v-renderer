@@ -233,7 +233,6 @@ impl CheckedRenderer {
                 "color depth range must be positive and finite, got {color_depth_range}"
             )));
         }
-        // Whether or not heights color the terrain yet, so that turning that on can not fail
         check_terrain_coloring(&terrain_coloring)?;
         let configuration = WgpuAcceleratedConfiguration {
             width,

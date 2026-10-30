@@ -41,7 +41,6 @@ pub fn create_vertex_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buf
     })
 }
 
-/// Converts an sRGB component to linear, which is what a color reaching an sRGB target has to be.
 pub fn srgb_to_linear(component: f32) -> f64 {
     let c = f64::from(component);
     if c <= 0.04045 {
@@ -56,8 +55,6 @@ pub const COLORMAP_PARAMS_OFFSET: wgpu::BufferAddress =
     ((TURBO_COLORMAP.len() + HYPSOMETRIC_COLORMAP_LEN) * std::mem::size_of::<[f32; 4]>())
         as wgpu::BufferAddress;
 
-/// The colormap parameters as `Colormap` in `voxel.wgsl` lays them out, padded to its alignment
-/// of 16 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ColormapParams {

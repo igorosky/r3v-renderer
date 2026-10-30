@@ -18,7 +18,6 @@ use super::{
     type_error, vector, vector_property,
 };
 
-/// `renderer::TerrainColoring` from what `value` has of its properties.
 fn terrain_coloring(value: &JsValue, what: What) -> Result<TerrainColoring> {
     let default = TerrainColoring::default();
     let number_or = |key: &str, default: f32| {
@@ -107,7 +106,6 @@ impl JsWgpuRendererConfiguration {
         Ok(())
     }
 
-    /// A plain object: changing it changes nothing here, assign it back.
     #[wasm_bindgen(getter, unchecked_return_type = "Required<TerrainColoring>")]
     pub fn terrain_coloring(&self) -> JsValue {
         let coloring = &self.terrain_coloring;
