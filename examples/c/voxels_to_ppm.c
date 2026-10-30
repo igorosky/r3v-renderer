@@ -108,7 +108,8 @@ int main(int argc, char **argv) {
     }
 
     R3vWgpuRenderer *renderer = check_handle(r3v_wgpu_renderer_create(), "creating the renderer");
-    R3vWgpuRendererConfiguration configuration = {WIDTH, HEIGHT};
+    /* Black background, the colormap spanning 50 m from the camera. */
+    R3vWgpuRendererConfiguration configuration = {WIDTH, HEIGHT, {0.0f, 0.0f, 0.0f}, 50.0f};
     check(r3v_wgpu_renderer_configure(renderer, configuration), "configure");
     add_stairs(renderer);
     add_flags(renderer);

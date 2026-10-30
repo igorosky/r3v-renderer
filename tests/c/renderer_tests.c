@@ -470,14 +470,82 @@ static void tesselator_null_arguments(void) {
 
 static void renderer_configure_checks_size(void) {
     R3vWgpuRenderer *renderer = make_renderer(8, 8);
-    const R3vWgpuRendererConfiguration bad[] = {{0, 8}, {8, 0}, {8193, 8}, {8, 8193}};
+    const R3vWgpuRendererConfiguration bad[] = {
+        renderer_configuration(0, 8),
+        renderer_configuration(8, 0),
+        renderer_configuration(8193, 8),
+        renderer_configuration(8, 8193),
+    };
     for (size_t k = 0; k < ARRAY_LEN(bad); ++k) {
         CHECK_STATUS(r3v_wgpu_renderer_configure(renderer, bad[k]), R3V_INVALID_ARGUMENT);
     }
     CHECK_ERROR_CONTAINS("frame size");
-    R3vWgpuRendererConfiguration largest = {8192, 1};
+    R3vWgpuRendererConfiguration largest = renderer_configuration(8192, 1);
     CHECK_OK(r3v_wgpu_renderer_configure(renderer, largest));
     CHECK_STATUS(r3v_wgpu_renderer_configure(NULL, largest), R3V_INVALID_ARGUMENT);
+    r3v_wgpu_renderer_drop(renderer);
+}
+
+static void renderer_configure_checks_colors(void) {
+    R3vWgpuRenderer *renderer = make_renderer(8, 8);
+    const float bad_ranges[] = {0.0f, -1.0f, NAN, INFINITY};
+    for (size_t k = 0; k < ARRAY_LEN(bad_ranges); ++k) {
+        R3vWgpuRendererConfiguration configuration = renderer_configuration(8, 8);
+        configuration.color_depth_range = bad_ranges[k];
+        CHECK_STATUS(r3v_wgpu_renderer_configure(renderer, configuration), R3V_INVALID_ARGUMENT);
+        CHECK_ERROR_CONTAINS("color depth range");
+    }
+    /* Leaving out the depth range leaves it 0. */
+    R3vWgpuRendererConfiguration partial = {.width = 8, .height = 8};
+    CHECK_STATUS(r3v_wgpu_renderer_configure(renderer, partial), R3V_INVALID_ARGUMENT);
+    const R3vVec3 bad_colors[] = {{-0.1f, 0.0f, 0.0f}, {0.0f, 1.1f, 0.0f}, {0.0f, 0.0f, NAN}};
+    for (size_t k = 0; k < ARRAY_LEN(bad_colors); ++k) {
+        R3vWgpuRendererConfiguration configuration = renderer_configuration(8, 8);
+        configuration.background_color = bad_colors[k];
+        CHECK_STATUS(r3v_wgpu_renderer_configure(renderer, configuration), R3V_INVALID_ARGUMENT);
+        CHECK_ERROR_CONTAINS("background color");
+    }
+    r3v_wgpu_renderer_drop(renderer);
+}
+
+static void renderer_clears_to_background_color(void) {
+    enum { W = 8, H = 8 };
+    R3vWgpuRenderer *renderer = make_renderer(W, H);
+    R3vOrbitCamera camera = r3v_orbit_camera_default();
+    static uint8_t frame[W * H * 4];
+    R3vWgpuRendererConfiguration configuration = renderer_configuration(W, H);
+    configuration.background_color = vec3(1.0f, 0.0f, 0.0f);
+    CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
+    render_now(renderer, camera, W, H, frame);
+    CHECK(pixel_is(frame, W, 0, 0, 0, 0, 255));
+    CHECK(pixel_is(frame, W, W - 1, H - 1, 0, 0, 255));
+
+    /* At the same size it applies to the next frame; components are sRGB. */
+    configuration.background_color = vec3(0.0f, 0.5f, 1.0f);
+    CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
+    render_now(renderer, camera, W, H, frame);
+    CHECK(pixel_is(frame, W, W / 2, H / 2, 255, 128, 0));
+    r3v_wgpu_renderer_drop(renderer);
+}
+
+static void renderer_color_depth_range_recolors_voxels(void) {
+    enum { W = 32, H = 32 };
+    R3vWgpuRenderer *renderer = make_renderer(W, H);
+    R3vCpuTesselator *tesselator = add_block(renderer, 1.0f, 4, 4, 2);
+    R3vOrbitCamera camera = r3v_orbit_camera_new(vec3(6.0f, 6.0f, 3.0f), 10.0f, 0.0f, 0.0f);
+    static uint8_t frame[W * H * 4];
+    const uint8_t *centre = frame + 4 * ((H / 2) * W + W / 2);
+    render_now(renderer, camera, W, H, frame);
+    /* Near the start of the 50 m range: turbo's blue (BGRA). */
+    CHECK(centre[0] > centre[2]);
+
+    /* The block is beyond a 5 m range: turbo's red end. */
+    R3vWgpuRendererConfiguration configuration = renderer_configuration(W, H);
+    configuration.color_depth_range = 5.0f;
+    CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
+    render_now(renderer, camera, W, H, frame);
+    CHECK(centre[2] > centre[0]);
+    r3v_cpu_tesselator_drop(tesselator);
     r3v_wgpu_renderer_drop(renderer);
 }
 
@@ -489,8 +557,7 @@ static void renderer_render_checks_arguments(void) {
     uint8_t frame[4 * 4 * 4];
     CHECK_STATUS(r3v_wgpu_renderer_render(renderer, &state, frame, sizeof frame),
                  R3V_NOT_CONFIGURED);
-    R3vWgpuRendererConfiguration configuration = {4, 4};
-    CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
+    CHECK_OK(r3v_wgpu_renderer_configure(renderer, renderer_configuration(4, 4)));
     CHECK_STATUS(r3v_wgpu_renderer_render(renderer, &state, frame, sizeof frame - 1),
                  R3V_INVALID_ARGUMENT);
     CHECK_ERROR_CONTAINS("64 bytes");
@@ -699,8 +766,7 @@ static void renderer_resize_restarts_readback(void) {
     render_now(renderer, camera, 32, 32, frame);
     CHECK(lit(frame, 32, 16, 16));
 
-    R3vWgpuRendererConfiguration smaller = {16, 8};
-    CHECK_OK(r3v_wgpu_renderer_configure(renderer, smaller));
+    CHECK_OK(r3v_wgpu_renderer_configure(renderer, renderer_configuration(16, 8)));
     R3vCameraState state;
     CHECK_OK(r3v_orbit_camera_get_state(camera, 2.0f, &state));
     memset(frame, 0xAB, sizeof frame);
@@ -932,6 +998,9 @@ const TestCase TEST_CASES[] = {
     TEST(tesselator_toggles_marching_cubes),
     TEST(tesselator_null_arguments),
     TEST(renderer_configure_checks_size),
+    TEST(renderer_configure_checks_colors),
+    TEST(renderer_clears_to_background_color),
+    TEST(renderer_color_depth_range_recolors_voxels),
     TEST(renderer_render_checks_arguments),
     TEST(renderer_first_frame_is_zeros),
     TEST(renderer_draws_voxels),

@@ -143,7 +143,11 @@ class WgpuRendererConfiguration:
     __hash__: ClassVar[None]  # type: ignore[assignment]
     width: int
     height: int
-    def __new__(cls, width: int, height: int) -> WgpuRendererConfiguration: ...
+    background_color: _Vec3
+    color_depth_range: float
+    def __new__(
+        cls, width: int, height: int, background_color: _Vec3 = ..., color_depth_range: float = ...
+    ) -> WgpuRendererConfiguration: ...
 
 @final
 class WgpuRenderer:

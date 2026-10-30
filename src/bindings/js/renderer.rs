@@ -6,26 +6,69 @@ use js_sys::{Array, Promise, Uint8Array, Uint8ClampedArray};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
-use crate::{bindings::checked::CheckedRenderer, camera::CameraState};
-
-use super::{
-    Result, U32_MAX, error, index, integer_property, range_error, stl::JsStlMesh,
-    tesselator::JsGeometryDelta, twist, type_error, vector,
+use crate::{
+    bindings::checked::CheckedRenderer,
+    camera::CameraState,
+    renderer::{DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE},
 };
 
-/// `renderer::WgpuAcceleratedConfiguration`: the frame size in pixels.
+use super::{
+    Result, U32_MAX, error, f32_property, index, integer_property, number, numbers, property,
+    range_error, stl::JsStlMesh, tesselator::JsGeometryDelta, twist, type_error, vector,
+    vector_property,
+};
+
+/// `renderer::WgpuAcceleratedConfiguration`: the frame size in pixels, the
+/// opaque sRGB background color (components between 0 and 1) and the
+/// distance along the camera's forward axis over which the voxel colormap
+/// runs once.
 #[wasm_bindgen(js_name = WgpuRendererConfiguration)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct JsWgpuRendererConfiguration {
     pub width: u32,
     pub height: u32,
+    background_color: [f32; 3],
+    pub color_depth_range: f32,
 }
 
 #[wasm_bindgen(js_class = WgpuRendererConfiguration)]
 impl JsWgpuRendererConfiguration {
+    /// Without them the background is black and the depth range 50.
     #[wasm_bindgen(constructor)]
-    pub fn new(width: u32, height: u32) -> Self {
-        Self { width, height }
+    pub fn new(
+        width: u32,
+        height: u32,
+        #[wasm_bindgen(unchecked_optional_param_type = "Vec3")] background_color: Option<JsValue>,
+        #[wasm_bindgen(unchecked_optional_param_type = "number")] color_depth_range: Option<
+            JsValue,
+        >,
+    ) -> Result<JsWgpuRendererConfiguration> {
+        Ok(Self {
+            width,
+            height,
+            background_color: match background_color {
+                Some(color) => vector(&color, &|| "background_color".to_owned())?,
+                None => DEFAULT_BACKGROUND_COLOR,
+            },
+            color_depth_range: match color_depth_range {
+                Some(range) => number(&range, &|| "color_depth_range".to_owned())? as f32,
+                None => DEFAULT_COLOR_DEPTH_RANGE,
+            },
+        })
+    }
+
+    #[wasm_bindgen(getter, unchecked_return_type = "Vec3")]
+    pub fn background_color(&self) -> Array {
+        numbers(&self.background_color)
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_background_color(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "Vec3")] background_color: JsValue,
+    ) -> Result<()> {
+        self.background_color = vector(&background_color, &|| "background_color".to_owned())?;
+        Ok(())
     }
 }
 
@@ -152,17 +195,35 @@ impl JsWgpuRenderer {
         })))))
     }
 
-    /// `Renderer::configure`: sets the frame size. `RangeError` unless both
-    /// sides are between 1 and 8192.
+    /// `Renderer::configure`: sets the frame size, the background color and
+    /// the colormap depth range (black and 50 when left out). `RangeError`
+    /// unless both sides are between 1 and 8192, the color components between
+    /// 0 and 1 and the depth range positive.
     pub fn configure(
         &self,
-        #[wasm_bindgen(unchecked_param_type = "{ width: number; height: number }")]
+        #[wasm_bindgen(
+            unchecked_param_type = "{ width: number; height: number; background_color?: Vec3; color_depth_range?: number }"
+        )]
         configuration: JsValue,
     ) -> Result<()> {
         let what = || "configuration".to_owned();
         let width = integer_property(&configuration, "width", 0.0, U32_MAX, &what)? as u32;
         let height = integer_property(&configuration, "height", 0.0, U32_MAX, &what)? as u32;
-        self.with(|renderer| Ok(renderer.configure(width, height)?))
+        let background_color =
+            if property(&configuration, "background_color", &what)?.is_undefined() {
+                DEFAULT_BACKGROUND_COLOR
+            } else {
+                vector_property(&configuration, "background_color", &what)?
+            };
+        let color_depth_range =
+            if property(&configuration, "color_depth_range", &what)?.is_undefined() {
+                DEFAULT_COLOR_DEPTH_RANGE
+            } else {
+                f32_property(&configuration, "color_depth_range", &what)?
+            };
+        self.with(|renderer| {
+            Ok(renderer.configure(width, height, background_color, color_depth_range)?)
+        })
     }
 
     /// `Renderer::update_geometry`: replaces the triangles of every chunk in
