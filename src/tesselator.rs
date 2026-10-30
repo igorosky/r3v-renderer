@@ -156,7 +156,6 @@ pub struct CpuTesselator {
     config: Option<CpuTesselatorConfiguration>,
     chunks: FxHashMap<DiscretePoint, Box<Chunk>>,
     dirty_set: FxHashSet<DiscretePoint>,
-    in_queue: FxHashSet<DiscretePoint>,
     marching_cubes_enabled: bool,
 }
 
@@ -172,7 +171,6 @@ impl CpuTesselator {
             config: None,
             chunks: FxHashMap::default(),
             dirty_set: FxHashSet::default(),
-            in_queue: FxHashSet::default(),
             marching_cubes_enabled: false,
         }
     }
@@ -213,9 +211,7 @@ impl CpuTesselator {
     }
 
     fn mark_dirty(&mut self, chunk: DiscretePoint) {
-        if self.in_queue.insert(chunk) {
-            self.dirty_set.insert(chunk);
-        }
+        self.dirty_set.insert(chunk);
     }
 
     fn mark_subchunk_dirty(&mut self, chunk: DiscretePoint, subchunk: Point<usize>, changed: u32) {
@@ -490,7 +486,6 @@ impl Tesselator for CpuTesselator {
         if self.dirty_set.is_empty() {
             return None;
         }
-        self.in_queue.clear();
         let voxel_size = self.config.as_ref().unwrap().voxel_size;
         let chunk_extent = CHUNK_WIDTH as f32 * voxel_size;
         let dirty: Vec<DiscretePoint> = self
