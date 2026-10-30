@@ -508,6 +508,36 @@ static void renderer_configure_checks_colors(void) {
     r3v_wgpu_renderer_drop(renderer);
 }
 
+static void renderer_configure_checks_terrain_coloring(void) {
+    R3vWgpuRenderer *renderer = make_renderer(8, 8);
+    const float bad_scales[] = {0.0f, -1.0f, NAN, INFINITY};
+    for (size_t k = 0; k < ARRAY_LEN(bad_scales); ++k) {
+        R3vWgpuRendererConfiguration configuration = renderer_configuration(8, 8);
+        configuration.terrain_coloring.height_knee = bad_scales[k];
+        CHECK_STATUS(r3v_wgpu_renderer_configure(renderer, configuration), R3V_INVALID_ARGUMENT);
+        CHECK_ERROR_CONTAINS("height knee");
+        configuration = renderer_configuration(8, 8);
+        configuration.terrain_coloring.height_gain = bad_scales[k];
+        CHECK_STATUS(r3v_wgpu_renderer_configure(renderer, configuration), R3V_INVALID_ARGUMENT);
+        CHECK_ERROR_CONTAINS("height gain");
+    }
+    const float bad_heights[] = {NAN, INFINITY, -INFINITY};
+    for (size_t k = 0; k < ARRAY_LEN(bad_heights); ++k) {
+        R3vWgpuRendererConfiguration configuration = renderer_configuration(8, 8);
+        configuration.terrain_coloring.height_offset = bad_heights[k];
+        CHECK_STATUS(r3v_wgpu_renderer_configure(renderer, configuration), R3V_INVALID_ARGUMENT);
+        CHECK_ERROR_CONTAINS("height offset");
+        configuration = renderer_configuration(8, 8);
+        configuration.terrain_coloring.robot_height = bad_heights[k];
+        CHECK_STATUS(r3v_wgpu_renderer_configure(renderer, configuration), R3V_INVALID_ARGUMENT);
+        CHECK_ERROR_CONTAINS("robot height");
+    }
+    R3vWgpuRendererConfiguration zeroed = renderer_configuration(8, 8);
+    memset(&zeroed.terrain_coloring, 0, sizeof zeroed.terrain_coloring);
+    CHECK_STATUS(r3v_wgpu_renderer_configure(renderer, zeroed), R3V_INVALID_ARGUMENT);
+    r3v_wgpu_renderer_drop(renderer);
+}
+
 static void renderer_clears_to_background_color(void) {
     enum { W = 8, H = 8 };
     R3vWgpuRenderer *renderer = make_renderer(W, H);
@@ -545,6 +575,45 @@ static void renderer_color_depth_range_recolors_voxels(void) {
     CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
     render_now(renderer, camera, W, H, frame);
     CHECK(centre[2] > centre[0]);
+    r3v_cpu_tesselator_drop(tesselator);
+    r3v_wgpu_renderer_drop(renderer);
+}
+
+static void renderer_height_coloring_recolors_voxels(void) {
+    enum { W = 32, H = 32 };
+    R3vWgpuRenderer *renderer = make_renderer(W, H);
+    R3vCpuTesselator *tesselator = add_block(renderer, 1.0f, 4, 4, 2);
+    R3vOrbitCamera camera = r3v_orbit_camera_new(vec3(6.0f, 6.0f, 3.0f), 10.0f, 0.0f, 0.0f);
+    static uint8_t frame[W * H * 4];
+    static uint8_t depth[W * H * 4];
+    const uint8_t *centre = frame + 4 * ((H / 2) * W + W / 2);
+    render_now(renderer, camera, W, H, depth);
+
+    R3vWgpuRendererConfiguration configuration = renderer_configuration(W, H);
+    configuration.terrain_coloring.height_coloring_enabled = true;
+    CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
+    render_now(renderer, camera, W, H, frame);
+    CHECK(centre[2] > centre[0]);
+
+    configuration.terrain_coloring.robot_height = 11.0f;
+    CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
+    render_now(renderer, camera, W, H, frame);
+    CHECK(centre[2] > centre[0]);
+
+    configuration.terrain_coloring.relative_to_robot = true;
+    CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
+    render_now(renderer, camera, W, H, frame);
+    CHECK(centre[0] > centre[2]);
+
+    configuration.terrain_coloring.height_offset = -10.0f;
+    CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
+    render_now(renderer, camera, W, H, frame);
+    CHECK(centre[2] > centre[0]);
+
+    configuration.terrain_coloring.height_coloring_enabled = false;
+    CHECK_OK(r3v_wgpu_renderer_configure(renderer, configuration));
+    render_now(renderer, camera, W, H, frame);
+    CHECK(memcmp(frame, depth, sizeof frame) == 0);
     r3v_cpu_tesselator_drop(tesselator);
     r3v_wgpu_renderer_drop(renderer);
 }
@@ -999,8 +1068,10 @@ const TestCase TEST_CASES[] = {
     TEST(tesselator_null_arguments),
     TEST(renderer_configure_checks_size),
     TEST(renderer_configure_checks_colors),
+    TEST(renderer_configure_checks_terrain_coloring),
     TEST(renderer_clears_to_background_color),
     TEST(renderer_color_depth_range_recolors_voxels),
+    TEST(renderer_height_coloring_recolors_voxels),
     TEST(renderer_render_checks_arguments),
     TEST(renderer_first_frame_is_zeros),
     TEST(renderer_draws_voxels),

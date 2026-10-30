@@ -8,6 +8,7 @@ pub mod tesselator;
 pub mod urdf;
 
 mod bindings;
+mod hypsometric_colormap;
 mod turbo_colormap;
 mod vertex_arena;
 mod wgpu_utils;

@@ -4,7 +4,7 @@ use r3v_renderer::{
     Camera, Renderer, Robot, Tesselator,
     camera::OrbitCamera,
     geometry::{self, PointI, RealTwist},
-    renderer::{self, WgpuAccelerated},
+    renderer::{self, TerrainColoring, WgpuAccelerated},
     robot::UrdfRobot,
     shapes, stl,
     tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext},
@@ -116,6 +116,13 @@ const BACKGROUNDS: [(&str, [f32; 3]); 4] = [
 const COLOR_DEPTH_RANGE_STEP: f32 = 1.25;
 const COLOR_DEPTH_RANGE_MIN: f32 = 5.0;
 const COLOR_DEPTH_RANGE_MAX: f32 = 2000.0;
+const HEIGHT_KNEE_STEP: f32 = 1.25;
+const HEIGHT_KNEE_MIN: f32 = 0.05;
+const HEIGHT_KNEE_MAX: f32 = 20.0;
+const HEIGHT_GAIN_STEP: f32 = 1.1;
+const HEIGHT_GAIN_MIN: f32 = 0.05;
+const HEIGHT_GAIN_MAX: f32 = 2.0;
+const HEIGHT_BANDS: [u32; 4] = [0, 8, 16, 32];
 
 const STATS_INTERVAL_SECS: f32 = 0.25;
 const OVERLAY_SCALE: usize = 4;
@@ -137,6 +144,11 @@ Controls:
   M                 add/remove the robot arm
   B                 cycle background color
   [ / ]             shorten/lengthen the colormap depth range
+  H                 toggle coloring the terrain by height
+  G                 toggle measuring heights from the world's 0 or the robot
+  J / K             shorten/lengthen the height knee
+  U / I             lower/raise the height gain
+  T                 cycle height color bands
   P                 save snapshot
   Esc               quit";
 
@@ -183,6 +195,7 @@ struct Demo {
 
     background_index: usize,
     color_depth_range: f32,
+    terrain_coloring: TerrainColoring,
 
     width: u32,
     height: u32,
@@ -257,6 +270,7 @@ impl Demo {
             follow_robot: false,
             background_index: 0,
             color_depth_range: renderer::DEFAULT_COLOR_DEPTH_RANGE,
+            terrain_coloring: TerrainColoring::default(),
             width: 0,
             height: 0,
             pixel_buffer: Vec::new(),
@@ -295,6 +309,7 @@ impl Demo {
                 height: self.height,
                 background_color: BACKGROUNDS[self.background_index].1,
                 color_depth_range: self.color_depth_range,
+                terrain_coloring: self.terrain_coloring,
             });
     }
 
@@ -311,6 +326,44 @@ impl Demo {
         println!("Colormap depth range: {:.1} m", self.color_depth_range);
     }
 
+    fn scale_height_knee(&mut self, factor: f32) {
+        self.update_terrain_coloring(|coloring| {
+            coloring.height_knee =
+                (coloring.height_knee * factor).clamp(HEIGHT_KNEE_MIN, HEIGHT_KNEE_MAX);
+        });
+    }
+
+    fn scale_height_gain(&mut self, factor: f32) {
+        self.update_terrain_coloring(|coloring| {
+            coloring.height_gain =
+                (coloring.height_gain * factor).clamp(HEIGHT_GAIN_MIN, HEIGHT_GAIN_MAX);
+        });
+    }
+
+    fn update_terrain_coloring(&mut self, change: impl FnOnce(&mut TerrainColoring)) {
+        change(&mut self.terrain_coloring);
+        self.configure_renderer();
+        println!("Terrain coloring: {}", self.terrain_coloring_summary());
+    }
+
+    fn terrain_coloring_summary(&self) -> String {
+        let coloring = &self.terrain_coloring;
+        if !coloring.height_coloring_enabled {
+            return "depth".to_owned();
+        }
+        format!(
+            "height from the {}, knee {:.2} m, gain {:.2}, {} bands",
+            if coloring.relative_to_robot {
+                "robot"
+            } else {
+                "world"
+            },
+            coloring.height_knee,
+            coloring.height_gain,
+            coloring.height_bands,
+        )
+    }
+
     fn redraw(&mut self) {
         if self.width == 0 || self.height == 0 {
             return;
@@ -325,6 +378,8 @@ impl Demo {
         let lidar = (rover.translation / VOXEL_SIZE
             + Vector3::unit_y() * (LIDAR_HEIGHT / VOXEL_SIZE))
             .into();
+        self.terrain_coloring.robot_height = rover.translation.y;
+        self.configure_renderer();
         // Robot meshes were uploaded once; each frame only moves their instances.
         if let Some(robot) = &mut self.robot {
             robot.update(t, rover, &mut self.renderer);
@@ -436,13 +491,30 @@ impl Demo {
         self.input.cursor = Some(position);
     }
 
-    /// `repeat` for presses repeated while the key is held, which only the depth range follows.
+    /// `repeat` for presses repeated while the key is held, which only the color scales follow.
     fn key_pressed(&mut self, event_loop: &ActiveEventLoop, code: KeyCode, repeat: bool) {
         match code {
             KeyCode::BracketLeft => self.scale_color_depth_range(COLOR_DEPTH_RANGE_STEP.recip()),
             KeyCode::BracketRight => self.scale_color_depth_range(COLOR_DEPTH_RANGE_STEP),
+            KeyCode::KeyJ => self.scale_height_knee(HEIGHT_KNEE_STEP.recip()),
+            KeyCode::KeyK => self.scale_height_knee(HEIGHT_KNEE_STEP),
+            KeyCode::KeyU => self.scale_height_gain(HEIGHT_GAIN_STEP.recip()),
+            KeyCode::KeyI => self.scale_height_gain(HEIGHT_GAIN_STEP),
             _ if repeat => {}
             KeyCode::KeyB => self.cycle_background(),
+            KeyCode::KeyH => self.update_terrain_coloring(|coloring| {
+                coloring.height_coloring_enabled = !coloring.height_coloring_enabled;
+            }),
+            KeyCode::KeyG => self.update_terrain_coloring(|coloring| {
+                coloring.relative_to_robot = !coloring.relative_to_robot;
+            }),
+            KeyCode::KeyT => self.update_terrain_coloring(|coloring| {
+                let index = HEIGHT_BANDS
+                    .iter()
+                    .position(|&bands| bands == coloring.height_bands);
+                coloring.height_bands =
+                    HEIGHT_BANDS[index.map_or(0, |index| (index + 1) % HEIGHT_BANDS.len())];
+            }),
             KeyCode::Escape => event_loop.exit(),
             KeyCode::KeyP => self.save_snapshot(),
             KeyCode::KeyO => self.auto_orbit = !self.auto_orbit,
@@ -499,7 +571,7 @@ impl Demo {
         self.overlay_text = format!("{:.0} FPS {:.1}MS {} {}", fps, frame_ms, smoothing, culling);
         if let Some(window) = &self.window {
             window.set_title(&format!(
-                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated, {} of {} chunks drawn - {} background, colormap depth {:.1} m",
+                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated, {} of {} chunks drawn - {} background, colormap depth {:.1} m, {} coloring",
                 fps,
                 frame_ms,
                 self.quad_count,
@@ -508,6 +580,7 @@ impl Demo {
                 chunks,
                 BACKGROUNDS[self.background_index].0,
                 self.color_depth_range,
+                self.terrain_coloring_summary(),
             ));
         }
         self.quad_count = 0;

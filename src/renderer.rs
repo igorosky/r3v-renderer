@@ -5,6 +5,8 @@ use crate::{Renderer, camera, geometry, stl, vertex_arena::VertexArena};
 
 pub const DEFAULT_BACKGROUND_COLOR: [f32; 3] = [0.0; 3];
 pub const DEFAULT_COLOR_DEPTH_RANGE: f32 = 50.0;
+pub const DEFAULT_HEIGHT_KNEE: f32 = 0.5;
+pub const DEFAULT_HEIGHT_GAIN: f32 = 0.35;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WgpuAcceleratedConfiguration {
@@ -14,14 +16,49 @@ pub struct WgpuAcceleratedConfiguration {
     pub background_color: [f32; 3],
     /// Distance along the camera's forward axis over which the colormap runs once.
     pub color_depth_range: f32,
+    pub terrain_coloring: TerrainColoring,
 }
 
-fn srgb_to_linear(component: f32) -> f64 {
-    let c = f64::from(component);
-    if c <= 0.04045 {
-        c / 12.92
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerrainColoring {
+    pub height_coloring_enabled: bool,
+    pub relative_to_robot: bool,
+    pub robot_height: f32,
+    pub height_offset: f32,
+    pub height_knee: f32,
+    pub height_gain: f32,
+    pub height_bands: u32,
+}
+
+impl Default for TerrainColoring {
+    fn default() -> Self {
+        Self {
+            height_coloring_enabled: false,
+            relative_to_robot: false,
+            robot_height: 0.0,
+            height_offset: 0.0,
+            height_knee: DEFAULT_HEIGHT_KNEE,
+            height_gain: DEFAULT_HEIGHT_GAIN,
+            height_bands: 0,
+        }
+    }
+}
+
+fn colormap_params(configuration: &WgpuAcceleratedConfiguration) -> ColormapParams {
+    let coloring = &configuration.terrain_coloring;
+    let origin = if coloring.relative_to_robot {
+        coloring.robot_height
     } else {
-        ((c + 0.055) / 1.055).powf(2.4)
+        0.0
+    };
+    ColormapParams {
+        depth_range: configuration.color_depth_range,
+        color_by_height: coloring.height_coloring_enabled as u32,
+        neutral_height: origin + coloring.height_offset,
+        height_knee: coloring.height_knee,
+        height_gain: coloring.height_gain,
+        height_bands: coloring.height_bands,
+        _pad: [0.0; 2],
     }
 }
 
@@ -324,7 +361,7 @@ impl WgpuAccelerated {
         });
 
         // Colormap
-        let colormap_buffer = create_turbo_colormap_buffer(&device, DEFAULT_COLOR_DEPTH_RANGE);
+        let colormap_buffer = create_colormap_buffer(&device);
         let colormap_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Colormap Bind Group Layout"),
@@ -733,7 +770,7 @@ impl Renderer for WgpuAccelerated {
         self.state.queue.write_buffer(
             &self.state.colormap_buffer,
             COLORMAP_PARAMS_OFFSET,
-            bytemuck::bytes_of(&colormap_params(configuration.color_depth_range)),
+            bytemuck::bytes_of(&colormap_params(&configuration)),
         );
         self.active_configuration = Some(configuration);
     }
@@ -842,6 +879,7 @@ mod tests {
             height: size,
             background_color: super::DEFAULT_BACKGROUND_COLOR,
             color_depth_range: super::DEFAULT_COLOR_DEPTH_RANGE,
+            terrain_coloring: super::TerrainColoring::default(),
         });
         let [a, b, c, d] = [
             [-0.5, -0.5, 0.0],
@@ -901,6 +939,7 @@ mod tests {
             height: size,
             background_color: super::DEFAULT_BACKGROUND_COLOR,
             color_depth_range: super::DEFAULT_COLOR_DEPTH_RANGE,
+            terrain_coloring: super::TerrainColoring::default(),
         });
         let square = |x: f32, z: f32| {
             let [a, b, c, d] = [

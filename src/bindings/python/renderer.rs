@@ -4,15 +4,114 @@ use pyo3::{buffer::PyBuffer, exceptions::PyValueError, prelude::*};
 
 use crate::{
     bindings::checked::CheckedRenderer,
-    renderer::{DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE},
+    renderer::{
+        DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE, DEFAULT_HEIGHT_GAIN,
+        DEFAULT_HEIGHT_KNEE, TerrainColoring,
+    },
 };
 
 use super::{PyCameraState, PyTwist, Vec3, stl::PyStlMesh, tesselator::PyGeometryDelta};
 
+#[pyclass(
+    module = "r3v_renderer",
+    name = "TerrainColoring",
+    from_py_object,
+    eq,
+    get_all,
+    set_all
+)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct PyTerrainColoring {
+    height_coloring_enabled: bool,
+    relative_to_robot: bool,
+    robot_height: f32,
+    height_offset: f32,
+    height_knee: f32,
+    height_gain: f32,
+    height_bands: u32,
+}
+
+impl From<TerrainColoring> for PyTerrainColoring {
+    fn from(coloring: TerrainColoring) -> Self {
+        Self {
+            height_coloring_enabled: coloring.height_coloring_enabled,
+            relative_to_robot: coloring.relative_to_robot,
+            robot_height: coloring.robot_height,
+            height_offset: coloring.height_offset,
+            height_knee: coloring.height_knee,
+            height_gain: coloring.height_gain,
+            height_bands: coloring.height_bands,
+        }
+    }
+}
+
+impl From<PyTerrainColoring> for TerrainColoring {
+    fn from(coloring: PyTerrainColoring) -> Self {
+        Self {
+            height_coloring_enabled: coloring.height_coloring_enabled,
+            relative_to_robot: coloring.relative_to_robot,
+            robot_height: coloring.robot_height,
+            height_offset: coloring.height_offset,
+            height_knee: coloring.height_knee,
+            height_gain: coloring.height_gain,
+            height_bands: coloring.height_bands,
+        }
+    }
+}
+
+fn python_bool(value: bool) -> &'static str {
+    if value { "True" } else { "False" }
+}
+
+#[pymethods]
+impl PyTerrainColoring {
+    #[new]
+    #[pyo3(signature = (
+        height_coloring_enabled = false,
+        relative_to_robot = false,
+        robot_height = 0.0,
+        height_offset = 0.0,
+        height_knee = DEFAULT_HEIGHT_KNEE,
+        height_gain = DEFAULT_HEIGHT_GAIN,
+        height_bands = 0,
+    ))]
+    fn new(
+        height_coloring_enabled: bool,
+        relative_to_robot: bool,
+        robot_height: f32,
+        height_offset: f32,
+        height_knee: f32,
+        height_gain: f32,
+        height_bands: u32,
+    ) -> Self {
+        Self {
+            height_coloring_enabled,
+            relative_to_robot,
+            robot_height,
+            height_offset,
+            height_knee,
+            height_gain,
+            height_bands,
+        }
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "TerrainColoring(height_coloring_enabled={}, relative_to_robot={}, robot_height={:?}, height_offset={:?}, height_knee={:?}, height_gain={:?}, height_bands={})",
+            python_bool(self.height_coloring_enabled),
+            python_bool(self.relative_to_robot),
+            self.robot_height,
+            self.height_offset,
+            self.height_knee,
+            self.height_gain,
+            self.height_bands,
+        )
+    }
+}
+
 /// `renderer::WgpuAcceleratedConfiguration`: the frame size in pixels, the
-/// opaque sRGB background color (components between 0 and 1) and the
-/// distance along the camera's forward axis over which the voxel colormap
-/// runs once.
+/// opaque sRGB background color (components between 0 and 1), the distance
+/// along the camera's forward axis over which the voxel colormap runs once
+/// and the terrain's coloring.
 #[pyclass(
     module = "r3v_renderer",
     name = "WgpuRendererConfiguration",
@@ -27,6 +126,7 @@ pub(super) struct PyWgpuRendererConfiguration {
     height: u32,
     background_color: Vec3,
     color_depth_range: f32,
+    terrain_coloring: PyTerrainColoring,
 }
 
 #[pymethods]
@@ -37,19 +137,31 @@ impl PyWgpuRendererConfiguration {
         height,
         background_color = (DEFAULT_BACKGROUND_COLOR[0], DEFAULT_BACKGROUND_COLOR[1], DEFAULT_BACKGROUND_COLOR[2]),
         color_depth_range = DEFAULT_COLOR_DEPTH_RANGE,
+        terrain_coloring = PyTerrainColoring::from(TerrainColoring::default()),
     ))]
-    fn new(width: u32, height: u32, background_color: Vec3, color_depth_range: f32) -> Self {
+    fn new(
+        width: u32,
+        height: u32,
+        background_color: Vec3,
+        color_depth_range: f32,
+        terrain_coloring: PyTerrainColoring,
+    ) -> Self {
         Self {
             width,
             height,
             background_color,
             color_depth_range,
+            terrain_coloring,
         }
     }
     fn __repr__(&self) -> String {
         format!(
-            "WgpuRendererConfiguration(width={}, height={}, background_color={:?}, color_depth_range={:?})",
-            self.width, self.height, self.background_color, self.color_depth_range
+            "WgpuRendererConfiguration(width={}, height={}, background_color={:?}, color_depth_range={:?}, terrain_coloring={})",
+            self.width,
+            self.height,
+            self.background_color,
+            self.color_depth_range,
+            self.terrain_coloring.__repr__(),
         )
     }
 }
@@ -75,10 +187,12 @@ impl PyWgpuRenderer {
         })
     }
 
-    /// `Renderer::configure`: sets the frame size, the background color and
-    /// the colormap depth range. `ValueError` unless both sides are between 1
-    /// and 8192, the color components between 0 and 1 and the depth range
-    /// positive.
+    /// `Renderer::configure`: sets the frame size, the background color, the
+    /// colormap depth range and the terrain's coloring. At an unchanged frame
+    /// size only the settings change, from the next frame on. `ValueError`
+    /// unless both sides are between 1 and 8192, the color components between
+    /// 0 and 1, the depth range, `height_knee` and `height_gain` positive and
+    /// `height_offset` and `robot_height` finite.
     fn configure(&mut self, configuration: PyWgpuRendererConfiguration) -> PyResult<()> {
         let (r, g, b) = configuration.background_color;
         Ok(self.renderer.configure(
@@ -86,6 +200,7 @@ impl PyWgpuRenderer {
             configuration.height,
             [r, g, b],
             configuration.color_depth_range,
+            configuration.terrain_coloring.into(),
         )?)
     }
 

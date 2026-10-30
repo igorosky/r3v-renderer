@@ -1,6 +1,8 @@
+use bytemuck::Zeroable;
 use wgpu::util::{DeviceExt, DrawIndirectArgs};
 
 use crate::geometry::Vertex;
+use crate::hypsometric_colormap::{HYPSOMETRIC_COLORMAP_LEN, hypsometric_colormap};
 use crate::turbo_colormap::TURBO_COLORMAP;
 
 pub const DRAW_ARGS_STRIDE: wgpu::BufferAddress =
@@ -39,28 +41,49 @@ pub fn create_vertex_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buf
     })
 }
 
-/// Offset of the colormap parameters (`depth_range`) behind the colors.
-pub const COLORMAP_PARAMS_OFFSET: wgpu::BufferAddress =
-    (TURBO_COLORMAP.len() * std::mem::size_of::<[f32; 4]>()) as wgpu::BufferAddress;
-
-/// The colormap as `array<vec4<f32>, 256>` (vec4 for the uniform array stride of 16 bytes),
-/// followed by its parameters padded to the struct alignment of 16 bytes.
-pub fn create_turbo_colormap_buffer(device: &wgpu::Device, depth_range: f32) -> wgpu::Buffer {
-    let colors = TURBO_COLORMAP
-        .iter()
-        .map(|&[r, g, b]| [r, g, b, 1.0])
-        .chain(std::iter::once(colormap_params(depth_range)))
-        .collect::<Vec<[f32; 4]>>();
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Turbo Colormap Buffer"),
-        contents: bytemuck::cast_slice(&colors),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    })
+pub fn srgb_to_linear(component: f32) -> f64 {
+    let c = f64::from(component);
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
 }
 
-/// The colormap parameters as written at `COLORMAP_PARAMS_OFFSET`.
-pub fn colormap_params(depth_range: f32) -> [f32; 4] {
-    [depth_range, 0.0, 0.0, 0.0]
+/// Offset of the colormap parameters behind the colors.
+pub const COLORMAP_PARAMS_OFFSET: wgpu::BufferAddress =
+    ((TURBO_COLORMAP.len() + HYPSOMETRIC_COLORMAP_LEN) * std::mem::size_of::<[f32; 4]>())
+        as wgpu::BufferAddress;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ColormapParams {
+    pub depth_range: f32,
+    pub color_by_height: u32,
+    pub neutral_height: f32,
+    pub height_knee: f32,
+    pub height_gain: f32,
+    pub height_bands: u32,
+    pub _pad: [f32; 2],
+}
+
+/// Both colormaps in one `array<vec4<f32>, 512>` (vec4 for the uniform array stride of 16 bytes),
+/// followed by zeroed parameters to write at `COLORMAP_PARAMS_OFFSET`.
+pub fn create_colormap_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    let hypsometric = hypsometric_colormap().map(|color| color.map(|c| srgb_to_linear(c) as f32));
+    let colors = TURBO_COLORMAP
+        .iter()
+        .copied()
+        .chain(hypsometric)
+        .map(|[r, g, b]| [r, g, b, 1.0])
+        .collect::<Vec<[f32; 4]>>();
+    let mut contents = bytemuck::cast_slice::<_, u8>(&colors).to_vec();
+    contents.extend_from_slice(bytemuck::bytes_of(&ColormapParams::zeroed()));
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Colormap Buffer"),
+        contents: &contents,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    })
 }
 
 /// A command buffer making a copy into `buffer` visible to the host: a TRANSFER_WRITE ->
@@ -266,17 +289,25 @@ mod tests {
     }
 
     #[test]
-    fn turbo_buffer_holds_whole_colormap() {
+    fn colormap_buffer_holds_both_colormaps() {
         let gpu = TestGpu::new();
-        let buffer = create_turbo_colormap_buffer(&gpu.device, 50.0);
-        // 256 entries of vec4<f32>, then the parameters padded to a vec4<f32>.
-        assert_eq!(COLORMAP_PARAMS_OFFSET, 256 * 16);
-        assert_eq!(buffer.size(), 256 * 16 + 16);
+        let buffer = create_colormap_buffer(&gpu.device);
+        // 2 * 256 entries of vec4<f32>, then the parameters padded to whole vec4<f32>s.
+        assert_eq!(COLORMAP_PARAMS_OFFSET, 512 * 16);
+        assert_eq!(std::mem::size_of::<ColormapParams>(), 2 * 16);
+        assert_eq!(buffer.size(), 512 * 16 + 2 * 16);
         assert!(
             buffer
                 .usage()
                 .contains(wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST)
         );
+    }
+
+    #[test]
+    fn srgb_to_linear_keeps_the_ends() {
+        assert_eq!(srgb_to_linear(0.0), 0.0);
+        assert!((srgb_to_linear(1.0) - 1.0).abs() < 1e-12);
+        assert!((srgb_to_linear(0.5) - 0.214).abs() < 1e-3);
     }
 
     #[test]
