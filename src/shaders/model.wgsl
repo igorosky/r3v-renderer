@@ -17,6 +17,7 @@ struct VertexInput {
 struct InstanceInput {
     @location(3) translation: vec3<f32>,
     @location(4) rotation: vec4<f32>,
+    @location(5) color: vec3<f32>,
 };
 
 struct VertexOutput {
@@ -36,7 +37,7 @@ fn vs_main(
     instance: InstanceInput,
 ) -> VertexOutput {
     var out: VertexOutput;
-    out.color = model.color;
+    out.color = model.color * instance.color;
     let world_position = rotate(instance.rotation, model.position) + instance.translation;
     out.clip_position = camera.view_proj * vec4<f32>(world_position, 1.0);
     out.normal = rotate(instance.rotation, model.normal);

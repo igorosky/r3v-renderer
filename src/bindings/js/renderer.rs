@@ -16,6 +16,7 @@ use super::{
     Result, U32_MAX, error, f32_property, index, integer_property, number, numbers, property,
     range_error, stl::JsStlMesh, tesselator::JsGeometryDelta, twist, type_error, vector,
     vector_property,
+
 };
 
 /// `renderer::WgpuAcceleratedConfiguration`: the frame size in pixels, the
@@ -273,6 +274,16 @@ impl JsWgpuRenderer {
     ) -> Result<()> {
         let instance_id = index(&instance_id, &|| "instance_id".to_owned())?;
         self.with(|renderer| Ok(renderer.set_asset_visibility(instance_id, visible)?))
+    }
+
+    pub fn set_asset_color(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "number")] instance_id: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "[number, number, number]")] color: JsValue,
+    ) -> Result<()> {
+        let instance_id = index(&instance_id, &|| "instance_id".to_owned())?;
+        let color = vector(&color, &|| "color".to_owned())?;
+        self.with(|renderer| Ok(renderer.set_asset_color(instance_id, color)?))
     }
 
     /// `WgpuAccelerated::render_async`: renders a frame seen by

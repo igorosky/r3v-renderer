@@ -339,6 +339,10 @@ R3vStatus r3v_wgpu_renderer_set_asset_visibility(R3vWgpuRenderer *renderer,
                                                  uint64_t instance_id,
                                                  bool visible);
 
+R3vStatus r3v_wgpu_renderer_set_asset_color(R3vWgpuRenderer *renderer,
+                                            uint64_t instance_id,
+                                            R3vVec3 color);
+
 /// `Renderer::render`: renders a frame seen by `camera_state` and writes the
 /// previous one to `out` (frames are read back one call late). After
 /// `r3v_wgpu_renderer_configure` changed the frame size, and on the first
