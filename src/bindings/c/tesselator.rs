@@ -3,11 +3,11 @@
 
 use std::ptr;
 
-use crate::{bindings::checked::CheckedTesselator, geometry::TriangleChunk};
+use crate::{bindings::checked::CheckedTesselator, camera::CameraState, geometry::TriangleChunk};
 
 use super::{
-    Error, R3vPoint3I, R3vPointI, R3vStatus, R3vTriangle, arg, arg_mut, drop_handle, new_handle,
-    slice_arg, status,
+    Error, R3vCameraState, R3vPoint3I, R3vPointI, R3vStatus, R3vTriangle, arg, arg_mut,
+    drop_handle, new_handle, slice_arg, status,
 };
 
 /// Turns blocks of voxels into triangles (`tesselator::CpuTesselator`).
@@ -108,17 +108,24 @@ pub extern "C" fn r3v_cpu_tesselator_update_input_geometry(
 }
 
 /// `Tesselator::get_output_geometry_delta`: the chunks changed since the last
-/// call, or NULL in `*out` when nothing changed.
+/// call, or NULL in `*out` when nothing changed. With a `camera_state`, only
+/// the chunks in its view; the others stay changed for a later call. NULL
+/// `camera_state` returns every changed chunk.
 #[unsafe(no_mangle)]
 pub extern "C" fn r3v_cpu_tesselator_get_output_geometry_delta(
     tesselator: *mut R3vCpuTesselator,
+    camera_state: *const R3vCameraState,
     out: *mut *mut R3vGeometryDelta,
 ) -> R3vStatus {
     status(|| {
         let out = unsafe { arg_mut(out, "out") }?;
         *out = ptr::null_mut();
         let tesselator = unsafe { arg_mut(tesselator, "tesselator") }?;
-        if let Some(delta) = tesselator.0.get_output_geometry_delta()? {
+        let camera_state = unsafe { camera_state.as_ref() }.map(CameraState::from);
+        if let Some(delta) = tesselator
+            .0
+            .get_output_geometry_delta(camera_state.as_ref())?
+        {
             *out = Box::into_raw(Box::new(R3vGeometryDelta(delta)));
         }
         Ok(())

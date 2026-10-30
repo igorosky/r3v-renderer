@@ -1,12 +1,35 @@
 use rustc_hash::FxHashMap;
 use wgpu::util::DrawIndirectArgs;
 
+use crate::camera::Frustum;
 use crate::geometry::{DiscretePoint, Vertex};
 use crate::wgpu_utils::*;
 
 const MIN_CLASS_SHIFT: u32 = 6;
 const INITIAL_VERTEX_CAPACITY: usize = 1 << 16;
 const INITIAL_DRAW_CAPACITY: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Bounds {
+    min: [f32; 3],
+    max: [f32; 3],
+}
+
+impl Bounds {
+    fn of(vertices: &[Vertex]) -> Self {
+        let mut bounds = Self {
+            min: [f32::INFINITY; 3],
+            max: [f32::NEG_INFINITY; 3],
+        };
+        for vertex in vertices {
+            for axis in 0..3 {
+                bounds.min[axis] = bounds.min[axis].min(vertex.position[axis]);
+                bounds.max[axis] = bounds.max[axis].max(vertex.position[axis]);
+            }
+        }
+        bounds
+    }
+}
 
 struct ChunkAlloc {
     offset: u32,
@@ -26,9 +49,14 @@ pub(crate) struct VertexArena {
 
     draws: Vec<DrawIndirectArgs>,
     draw_owners: Vec<DiscretePoint>,
+    draw_bounds: Vec<Bounds>,
     draw_buffer: wgpu::Buffer,
     draw_capacity: usize,
     draws_dirty: bool,
+
+    visible_draws: Vec<DrawIndirectArgs>,
+    visible_buffer: wgpu::Buffer,
+    visible_capacity: usize,
 }
 
 fn size_class(count: u32) -> u32 {
@@ -50,9 +78,13 @@ impl VertexArena {
             chunks: FxHashMap::default(),
             draws: Vec::new(),
             draw_owners: Vec::new(),
+            draw_bounds: Vec::new(),
             draw_buffer: create_draw_buffer(device, INITIAL_DRAW_CAPACITY),
             draw_capacity: INITIAL_DRAW_CAPACITY,
             draws_dirty: false,
+            visible_draws: Vec::new(),
+            visible_buffer: create_draw_buffer(device, INITIAL_DRAW_CAPACITY),
+            visible_capacity: INITIAL_DRAW_CAPACITY,
         }
     }
 
@@ -68,6 +100,31 @@ impl VertexArena {
         self.draws.len() as u32
     }
 
+    pub fn visible_buffer(&self) -> &wgpu::Buffer {
+        &self.visible_buffer
+    }
+
+    pub fn cull(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frustum: &Frustum) -> u32 {
+        self.visible_draws.clear();
+        self.visible_draws.extend(
+            self.draws
+                .iter()
+                .zip(&self.draw_bounds)
+                .filter(|(_, bounds)| frustum.intersects_box(bounds.min, bounds.max))
+                .map(|(draw, _)| *draw),
+        );
+        if self.visible_draws.len() > self.visible_capacity {
+            self.visible_capacity = self.visible_draws.len().next_power_of_two();
+            self.visible_buffer = create_draw_buffer(device, self.visible_capacity);
+        }
+        queue.write_buffer(
+            &self.visible_buffer,
+            0,
+            bytemuck::cast_slice(&self.visible_draws),
+        );
+        self.visible_draws.len() as u32
+    }
+
     pub fn set_chunk(
         &mut self,
         device: &wgpu::Device,
@@ -80,6 +137,7 @@ impl VertexArena {
             return;
         }
         let count = vertices.len() as u32;
+        let bounds = Bounds::of(vertices);
         if let Some(alloc) = self.chunks.get_mut(&index)
             && count <= alloc.capacity
         {
@@ -90,6 +148,7 @@ impl VertexArena {
                 bytemuck::cast_slice(vertices),
             );
             self.draws[alloc.draw_slot].vertex_count = count;
+            self.draw_bounds[alloc.draw_slot] = bounds;
             self.draws_dirty = true;
             return;
         }
@@ -116,6 +175,7 @@ impl VertexArena {
                 alloc.capacity = capacity;
                 alloc.count = count;
                 self.draws[alloc.draw_slot] = args;
+                self.draw_bounds[alloc.draw_slot] = bounds;
             }
             None => {
                 self.chunks.insert(
@@ -129,6 +189,7 @@ impl VertexArena {
                 );
                 self.draws.push(args);
                 self.draw_owners.push(index);
+                self.draw_bounds.push(bounds);
             }
         }
         self.draws_dirty = true;
@@ -141,6 +202,7 @@ impl VertexArena {
         self.release(alloc.offset, alloc.capacity);
         self.draws.swap_remove(alloc.draw_slot);
         self.draw_owners.swap_remove(alloc.draw_slot);
+        self.draw_bounds.swap_remove(alloc.draw_slot);
         if let Some(moved) = self.draw_owners.get(alloc.draw_slot) {
             self.chunks
                 .get_mut(moved)
@@ -474,5 +536,78 @@ mod tests {
             }
             harness.finish_and_check();
         }
+    }
+
+    fn box_vertices(min: [f32; 3], max: [f32; 3], tag: f32) -> Vec<Vertex> {
+        (0..24)
+            .map(|i| {
+                let corner = i / 3;
+                let pick = |axis: usize| {
+                    if corner >> axis & 1 == 0 {
+                        min[axis]
+                    } else {
+                        max[axis]
+                    }
+                };
+                Vertex {
+                    position: [pick(0), pick(1), pick(2)],
+                    color: [tag; 3],
+                    normal: [0.0, 1.0, 0.0],
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn culling_draws_only_chunks_in_view() {
+        use crate::{Camera, camera::OrbitCamera};
+
+        let gpu = TestGpu::new();
+        let mut arena = VertexArena::new(&gpu.device);
+        let frustum = OrbitCamera::default().get_state(1.0).frustum();
+        let cull = |arena: &mut VertexArena| {
+            arena.finish_update(&gpu.device, &gpu.queue);
+            let count = arena.cull(&gpu.device, &gpu.queue, &frustum) as usize;
+            let draws = gpu.read_buffer(arena.visible_buffer());
+            let vertices = gpu.read_buffer(arena.vertex_buffer());
+            let vertices: &[Vertex] = bytemuck::cast_slice(&vertices);
+            let mut tags: Vec<f32> = bytemuck::cast_slice::<u8, DrawIndirectArgs>(
+                &draws[..count * DRAW_ARGS_STRIDE as usize],
+            )
+            .iter()
+            .map(|draw| {
+                assert_eq!(draw.vertex_count, 24);
+                vertices[draw.first_vertex as usize].color[0]
+            })
+            .collect();
+            tags.sort_by(f32::total_cmp);
+            tags
+        };
+
+        let in_view = box_vertices([-1.0; 3], [1.0; 3], 1.0);
+        let set = |arena: &mut VertexArena, chunk, vertices: &[Vertex]| {
+            arena.set_chunk(&gpu.device, &gpu.queue, index(chunk), vertices);
+        };
+        set(&mut arena, 1, &in_view);
+        set(&mut arena, 2, &box_vertices([50.0; 3], [60.0; 3], 2.0));
+        set(
+            &mut arena,
+            3,
+            &box_vertices([-1.0, -1.0, 8.0], [1.0, 1.0, 9.0], 3.0),
+        );
+        set(&mut arena, 4, &box_vertices([-0.5; 3], [0.5; 3], 4.0));
+        assert_eq!(cull(&mut arena), [1.0, 4.0]);
+
+        set(&mut arena, 2, &box_vertices([0.0; 3], [0.5; 3], 2.0));
+        assert_eq!(cull(&mut arena), [1.0, 2.0, 4.0]);
+        arena.remove_chunk(index(1));
+        assert_eq!(cull(&mut arena), [2.0, 4.0]);
+        set(
+            &mut arena,
+            3,
+            &box_vertices([-0.2, -0.2, -3.0], [0.2, 0.2, -2.0], 3.0),
+        );
+        assert_eq!(cull(&mut arena), [2.0, 3.0, 4.0]);
+        assert_eq!(arena.draw_count(), 3);
     }
 }

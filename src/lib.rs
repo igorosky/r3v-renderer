@@ -2,6 +2,7 @@ pub mod camera;
 pub mod geometry;
 pub mod renderer;
 pub mod robot;
+pub mod shapes;
 pub mod stl;
 pub mod tesselator;
 pub mod urdf;
@@ -40,10 +41,14 @@ pub trait Tesselator {
     type Configuration;
     type InputGeometryDelta;
     type OutputGeometryDelta;
+    type TesselationContext;
 
     fn configure(&mut self, configuration: Self::Configuration);
     fn update_input_geometry(&mut self, geometry_delta: &Self::InputGeometryDelta);
-    fn get_output_geometry_delta(&mut self) -> Option<Self::OutputGeometryDelta>;
+    fn get_output_geometry_delta(
+        &mut self,
+        context: &Self::TesselationContext,
+    ) -> Option<Self::OutputGeometryDelta>;
 }
 
 pub trait Renderer {
@@ -69,5 +74,6 @@ pub trait Renderer {
         transform: Self::AssetTransform,
     );
     fn set_asset_visibility(&mut self, instance_id: Self::AssetInstanceId, visible: bool);
+    fn set_asset_color(&mut self, instance_id: Self::AssetInstanceId, color: [f32; 3]);
     fn render(&mut self, camera_state: &Self::CameraState, output: &mut [u8]);
 }

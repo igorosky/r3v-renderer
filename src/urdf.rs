@@ -103,6 +103,32 @@ fn read_str_with_base_dir(xml: &str, base_dir: Option<&Path>) -> Result<UrdfRobo
     let parsed = urdf_rs::read_from_string(xml)
         .map_err(|err| format!("urdf-rs failed to parse URDF: {err}"))?;
 
+    let mut named_colors = std::collections::HashMap::new();
+    let inline_materials = parsed
+        .links
+        .iter()
+        .flat_map(|link| &link.visual)
+        .filter_map(|visual| visual.material.as_ref());
+    for material in parsed.materials.iter().chain(inline_materials) {
+        if let Some(color) = &material.color
+            && !material.name.is_empty()
+        {
+            named_colors
+                .entry(material.name.clone())
+                .or_insert(color.rgba.0);
+        }
+    }
+    let convert_material = |mut material: urdf_rs::Material| {
+        if material.color.is_none()
+            && let Some(&rgba) = named_colors.get(&material.name)
+        {
+            material.color = Some(urdf_rs::Color {
+                rgba: urdf_rs::Vec4(rgba),
+            });
+        }
+        convert_material(material)
+    };
+
     Ok(UrdfRobot {
         name: parsed.name,
         links: parsed

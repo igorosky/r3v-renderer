@@ -498,6 +498,10 @@ enum R3vStatus r3v_wgpu_renderer_set_asset_visibility(struct R3vWgpuRenderer *re
                                                       uint64_t instance_id,
                                                       bool visible);
 
+enum R3vStatus r3v_wgpu_renderer_set_asset_color(struct R3vWgpuRenderer *renderer,
+                                                 uint64_t instance_id,
+                                                 struct R3vVec3 color);
+
 /**
  * `Renderer::render`: renders a frame seen by `camera_state` and writes the
  * previous one to `out` (frames are read back one call late). After
@@ -718,9 +722,12 @@ enum R3vStatus r3v_cpu_tesselator_update_input_geometry(struct R3vCpuTesselator 
 
 /**
  * `Tesselator::get_output_geometry_delta`: the chunks changed since the last
- * call, or NULL in `*out` when nothing changed.
+ * call, or NULL in `*out` when nothing changed. With a `camera_state`, only
+ * the chunks in its view; the others stay changed for a later call. NULL
+ * `camera_state` returns every changed chunk.
  */
 enum R3vStatus r3v_cpu_tesselator_get_output_geometry_delta(struct R3vCpuTesselator *tesselator,
+                                                            const struct R3vCameraState *camera_state,
                                                             struct R3vGeometryDelta **out);
 
 /**

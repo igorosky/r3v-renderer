@@ -6,8 +6,8 @@ use r3v_renderer::{
     geometry::{self, PointI, RealTwist},
     renderer::{self, WgpuAccelerated},
     robot::UrdfRobot,
-    stl,
-    tesselator::{CpuTesselator, CpuTesselatorConfiguration},
+    shapes, stl,
+    tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext},
     urdf,
 };
 use rayon::prelude::*;
@@ -71,7 +71,16 @@ const TREE_CELL: i32 = 16;
 const DEFAULT_ROBOT_URDF: &str = "assets/scorpio8.urdf.xacro";
 /// World metres per URDF metre.
 const ROBOT_SCALE: f32 = 1.0;
-const ROBOT_SITE_RADIUS: f32 = 24.0;
+/// Rover driving speed along its loop, in metres per second.
+const ROVER_SPEED: f32 = 2.0;
+/// Radius of the rover's loop, as a fraction of the world extent.
+const ROVER_PATH_RADIUS: f32 = 0.35;
+/// Half-width, in voxels, of the ground patch averaged to set the rover's height.
+const ROVER_FOOTPRINT: i32 = 3;
+/// Only voxels within this many metres of the lidar are sent to the tesselator.
+const LIDAR_RANGE: f32 = 20.0;
+/// Lidar mount height above the ground under the rover, in metres.
+const LIDAR_HEIGHT: f32 = 1.0;
 const ROBOT_JOINT_SPEED: f32 = 0.8;
 /// Sweep amplitude, in radians, for continuous joints that carry other links (rockers, wrists).
 const ROBOT_CONTINUOUS_SWEEP: f32 = 0.4;
@@ -79,6 +88,7 @@ const ROBOT_CONTINUOUS_SWEEP: f32 = 0.4;
 const ROBOT_FOCUS_DISTANCE: f32 = 3.5;
 /// Joint mounting the manipulator on the rover: every link below it belongs to the arm.
 const ROBOT_ARM_MOUNT_JOINT: &str = "mani_base_offset_joint";
+const ROBOT_SHOW_SHAPES: bool = false;
 
 // Camera framing is relative to the voxel world, so it follows VOXEL_SIZE.
 const CAMERA_DISTANCE: f32 = 160.0 * VOXEL_SIZE;
@@ -121,8 +131,9 @@ Controls:
   Shift             move faster
   O                 toggle auto-orbit
   C                 toggle marching-cubes terrain smoothing
+  V                 toggle frustum culling of terrain chunks
   R                 reset camera
-  F                 focus camera on the robot
+  F                 toggle following the robot
   M                 add/remove the robot arm
   B                 cycle background color
   [ / ]             shorten/lengthen the colormap depth range
@@ -168,6 +179,7 @@ struct Demo {
 
     input: InputState,
     auto_orbit: bool,
+    follow_robot: bool,
 
     background_index: usize,
     color_depth_range: f32,
@@ -223,7 +235,7 @@ impl Demo {
             marching_cubes_enabled: false,
         });
         let mut renderer = WgpuAccelerated::new().expect("Failed to initialize WgpuAccelerated");
-        let robot = match RobotScene::load(urdf_path, robot_placement(&world), &mut renderer) {
+        let robot = match RobotScene::load(urdf_path, rover_placement(&world, 0.0), &mut renderer) {
             Ok(robot) => Some(robot),
             Err(err) => {
                 eprintln!("Running without a robot: {err}");
@@ -242,6 +254,7 @@ impl Demo {
             robot,
             input: InputState::default(),
             auto_orbit: true,
+            follow_robot: false,
             background_index: 0,
             color_depth_range: renderer::DEFAULT_COLOR_DEPTH_RANGE,
             width: 0,
@@ -307,11 +320,29 @@ impl Demo {
         let dt = (now - self.last_frame).as_secs_f32();
         self.last_frame = now;
 
+        // The rover drives first, so the camera can follow it and the lidar scans from it.
+        let rover = rover_placement(&self.world, t);
+        let lidar = (rover.translation / VOXEL_SIZE
+            + Vector3::unit_y() * (LIDAR_HEIGHT / VOXEL_SIZE))
+            .into();
+        // Robot meshes were uploaded once; each frame only moves their instances.
+        if let Some(robot) = &mut self.robot {
+            robot.update(t, rover, &mut self.renderer);
+        }
+
+        // The camera moves before tesselating so only chunks in this frame's view are tesselated.
+        self.update_camera(dt);
+        let aspect_ratio = self.width as f32 / self.height as f32;
+        let camera_state = self.camera.get_state(aspect_ratio);
+
         // Dynamic voxel update -> tesselation -> renderer geometry update.
-        // Only bricks touched by moving objects are resent after the first frame.
-        let brick_delta = self.world.update(t);
+        // Only bricks the lidar sees changing are sent.
+        let brick_delta = self.world.update(t, lidar, LIDAR_RANGE / VOXEL_SIZE);
         self.tesselator.update_input_geometry(&brick_delta);
-        if let Some(geometry_delta) = self.tesselator.get_output_geometry_delta() {
+        let context = CpuTesselatorContext {
+            camera_frustum: Some(camera_state.frustum()),
+        };
+        if let Some(geometry_delta) = self.tesselator.get_output_geometry_delta(&context) {
             for delta in &geometry_delta {
                 self.quad_count += delta.triangles.len();
                 self.chunk_count += !delta.triangles.is_empty() as usize;
@@ -319,14 +350,6 @@ impl Demo {
             self.renderer.update_geometry(geometry_delta);
         }
 
-        // Robot meshes were uploaded once; each frame only moves their instances.
-        if let Some(robot) = &mut self.robot {
-            robot.update(t, &mut self.renderer);
-        }
-
-        self.update_camera(dt);
-        let aspect_ratio = self.width as f32 / self.height as f32;
-        let camera_state = self.camera.get_state(aspect_ratio);
         self.renderer.render(&camera_state, &mut self.pixel_buffer);
 
         self.update_stats(now);
@@ -361,6 +384,7 @@ impl Demo {
 
         if forward != 0.0 || strafe != 0.0 || lift != 0.0 {
             self.auto_orbit = false;
+            self.follow_robot = false;
             // Movement is relative to the horizontal view direction, so W never digs into the ground.
             let view_forward = self.camera.forward();
             let ahead = Vector3::new(view_forward.x, 0.0, view_forward.z).normalize();
@@ -375,6 +399,13 @@ impl Demo {
             target.x = target.x.clamp(-world_x, 2.0 * world_x);
             target.y = target.y.clamp(-world_y, 4.0 * world_y);
             target.z = target.z.clamp(-world_z, 2.0 * world_z);
+            self.camera.new_uniform_available = true;
+        }
+
+        if self.follow_robot
+            && let Some(target) = self.robot.as_ref().and_then(RobotScene::focus_point)
+        {
+            self.camera.target = cgmath::Point3::new(target.x, target.y, target.z);
             self.camera.new_uniform_available = true;
         }
     }
@@ -397,6 +428,7 @@ impl Demo {
             }
             if self.input.panning {
                 self.auto_orbit = false;
+                self.follow_robot = false;
                 let scale = self.camera.distance * MOUSE_PAN_SPEED;
                 self.camera.pan(-dx * scale, dy * scale);
             }
@@ -417,9 +449,13 @@ impl Demo {
             KeyCode::KeyC => self
                 .tesselator
                 .set_marching_cubes_enabled(!self.tesselator.marching_cubes_enabled()),
+            KeyCode::KeyV => self
+                .renderer
+                .set_frustum_culling(!self.renderer.frustum_culling()),
             KeyCode::KeyR => {
                 self.camera = initial_camera();
                 self.auto_orbit = true;
+                self.follow_robot = false;
             }
             KeyCode::KeyM => {
                 if let Some(robot) = &mut self.robot {
@@ -427,7 +463,10 @@ impl Demo {
                 }
             }
             KeyCode::KeyF => {
-                if let Some(target) = self.robot.as_ref().and_then(RobotScene::focus_point) {
+                self.follow_robot = !self.follow_robot;
+                if self.follow_robot
+                    && let Some(target) = self.robot.as_ref().and_then(RobotScene::focus_point)
+                {
                     let (yaw, pitch) =
                         (self.camera.yaw.to_degrees(), self.camera.pitch.to_degrees());
                     self.camera
@@ -451,14 +490,22 @@ impl Demo {
         } else {
             "MC OFF"
         };
-        self.overlay_text = format!("{:.0} FPS {:.1}MS {}", fps, frame_ms, smoothing);
+        let (drawn, chunks) = self.renderer.drawn_chunks();
+        let culling = if self.renderer.frustum_culling() {
+            format!("CULL {drawn}/{chunks}")
+        } else {
+            "CULL OFF".to_owned()
+        };
+        self.overlay_text = format!("{:.0} FPS {:.1}MS {} {}", fps, frame_ms, smoothing, culling);
         if let Some(window) = &self.window {
             window.set_title(&format!(
-                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated - {} background, colormap depth {:.1} m",
+                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated, {} of {} chunks drawn - {} background, colormap depth {:.1} m",
                 fps,
                 frame_ms,
                 self.quad_count,
                 self.chunk_count,
+                drawn,
+                chunks,
                 BACKGROUNDS[self.background_index].0,
                 self.color_depth_range,
             ));
@@ -569,12 +616,19 @@ impl ApplicationHandler for Demo {
 
 /// Where the robot's root link sits in the voxel world: on the ground at its reserved site,
 /// turned from URDF's Z-up into the world's Y-up.
-fn robot_placement(world: &World) -> Placement {
-    let [x, z] = world.robot_site.unwrap_or([WORLD_X / 2, WORLD_Z / 2]);
+/// Where the rover is at `t`: driving an ellipse across the world, facing along it, on the ground.
+fn rover_placement(world: &World, t: f32) -> Placement {
+    let radius = [WORLD_X, WORLD_Z].map(|extent| extent as f32 * ROVER_PATH_RADIUS);
+    let angle = t * ROVER_SPEED / (radius[0].max(radius[1]) * VOXEL_SIZE);
+    let (sin, cos) = angle.sin_cos();
+    let x = WORLD_X as f32 / 2.0 + radius[0] * cos;
+    let z = WORLD_Z as f32 / 2.0 + radius[1] * sin;
+    // The URDF forward axis (+x) is turned towards the path tangent.
+    let heading = (-radius[1] * cos).atan2(-radius[0] * sin);
     Placement {
-        translation: Vector3::new(x as f32 + 0.5, world.height_at(x, z) as f32, z as f32 + 0.5)
-            * VOXEL_SIZE,
-        rotation: cgmath::Quaternion::from_angle_x(cgmath::Deg(-90.0)),
+        translation: Vector3::new(x, world.ground_height(x, z), z) * VOXEL_SIZE,
+        rotation: cgmath::Quaternion::from_angle_y(cgmath::Rad(heading))
+            * cgmath::Quaternion::from_angle_x(cgmath::Deg(-90.0)),
         scale: ROBOT_SCALE,
     }
 }
@@ -648,44 +702,56 @@ impl RobotScene {
         let description = urdf::read_file(urdf_path)?;
         let urdf_dir = urdf_path.parent().unwrap_or(Path::new("."));
 
-        // Visuals sharing a mesh file and scale share one upload and differ only by instance transform.
-        let mut groups: Vec<((String, [u32; 3]), Vec<(String, usize)>)> = Vec::new();
+        type Visuals = Vec<((String, usize), Option<[f32; 3]>)>;
+        let mut groups: Vec<(&urdf::UrdfGeometry, Visuals)> = Vec::new();
         let mut skipped = 0;
         for link in &description.links {
             for (visual_index, visual) in link.visuals.iter().enumerate() {
-                let Some(urdf::UrdfGeometry::Mesh(mesh)) = &visual.geometry else {
+                let Some(geometry) = &visual.geometry else {
                     skipped += 1;
                     continue;
                 };
-                let scale = mesh.scale.unwrap_or(urdf::Vector3 {
-                    x: 1.0,
-                    y: 1.0,
-                    z: 1.0,
-                });
-                let key = (
-                    mesh.filename.clone(),
-                    [scale.x, scale.y, scale.z].map(f32::to_bits),
-                );
-                let visual_key = (link.name.clone(), visual_index);
-                match groups.iter_mut().find(|(group_key, _)| *group_key == key) {
+                let color = visual
+                    .material
+                    .as_ref()
+                    .and_then(|material| material.color.as_ref())
+                    .map(|color| [color.rgba[0], color.rgba[1], color.rgba[2]]);
+                let visual_key = ((link.name.clone(), visual_index), color);
+                match groups.iter_mut().find(|(group, _)| *group == geometry) {
                     Some((_, visuals)) => visuals.push(visual_key),
-                    None => groups.push((key, vec![visual_key])),
+                    None => groups.push((geometry, vec![visual_key])),
                 }
             }
         }
 
         let mut instances = Vec::new();
         let mut triangle_count = 0;
-        for ((filename, scale), visuals) in groups {
-            let path = resolve_mesh_file(&filename, urdf_dir);
-            let mut mesh = stl::read_file(&path)?;
-            scale_mesh(
-                &mut mesh,
-                scale.map(f32::from_bits).map(|axis| axis * placement.scale),
-            );
+        for (geometry, visuals) in groups {
+            let mut mesh = match geometry {
+                urdf::UrdfGeometry::Mesh(mesh) => {
+                    let path = resolve_mesh_file(&mesh.filename, urdf_dir);
+                    let mut stl_mesh = stl::read_file(&path)?;
+                    let scale = mesh
+                        .scale
+                        .map_or([1.0; 3], |scale| [scale.x, scale.y, scale.z]);
+                    scale_mesh(&mut stl_mesh, scale);
+                    stl_mesh
+                }
+                primitive => shapes::tessellate(primitive).expect("only meshes are files"),
+            };
+            scale_mesh(&mut mesh, [placement.scale; 3]);
             triangle_count += mesh.triangles.len();
+            let is_shape = !matches!(geometry, urdf::UrdfGeometry::Mesh(_));
             let ids = renderer.upload_asset(mesh, visuals.len());
-            instances.extend(visuals.into_iter().zip(ids));
+            for ((visual_key, color), id) in visuals.into_iter().zip(ids) {
+                if let Some(color) = color {
+                    renderer.set_asset_color(id, color);
+                }
+                if is_shape && !ROBOT_SHOW_SHAPES {
+                    renderer.set_asset_visibility(id, false);
+                }
+                instances.push((visual_key, id));
+            }
         }
 
         let parent_links = description
@@ -698,10 +764,6 @@ impl RobotScene {
             .iter()
             .enumerate()
             .filter_map(|(index, joint)| {
-                // This joint is a mounting adjustment, not an animated articulation.
-                if joint.name == ROBOT_ARM_MOUNT_JOINT {
-                    return None;
-                }
                 let phase = index as f32 * 0.7;
                 let motion = match (joint.joint_type.as_str(), joint.limit) {
                     // Only leaf links (wheels) spin freely; spinning a rocker would lift its wheels off the ground.
@@ -713,13 +775,11 @@ impl RobotScene {
                         center: 0.0,
                         amplitude: ROBOT_CONTINUOUS_SWEEP,
                     },
-                    ("revolute" | "prismatic", Some(limit)) if limit.upper > limit.lower => {
-                        JointMotion::Sweep {
-                            phase,
-                            center: (limit.upper + limit.lower) * 0.5,
-                            amplitude: (limit.upper - limit.lower) * 0.5,
-                        }
-                    }
+                    ("revolute", Some(limit)) if limit.upper > limit.lower => JointMotion::Sweep {
+                        phase,
+                        center: (limit.upper + limit.lower) * 0.5,
+                        amplitude: (limit.upper - limit.lower) * 0.5,
+                    },
                     _ => return None,
                 };
                 Some((joint.name.clone(), motion))
@@ -739,7 +799,7 @@ impl RobotScene {
             .find(|link| !link.visuals.is_empty())
             .map(|link| link.name.clone());
         println!(
-            "Loaded robot '{}' in {:.0} ms: {} visuals ({} skipped, only meshes are supported), {} triangles, {} animated joints",
+            "Loaded robot '{}' in {:.0} ms: {} visuals ({} without geometry skipped), {} triangles, {} animated joints",
             description.name,
             load_start.elapsed().as_secs_f32() * 1000.0,
             instances.len(),
@@ -771,7 +831,8 @@ impl RobotScene {
         }
     }
 
-    fn update(&mut self, t: f32, renderer: &mut WgpuAccelerated) {
+    fn update(&mut self, t: f32, placement: Placement, renderer: &mut WgpuAccelerated) {
+        self.placement = placement;
         for (name, motion) in &self.joints {
             let position = match *motion {
                 JointMotion::Spin { phase } => t * ROBOT_JOINT_SPEED * 2.0 + phase,
@@ -1214,10 +1275,10 @@ struct World {
     gyroscopes: Vec<Gyroscope>,
     piston_fields: Vec<PistonField>,
     lakes: Vec<Lake>,
-    robot_site: Option<[i32; 2]>,
     dynamic_bricks: Vec<u32>,
     dynamic_touched: Vec<usize>,
-    initialized: bool,
+    /// Brick masks as last sent to the tesselator.
+    sent_bricks: Vec<u32>,
 }
 
 impl World {
@@ -1232,10 +1293,9 @@ impl World {
             gyroscopes: Vec::new(),
             piston_fields: Vec::new(),
             lakes: Vec::new(),
-            robot_site: None,
             dynamic_bricks: vec![0; (WORLD_BRICKS_X * WORLD_BRICKS_Y * WORLD_BRICKS_Z) as usize],
             dynamic_touched: Vec::new(),
-            initialized: false,
+            sent_bricks: vec![0; (WORLD_BRICKS_X * WORLD_BRICKS_Y * WORLD_BRICKS_Z) as usize],
         };
         for z in 0..WORLD_Z {
             for x in 0..WORLD_X {
@@ -1250,7 +1310,6 @@ impl World {
             }
         }
         world.fill_lakes();
-        world.robot_site = world.reserve_site(0x7090, ROBOT_SITE_RADIUS);
         world.build_windmills();
         world.build_piston_fields();
         world.place_gyroscopes();
@@ -1261,6 +1320,18 @@ impl World {
     fn height_at(&self, x: i32, z: i32) -> i32 {
         let (x, z) = (x.clamp(0, WORLD_X - 1), z.clamp(0, WORLD_Z - 1));
         self.heights[(z * WORLD_X + x) as usize]
+    }
+
+    /// Terrain height, in voxels, averaged over the rover's footprint around `(x, z)`.
+    fn ground_height(&self, x: f32, z: f32) -> f32 {
+        let (x, z) = (x as i32, z as i32);
+        let footprint = -ROVER_FOOTPRINT..=ROVER_FOOTPRINT;
+        let total: i32 = footprint
+            .clone()
+            .flat_map(|dz| footprint.clone().map(move |dx| (dx, dz)))
+            .map(|(dx, dz)| self.height_at(x + dx, z + dz))
+            .sum();
+        total as f32 / ((2 * ROVER_FOOTPRINT + 1) as f32).powi(2)
     }
 
     fn brick_index(bx: i32, by: i32, bz: i32) -> usize {
@@ -1475,9 +1546,10 @@ impl World {
         shapes
     }
 
-    /// Returns the bricks to send to the tesselator this frame: the whole world on the first
-    /// call, afterwards only the bricks the dynamic shapes fill now or filled last frame.
-    fn update(&mut self, t: f32) -> Vec<PointI> {
+    /// Returns the bricks to send to the tesselator this frame, like a lidar scan: the bricks
+    /// within `range` voxels of `sensor` that differ from what was last sent. Bricks out of
+    /// range keep whatever was last seen.
+    fn update(&mut self, t: f32, sensor: [f32; 3], range: f32) -> Vec<PointI> {
         let shapes = self.dynamic_shapes(t);
         let previous = std::mem::take(&mut self.dynamic_touched);
         for &index in &previous {
@@ -1495,24 +1567,28 @@ impl World {
             self.dynamic_bricks[index] |= mask;
         }
 
-        let mask = |index: usize| self.static_bricks[index] | self.dynamic_bricks[index];
+        let brick_size = [BRICK_X, BRICK_Y, BRICK_Z];
+        let bmin = brick_of(sensor.map(|c| (c - range).floor() as i32));
+        let bmax = brick_of(sensor.map(|c| (c + range).ceil() as i32));
         let mut delta = Vec::new();
-        if !self.initialized {
-            for index in 0..self.static_bricks.len() {
-                if mask(index) != 0 {
-                    delta.push(brick_point(index, mask(index)));
+        for bz in bmin[2]..=bmax[2] {
+            for by in bmin[1]..=bmax[1] {
+                for bx in bmin[0]..=bmax[0] {
+                    let center = array::from_fn(|axis| {
+                        ([bx, by, bz][axis] as f32 + 0.5) * brick_size[axis] as f32
+                    });
+                    if distance_sq(center, sensor) > range * range {
+                        continue;
+                    }
+                    let index = Self::brick_index(bx, by, bz);
+                    let mask = self.static_bricks[index] | self.dynamic_bricks[index];
+                    if mask != self.sent_bricks[index] {
+                        self.sent_bricks[index] = mask;
+                        delta.push(brick_point(index, mask));
+                    }
                 }
             }
-        } else {
-            // Unchanged bricks are filtered out by the tesselator.
-            let vacated = previous
-                .iter()
-                .filter(|&&index| self.dynamic_bricks[index] == 0);
-            for &index in self.dynamic_touched.iter().chain(vacated) {
-                delta.push(brick_point(index, mask(index)));
-            }
         }
-        self.initialized = true;
         delta
     }
 
@@ -1668,6 +1744,12 @@ fn glyph(c: char) -> [u8; 5] {
         'F' => [0b111, 0b100, 0b110, 0b100, 0b100],
         'P' => [0b111, 0b101, 0b111, 0b100, 0b100],
         'M' => [0b101, 0b111, 0b111, 0b101, 0b101],
+        'C' => [0b111, 0b100, 0b100, 0b100, 0b111],
+        'O' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        'N' => [0b110, 0b101, 0b101, 0b101, 0b101],
+        'U' => [0b101, 0b101, 0b101, 0b101, 0b111],
+        'L' => [0b100, 0b100, 0b100, 0b100, 0b111],
+        '/' => [0b001, 0b001, 0b010, 0b100, 0b100],
         _ => [0; 5],
     }
 }

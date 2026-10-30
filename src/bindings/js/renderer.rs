@@ -275,6 +275,16 @@ impl JsWgpuRenderer {
         self.with(|renderer| Ok(renderer.set_asset_visibility(instance_id, visible)?))
     }
 
+    pub fn set_asset_color(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "number")] instance_id: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "[number, number, number]")] color: JsValue,
+    ) -> Result<()> {
+        let instance_id = index(&instance_id, &|| "instance_id".to_owned())?;
+        let color = vector(&color, &|| "color".to_owned())?;
+        self.with(|renderer| Ok(renderer.set_asset_color(instance_id, color)?))
+    }
+
     /// `WgpuAccelerated::render_async`: renders a frame seen by
     /// `camera_state` and writes the previous one to `out` (frames are read
     /// back one call late). After `configure` changed the frame size, and on

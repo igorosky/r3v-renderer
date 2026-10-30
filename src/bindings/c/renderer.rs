@@ -122,6 +122,19 @@ pub extern "C" fn r3v_wgpu_renderer_set_asset_visibility(
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn r3v_wgpu_renderer_set_asset_color(
+    renderer: *mut R3vWgpuRenderer,
+    instance_id: u64,
+    color: R3vVec3,
+) -> R3vStatus {
+    status(|| {
+        let renderer = unsafe { arg_mut(renderer, "renderer") }?;
+        let R3vVec3 { x, y, z } = color;
+        Ok(renderer.0.set_asset_color(instance_id, [x, y, z])?)
+    })
+}
+
 /// `Renderer::render`: renders a frame seen by `camera_state` and writes the
 /// previous one to `out` (frames are read back one call late). After
 /// `r3v_wgpu_renderer_configure` changed the frame size, and on the first

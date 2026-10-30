@@ -86,7 +86,7 @@ R3vCpuTesselator *add_block(R3vWgpuRenderer *renderer, float voxel_size, int32_t
     R3vPointI block = {x, y, z, UINT32_MAX};
     CHECK_OK(r3v_cpu_tesselator_update_input_geometry(tesselator, &block, 1));
     R3vGeometryDelta *delta = NULL;
-    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, &delta));
+    CHECK_OK(r3v_cpu_tesselator_get_output_geometry_delta(tesselator, NULL, &delta));
     CHECK(delta != NULL);
     CHECK_OK(r3v_wgpu_renderer_update_geometry(renderer, delta));
     return tesselator;

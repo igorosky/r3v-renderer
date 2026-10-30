@@ -4,12 +4,18 @@ use std::collections::{HashMap, HashSet};
 
 use common::Lcg;
 use r3v_renderer::{
-    Tesselator,
+    Camera, Tesselator,
+    camera::OrbitCamera,
     geometry::{DiscretePoint, PointI, RealQuad, RealTriangle, TriangleChunk},
-    tesselator::{CpuTesselator, CpuTesselatorConfiguration},
+    tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext},
 };
 
 const BRICK: [i32; 3] = [4, 4, 2];
+const CHUNK_WIDTH: i32 = 16;
+/// No frustum: every dirty chunk is tesselated.
+const ALL_CHUNKS: CpuTesselatorContext = CpuTesselatorContext {
+    camera_frustum: None,
+};
 const FULL: u32 = u32::MAX;
 
 type Cell = [i32; 3];
@@ -240,10 +246,14 @@ impl Harness {
     fn step(&mut self, delta: &[PointI]) {
         self.world.apply(delta);
         self.tesselator.update_input_geometry(&delta.to_vec());
-        if let Some(output) = self.tesselator.get_output_geometry_delta() {
+        if let Some(output) = self.tesselator.get_output_geometry_delta(&ALL_CHUNKS) {
             self.mesh.apply(output);
         }
-        assert!(self.tesselator.get_output_geometry_delta().is_none());
+        assert!(
+            self.tesselator
+                .get_output_geometry_delta(&ALL_CHUNKS)
+                .is_none()
+        );
         self.check();
     }
 
@@ -519,22 +529,58 @@ fn no_delta_without_changes() {
         voxel_size: 1.0,
         marching_cubes_enabled: false,
     });
-    assert!(tesselator.get_output_geometry_delta().is_none());
+    assert!(tesselator.get_output_geometry_delta(&ALL_CHUNKS).is_none());
 
     tesselator.update_input_geometry(&vec![]);
-    assert!(tesselator.get_output_geometry_delta().is_none());
+    assert!(tesselator.get_output_geometry_delta(&ALL_CHUNKS).is_none());
 
     // Clearing an empty brick changes nothing.
     tesselator.update_input_geometry(&vec![brick([0, 0, 0], 0)]);
-    assert!(tesselator.get_output_geometry_delta().is_none());
+    assert!(tesselator.get_output_geometry_delta(&ALL_CHUNKS).is_none());
 
     tesselator.update_input_geometry(&vec![brick([0, 0, 0], FULL)]);
-    assert!(tesselator.get_output_geometry_delta().is_some());
-    assert!(tesselator.get_output_geometry_delta().is_none());
+    assert!(tesselator.get_output_geometry_delta(&ALL_CHUNKS).is_some());
+    assert!(tesselator.get_output_geometry_delta(&ALL_CHUNKS).is_none());
 
     // Sending the same content again changes nothing.
     tesselator.update_input_geometry(&vec![brick([0, 0, 0], FULL)]);
-    assert!(tesselator.get_output_geometry_delta().is_none());
+    assert!(tesselator.get_output_geometry_delta(&ALL_CHUNKS).is_none());
+}
+
+#[test]
+fn only_chunks_in_the_frustum_are_tesselated() {
+    let mut tesselator = CpuTesselator::new();
+    // Not 1, so a frustum test in voxels instead of world units would pick the wrong chunk.
+    let voxel_size = 0.5;
+    tesselator.configure(CpuTesselatorConfiguration {
+        voxel_size,
+        marching_cubes_enabled: false,
+    });
+    let far = 20 * CHUNK_WIDTH;
+    tesselator.update_input_geometry(&vec![brick([0, 0, 0], FULL), brick([far, 0, 0], FULL)]);
+
+    // Close to the far chunk, with a far plane well short of the one at the origin.
+    let center = (far as f32 + 2.0) * voxel_size;
+    let camera = OrbitCamera::new(cgmath::Point3::new(center, 1.0, 1.0), 10.0, 30.0, 30.0)
+        .with_clip_planes(0.1, 30.0);
+    let in_view = CpuTesselatorContext {
+        camera_frustum: Some(camera.get_state(1.0).frustum()),
+    };
+    // Neighbouring chunks come along too, without triangles.
+    let indices = |delta: Vec<TriangleChunk>| -> Vec<Cell> {
+        delta
+            .iter()
+            .filter(|chunk| !chunk.triangles.is_empty())
+            .map(|chunk| [chunk.index.x, chunk.index.y, chunk.index.z])
+            .collect()
+    };
+    let delta = tesselator.get_output_geometry_delta(&in_view).unwrap();
+    assert_eq!(indices(delta), [[far, 0, 0]]);
+    // The chunk out of view stays dirty, without an empty delta meanwhile.
+    assert!(tesselator.get_output_geometry_delta(&in_view).is_none());
+    let delta = tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap();
+    assert_eq!(indices(delta), [[0, 0, 0]]);
+    assert!(tesselator.get_output_geometry_delta(&ALL_CHUNKS).is_none());
 }
 
 #[test]
@@ -549,9 +595,12 @@ fn several_updates_before_reading_are_combined() {
         harness.world.apply(delta);
         harness.tesselator.update_input_geometry(delta);
     }
-    harness
-        .mesh
-        .apply(harness.tesselator.get_output_geometry_delta().unwrap());
+    harness.mesh.apply(
+        harness
+            .tesselator
+            .get_output_geometry_delta(&ALL_CHUNKS)
+            .unwrap(),
+    );
     harness.check();
 }
 
@@ -583,7 +632,7 @@ fn reconfiguring_voxel_size_applies_to_later_output() {
     });
     tesselator.update_input_geometry(&vec![brick([0, 0, 0], bit([1, 0, 0]))]);
     let mut mesh = Mesh::new(3.0);
-    mesh.apply(tesselator.get_output_geometry_delta().unwrap());
+    mesh.apply(tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap());
     let mut world = World::default();
     world.apply(&[brick([0, 0, 0], bit([1, 0, 0]))]);
     assert_eq!(mesh.faces(), world.exposed_faces());
@@ -600,7 +649,7 @@ fn update_before_configure_panics() {
 #[should_panic]
 fn output_before_configure_panics() {
     let mut tesselator = CpuTesselator::new();
-    tesselator.get_output_geometry_delta();
+    tesselator.get_output_geometry_delta(&ALL_CHUNKS);
 }
 
 fn marching_cubes_tesselator(mask: u32) -> CpuTesselator {
@@ -620,7 +669,7 @@ fn triangle_count(geometry: &[TriangleChunk]) -> usize {
 #[test]
 fn marching_cubes_can_be_toggled_and_rebuilds_geometry() {
     let mut tesselator = marching_cubes_tesselator(bit([1, 1, 0]));
-    let greedy = tesselator.get_output_geometry_delta().unwrap();
+    let greedy = tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap();
     let greedy_triangle_count = triangle_count(&greedy);
 
     tesselator.configure(CpuTesselatorConfiguration {
@@ -628,25 +677,25 @@ fn marching_cubes_can_be_toggled_and_rebuilds_geometry() {
         marching_cubes_enabled: true,
     });
     assert!(tesselator.marching_cubes_enabled());
-    let smoothed = tesselator.get_output_geometry_delta().unwrap();
+    let smoothed = tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap();
     let smoothed_triangle_count = triangle_count(&smoothed);
     assert!(smoothed_triangle_count > 0);
     assert_ne!(smoothed_triangle_count, greedy_triangle_count);
-    assert!(tesselator.get_output_geometry_delta().is_none());
+    assert!(tesselator.get_output_geometry_delta(&ALL_CHUNKS).is_none());
 
     tesselator.configure(CpuTesselatorConfiguration {
         voxel_size: 1.0,
         marching_cubes_enabled: false,
     });
     assert!(!tesselator.marching_cubes_enabled());
-    assert!(tesselator.get_output_geometry_delta().is_some());
+    assert!(tesselator.get_output_geometry_delta(&ALL_CHUNKS).is_some());
 }
 
 #[test]
 fn marching_cubes_interpolates_surface_vertices() {
     let mut tesselator = marching_cubes_tesselator(bit([0, 0, 0]));
     tesselator.set_marching_cubes_enabled(true);
-    let geometry = tesselator.get_output_geometry_delta().unwrap();
+    let geometry = tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap();
 
     let has_fractional_vertex = geometry
         .iter()
@@ -667,7 +716,7 @@ fn marching_cubes_is_scaled_by_fractional_voxel_size() {
     });
     tesselator.update_input_geometry(&vec![brick([4, -8, 2], FULL)]);
     tesselator.set_marching_cubes_enabled(true);
-    let geometry = tesselator.get_output_geometry_delta().unwrap();
+    let geometry = tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap();
 
     let mut min = [f32::MAX; 3];
     let mut max = [f32::MIN; 3];
@@ -679,16 +728,11 @@ fn marching_cubes_is_scaled_by_fractional_voxel_size() {
             }
         }
     }
-    // The smoothed surface stays within one voxel of the brick's bounds.
-    let lower = [3.0, -9.0, 1.0].map(|c| c * voxel_size);
-    let upper = [9.0, -3.0, 5.0].map(|c| c * voxel_size);
+    let lower = [4.0, -8.0, 2.0].map(|c| c * voxel_size);
+    let upper = [8.0, -4.0, 4.0].map(|c| c * voxel_size);
     for a in 0..3 {
-        assert!(
-            max[a] > min[a],
-            "geometry collapsed on axis {a}: {min:?} {max:?}"
-        );
-        assert!(min[a] >= lower[a] - 1.0e-4, "{min:?}");
-        assert!(max[a] <= upper[a] + 1.0e-4, "{max:?}");
+        assert!((min[a] - lower[a]).abs() < 1.0e-4, "{min:?}");
+        assert!((max[a] - upper[a]).abs() < 1.0e-4, "{max:?}");
     }
 }
 
@@ -708,7 +752,9 @@ fn marching_cubes_handles_all_cube_corner_patterns() {
         }
         let mut tesselator = marching_cubes_tesselator(mask);
         tesselator.set_marching_cubes_enabled(true);
-        let geometry = tesselator.get_output_geometry_delta().unwrap_or_default();
+        let geometry = tesselator
+            .get_output_geometry_delta(&ALL_CHUNKS)
+            .unwrap_or_default();
         assert!(
             geometry
                 .iter()
@@ -731,14 +777,91 @@ fn marching_cubes_handles_all_cube_corner_patterns() {
 fn marching_cubes_updates_diagonal_chunks_after_boundary_changes() {
     let mut tesselator = marching_cubes_tesselator(bit([1, 1, 0]));
     tesselator.set_marching_cubes_enabled(true);
-    tesselator.get_output_geometry_delta().unwrap();
+    tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap();
 
     tesselator.update_input_geometry(&vec![brick([0, 0, 0], bit([1, 1, 0]) | bit([0, 0, 0]))]);
-    let delta = tesselator.get_output_geometry_delta().unwrap();
+    let delta = tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap();
     assert!(delta.iter().any(|chunk| chunk.index
         == DiscretePoint {
             x: -16,
             y: -16,
             z: 0
         }));
+}
+
+fn smoothed_triangles(bricks: Vec<PointI>) -> Vec<RealTriangle> {
+    let mut tesselator = CpuTesselator::new();
+    tesselator.configure(CpuTesselatorConfiguration {
+        voxel_size: 1.0,
+        marching_cubes_enabled: true,
+    });
+    tesselator.update_input_geometry(&bricks);
+    tesselator
+        .get_output_geometry_delta(&ALL_CHUNKS)
+        .unwrap()
+        .into_iter()
+        .flat_map(|chunk| chunk.triangles)
+        .collect()
+}
+
+fn smoothed_solids() -> Vec<(&'static str, Vec<PointI>, [f32; 3])> {
+    vec![
+        (
+            "single voxel",
+            vec![brick([0, 0, 0], bit([1, 1, 0]))],
+            [1.5, 1.5, 0.5],
+        ),
+        ("full brick", vec![brick([4, 8, 2], FULL)], [6.0, 10.0, 3.0]),
+        (
+            "box across chunk boundaries",
+            box_bricks([-8, -8, -4], [8, 8, 4], FULL),
+            [0.0, 0.0, 0.0],
+        ),
+    ]
+}
+
+#[test]
+fn marching_cubes_surface_is_closed() {
+    let key = |v: [f32; 3]| v.map(|c| (c * 1.0e4).round() as i64);
+    for (name, bricks, _) in smoothed_solids() {
+        let triangles = smoothed_triangles(bricks);
+        assert!(!triangles.is_empty(), "{name}: no geometry");
+        let mut edges: HashMap<([i64; 3], [i64; 3]), i32> = HashMap::new();
+        for triangle in &triangles {
+            let [a, b, c] = [triangle.v0, triangle.v1, triangle.v2].map(key);
+            if a == b || b == c || c == a {
+                continue;
+            }
+            for (from, to) in [(a, b), (b, c), (c, a)] {
+                *edges.entry((from, to)).or_default() += 1;
+                *edges.entry((to, from)).or_default() -= 1;
+            }
+        }
+        let open = edges.values().filter(|&&balance| balance != 0).count();
+        assert_eq!(
+            open, 0,
+            "{name}: {open} edges are not matched by a reversed edge"
+        );
+    }
+}
+
+#[test]
+fn marching_cubes_triangles_face_out_of_the_solid() {
+    for (name, bricks, center) in smoothed_solids() {
+        for triangle in smoothed_triangles(bricks) {
+            let normal = triangle.normal();
+            if normal.dot(normal) == 0.0 {
+                continue;
+            }
+            let centroid: [f32; 3] =
+                std::array::from_fn(|a| (triangle.v0[a] + triangle.v1[a] + triangle.v2[a]) / 3.0);
+            let outward = [
+                centroid[0] - center[0],
+                centroid[1] - center[1],
+                centroid[2] - center[2],
+            ];
+            let facing = normal.x * outward[0] + normal.y * outward[1] + normal.z * outward[2];
+            assert!(facing > 0.0, "{name}: {triangle:?} faces inwards");
+        }
+    }
 }

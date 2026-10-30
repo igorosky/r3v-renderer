@@ -462,6 +462,20 @@ def tesselator_full_block_is_a_box():
     check([len(c.triangles) for c in delta] == [0])
 
 
+def tesselator_culls_chunks_out_of_view():
+    tesselator = make_tesselator(0.5)
+    # Inside their chunks, 20 chunks apart, so no neighbouring chunks come along.
+    tesselator.update_input_geometry([rr.PointI(4, 4, 2, U32_MAX), rr.PointI(324, 4, 2, U32_MAX)])
+    # Close to the far block, with a far plane well short of the other one.
+    camera = rr.OrbitCamera((163, 2.5, 1.5), 10, 30, 30).with_clip_planes(0.1, 30)
+    state = camera.get_state(1.0)
+    check([c.index for c in tesselator.get_output_geometry_delta(state)] == [(320, 0, 0)])
+    # The chunk out of view stays changed for a call without a camera.
+    check(tesselator.get_output_geometry_delta(camera_state=state) is None)
+    check([c.index for c in tesselator.get_output_geometry_delta()] == [(0, 0, 0)])
+    check(tesselator.get_output_geometry_delta() is None)
+
+
 def tesselator_toggles_marching_cubes():
     tesselator = make_tesselator(1.0)
     check(not tesselator.marching_cubes_enabled())
@@ -669,6 +683,31 @@ def renderer_draws_assets():
     check(lit(render_now(renderer, camera, w, h), w, w // 2, h // 2))
 
 
+def renderer_colors_assets():
+    w, h = 32, 32
+    renderer = make_renderer(w, h)
+    (instance,) = renderer.upload_asset(rr.StlMesh([FRONT_TRIANGLE]), 1)
+    camera = rr.OrbitCamera()
+    center = (h // 2 * w + w // 2) * 4
+
+    b, g, r, _ = render_now(renderer, camera, w, h)[center:center + 4]
+    check(r != 0 and b == g == r)
+    white = r
+
+    renderer.set_asset_color(instance, (1.0, 0.0, 0.0))
+    check(tuple(render_now(renderer, camera, w, h)[center:center + 3]) == (0, 0, white))
+
+    with raises(ValueError, "between 0 and 1"):
+        renderer.set_asset_color(instance, (1.5, 0.0, 0.0))
+    with raises(ValueError):
+        renderer.set_asset_color(instance, (float("nan"), 0.0, 0.0))
+    with raises(IndexError):
+        renderer.set_asset_color(instance + 1, (1.0, 0.0, 0.0))
+    with raises(ValueError, "length 3"):
+        renderer.set_asset_color(instance, (1.0, 0.0))
+    check(tuple(render_now(renderer, camera, w, h)[center:center + 3]) == (0, 0, white))
+
+
 def renderer_rejects_unknown_instances():
     renderer = make_renderer(4, 4)
     with raises(IndexError, "instance 0"):
@@ -821,6 +860,7 @@ TEST_CASES = [
     tesselator_checks_voxel_size,
     tesselator_rejects_unaligned_blocks,
     tesselator_full_block_is_a_box,
+    tesselator_culls_chunks_out_of_view,
     tesselator_toggles_marching_cubes,
     tesselator_takes_voxelizer_points,
     tesselator_rejects_other_objects,
@@ -834,6 +874,7 @@ TEST_CASES = [
     renderer_draws_voxels,
     renderer_update_geometry_takes_the_delta,
     renderer_draws_assets,
+    renderer_colors_assets,
     renderer_rejects_unknown_instances,
     renderer_upload_checks_arguments,
     renderer_resize_restarts_readback,
