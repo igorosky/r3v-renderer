@@ -96,6 +96,18 @@ const ZOOM_STEP: f32 = 0.88;
 const MOVE_SPEED: f32 = 0.6;
 const FAST_MULTIPLIER: f32 = 4.0;
 
+/// Cycled with B: a name and an sRGB color.
+const BACKGROUNDS: [(&str, [f32; 3]); 4] = [
+    ("black", renderer::DEFAULT_BACKGROUND_COLOR),
+    ("slate", [0.12, 0.13, 0.16]),
+    ("sky", [0.53, 0.75, 0.95]),
+    ("white", [1.0, 1.0, 1.0]),
+];
+/// Factor of one [ or ] press on the colormap depth range.
+const COLOR_DEPTH_RANGE_STEP: f32 = 1.25;
+const COLOR_DEPTH_RANGE_MIN: f32 = 5.0;
+const COLOR_DEPTH_RANGE_MAX: f32 = 2000.0;
+
 const STATS_INTERVAL_SECS: f32 = 0.25;
 const OVERLAY_SCALE: usize = 4;
 
@@ -114,6 +126,8 @@ Controls:
   R                 reset camera
   F                 focus camera on the robot
   M                 add/remove the robot arm
+  B                 cycle background color
+  [ / ]             shorten/lengthen the colormap depth range
   P                 save snapshot
   Esc               quit";
 
@@ -156,6 +170,9 @@ struct Demo {
 
     input: InputState,
     auto_orbit: bool,
+
+    background_index: usize,
+    color_depth_range: f32,
 
     width: u32,
     height: u32,
@@ -227,6 +244,8 @@ impl Demo {
             robot,
             input: InputState::default(),
             auto_orbit: true,
+            background_index: 0,
+            color_depth_range: renderer::DEFAULT_COLOR_DEPTH_RANGE,
             width: 0,
             height: 0,
             pixel_buffer: Vec::new(),
@@ -250,11 +269,35 @@ impl Demo {
             return;
         };
         surface.resize(w, h).expect("Failed to resize surface");
-        self.renderer
-            .configure(renderer::WgpuAcceleratedConfiguration { width, height });
         self.pixel_buffer.resize((width * height * 4) as usize, 0);
         self.width = width;
         self.height = height;
+        self.configure_renderer();
+    }
+
+    /// Passes the frame size and the render settings to the renderer. At an unchanged size only
+    /// the settings change, from the next frame on.
+    fn configure_renderer(&mut self) {
+        self.renderer
+            .configure(renderer::WgpuAcceleratedConfiguration {
+                width: self.width,
+                height: self.height,
+                background_color: BACKGROUNDS[self.background_index].1,
+                color_depth_range: self.color_depth_range,
+            });
+    }
+
+    fn cycle_background(&mut self) {
+        self.background_index = (self.background_index + 1) % BACKGROUNDS.len();
+        self.configure_renderer();
+        println!("Background: {}", BACKGROUNDS[self.background_index].0);
+    }
+
+    fn scale_color_depth_range(&mut self, factor: f32) {
+        self.color_depth_range =
+            (self.color_depth_range * factor).clamp(COLOR_DEPTH_RANGE_MIN, COLOR_DEPTH_RANGE_MAX);
+        self.configure_renderer();
+        println!("Colormap depth range: {:.1} m", self.color_depth_range);
     }
 
     fn redraw(&mut self) {
@@ -363,8 +406,13 @@ impl Demo {
         self.input.cursor = Some(position);
     }
 
-    fn key_pressed(&mut self, event_loop: &ActiveEventLoop, code: KeyCode) {
+    /// `repeat` for presses repeated while the key is held, which only the depth range follows.
+    fn key_pressed(&mut self, event_loop: &ActiveEventLoop, code: KeyCode, repeat: bool) {
         match code {
+            KeyCode::BracketLeft => self.scale_color_depth_range(COLOR_DEPTH_RANGE_STEP.recip()),
+            KeyCode::BracketRight => self.scale_color_depth_range(COLOR_DEPTH_RANGE_STEP),
+            _ if repeat => {}
+            KeyCode::KeyB => self.cycle_background(),
             KeyCode::Escape => event_loop.exit(),
             KeyCode::KeyP => self.save_snapshot(),
             KeyCode::KeyO => self.auto_orbit = !self.auto_orbit,
@@ -417,8 +465,16 @@ impl Demo {
         self.overlay_text = format!("{:.0} FPS {:.1}MS {} {}", fps, frame_ms, smoothing, culling);
         if let Some(window) = &self.window {
             window.set_title(&format!(
-                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated, {} of {} chunks drawn",
-                fps, frame_ms, self.quad_count, self.chunk_count, drawn, chunks,
+
+                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated, {} of {} chunks drawn" - {} background, colormap depth {:.1} m",
+                fps,
+                frame_ms,
+                self.quad_count,
+                self.chunk_count,
+                drawn,
+                chunks,
+                BACKGROUNDS[self.background_index].0,
+                self.color_depth_range,
             ));
         }
         self.quad_count = 0;
@@ -491,9 +547,7 @@ impl ApplicationHandler for Demo {
             } => match state {
                 ElementState::Pressed => {
                     self.input.keys.insert(code);
-                    if !repeat {
-                        self.key_pressed(event_loop, code);
-                    }
+                    self.key_pressed(event_loop, code, repeat);
                 }
                 ElementState::Released => {
                     self.input.keys.remove(&code);

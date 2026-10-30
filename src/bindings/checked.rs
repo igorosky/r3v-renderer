@@ -176,7 +176,13 @@ impl CheckedRenderer {
         })
     }
 
-    pub(crate) fn configure(&mut self, width: u32, height: u32) -> Result<()> {
+    pub(crate) fn configure(
+        &mut self,
+        width: u32,
+        height: u32,
+        background_color: [f32; 3],
+        color_depth_range: f32,
+    ) -> Result<()> {
         // The renderer asks for a device with the default limits
         let max = wgpu::Limits::default().max_texture_dimension_2d;
         if !(1..=max).contains(&width) || !(1..=max).contains(&height) {
@@ -184,7 +190,25 @@ impl CheckedRenderer {
                 "frame size must be between 1x1 and {max}x{max}, got {width}x{height}"
             )));
         }
-        let configuration = WgpuAcceleratedConfiguration { width, height };
+        if !background_color
+            .iter()
+            .all(|component| (0.0..=1.0).contains(component))
+        {
+            return Err(Error::invalid_argument(format!(
+                "background color components must be between 0 and 1, got {background_color:?}"
+            )));
+        }
+        if !(color_depth_range.is_finite() && color_depth_range > 0.0) {
+            return Err(Error::invalid_argument(format!(
+                "color depth range must be positive and finite, got {color_depth_range}"
+            )));
+        }
+        let configuration = WgpuAcceleratedConfiguration {
+            width,
+            height,
+            background_color,
+            color_depth_range,
+        };
         self.renderer.configure(configuration);
         self.configuration = Some(configuration);
         Ok(())
@@ -265,7 +289,7 @@ impl CheckedRenderer {
 
     /// Bytes of a frame at the configured size.
     pub(crate) fn frame_len(&self) -> Result<usize> {
-        let WgpuAcceleratedConfiguration { width, height } =
+        let WgpuAcceleratedConfiguration { width, height, .. } =
             self.configuration.ok_or_else(|| {
                 Error::new(
                     ErrorKind::NotConfigured,

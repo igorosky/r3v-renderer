@@ -13,12 +13,18 @@ pub struct R3vWgpuRenderer(CheckedRenderer);
 
 /// `renderer::WgpuAcceleratedConfiguration`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct R3vWgpuRendererConfiguration {
     /// Frame width in pixels.
     pub width: u32,
     /// Frame height in pixels.
     pub height: u32,
+    /// Opaque background color, sRGB: `x`, `y`, `z` are red, green and blue
+    /// between 0 and 1.
+    pub background_color: R3vVec3,
+    /// Distance along the camera's forward axis over which the voxel colormap
+    /// runs once. Has to be positive.
+    pub color_depth_range: f32,
 }
 
 /// `WgpuAccelerated::new`: blocks until a device of the default GPU adapter
@@ -29,8 +35,8 @@ pub extern "C" fn r3v_wgpu_renderer_create() -> *mut R3vWgpuRenderer {
     new_handle(|| Ok(R3vWgpuRenderer(CheckedRenderer::new()?)))
 }
 
-/// `Renderer::configure`: sets the frame size. Both sides have to be
-/// between 1 and 8192.
+/// `Renderer::configure`: sets the frame size, the background color and the
+/// colormap depth range. Both sides have to be between 1 and 8192.
 #[unsafe(no_mangle)]
 pub extern "C" fn r3v_wgpu_renderer_configure(
     renderer: *mut R3vWgpuRenderer,
@@ -38,9 +44,13 @@ pub extern "C" fn r3v_wgpu_renderer_configure(
 ) -> R3vStatus {
     status(|| {
         let renderer = unsafe { arg_mut(renderer, "renderer") }?;
-        Ok(renderer
-            .0
-            .configure(configuration.width, configuration.height)?)
+        let R3vVec3 { x, y, z } = configuration.background_color;
+        Ok(renderer.0.configure(
+            configuration.width,
+            configuration.height,
+            [x, y, z],
+            configuration.color_depth_range,
+        )?)
     })
 }
 

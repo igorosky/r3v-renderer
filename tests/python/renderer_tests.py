@@ -14,7 +14,8 @@ from pathlib import Path
 import r3v_renderer as rr
 
 from harness import (
-    add_block, check, close, lit, main, make_renderer, make_tesselator, raises, render_now, temp_path, write_file,
+    add_block, check, close, lit, main, make_renderer, make_tesselator, pixel_is, raises, render_now, temp_path,
+    write_file,
 )
 
 U32_MAX = 2**32 - 1
@@ -257,6 +258,13 @@ def value_classes_have_properties():
     check(repr(configuration) == "CpuTesselatorConfiguration(voxel_size=0.25, marching_cubes_enabled=True)")
     configuration = rr.WgpuRendererConfiguration(width=640, height=480)
     check((configuration.width, configuration.height) == (640, 480))
+    check(configuration.background_color == (0.0, 0.0, 0.0))
+    check(configuration.color_depth_range == 50.0)
+    check(repr(configuration)
+          == "WgpuRendererConfiguration(width=640, height=480, background_color=(0.0, 0.0, 0.0), color_depth_range=50.0)")
+    configuration.background_color = (1, 0.5, 0)
+    configuration.color_depth_range = 10
+    check(configuration == rr.WgpuRendererConfiguration(640, 480, (1.0, 0.5, 0.0), 10.0))
     with raises(OverflowError):
         rr.WgpuRendererConfiguration(-1, 1)
 
@@ -513,6 +521,46 @@ def renderer_configure_checks_size():
         with raises(ValueError, "frame size"):
             renderer.configure(rr.WgpuRendererConfiguration(width, height))
     renderer.configure(rr.WgpuRendererConfiguration(8192, 1))
+
+
+def renderer_configure_checks_colors():
+    renderer = make_renderer(8, 8)
+    for color_depth_range in (0.0, -1.0, math.nan, math.inf):
+        with raises(ValueError, "color depth range"):
+            renderer.configure(rr.WgpuRendererConfiguration(8, 8, color_depth_range=color_depth_range))
+    for background_color in ((-0.1, 0, 0), (0, 1.1, 0), (0, 0, math.nan)):
+        with raises(ValueError, "background color"):
+            renderer.configure(rr.WgpuRendererConfiguration(8, 8, background_color=background_color))
+
+
+def renderer_clears_to_background_color():
+    w = h = 8
+    renderer = make_renderer(w, h)
+    camera = rr.OrbitCamera()
+    renderer.configure(rr.WgpuRendererConfiguration(w, h, background_color=(1, 0, 0)))
+    frame = render_now(renderer, camera, w, h)
+    check(pixel_is(frame, w, 0, 0, (0, 0, 255)))
+    check(pixel_is(frame, w, w - 1, h - 1, (0, 0, 255)))
+
+    # At the same size it applies to the next frame; components are sRGB.
+    renderer.configure(rr.WgpuRendererConfiguration(w, h, background_color=(0, 0.5, 1)))
+    check(pixel_is(render_now(renderer, camera, w, h), w, w // 2, h // 2, (255, 128, 0)))
+
+
+def renderer_color_depth_range_recolors_voxels():
+    w = h = 32
+    renderer = make_renderer(w, h)
+    add_block(renderer, 1.0, 4, 4, 2)
+    camera = rr.OrbitCamera((6, 6, 3), 10)
+    centre = 4 * ((h // 2) * w + w // 2)
+    # Near the start of the 50 m range: turbo's blue (BGRA).
+    blue, _, red = render_now(renderer, camera, w, h)[centre:centre + 3]
+    check(blue > red)
+
+    # The block is beyond a 5 m range: turbo's red end.
+    renderer.configure(rr.WgpuRendererConfiguration(w, h, color_depth_range=5.0))
+    blue, _, red = render_now(renderer, camera, w, h)[centre:centre + 3]
+    check(red > blue)
 
 
 def renderer_render_checks_arguments():
@@ -802,6 +850,9 @@ TEST_CASES = [
     tesselator_takes_voxelizer_points,
     tesselator_rejects_other_objects,
     renderer_configure_checks_size,
+    renderer_configure_checks_colors,
+    renderer_clears_to_background_color,
+    renderer_color_depth_range_recolors_voxels,
     renderer_render_checks_arguments,
     renderer_writes_any_byte_buffer,
     renderer_first_frame_is_zeros,

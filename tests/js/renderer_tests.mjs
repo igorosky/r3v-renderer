@@ -9,7 +9,7 @@
 import process from "node:process";
 
 import {
-    addBlock, check, close, fmt, lit, main, makeRenderer, makeTesselator, renderNow, rr, same, throws,
+    addBlock, check, close, fmt, lit, main, makeRenderer, makeTesselator, pixelIs, renderNow, rr, same, throws,
 } from "./harness.mjs";
 
 const U32_MAX = 2 ** 32 - 1;
@@ -155,6 +155,14 @@ function value_classes_have_properties() {
     check(new rr.CpuTesselatorConfiguration(1, true).marching_cubes_enabled === true);
     const rendererConfiguration = new rr.WgpuRendererConfiguration(640, 480);
     check(same([rendererConfiguration.width, rendererConfiguration.height], [640, 480]));
+    check(same(rendererConfiguration.background_color, [0, 0, 0]));
+    check(rendererConfiguration.color_depth_range === 50);
+    rendererConfiguration.background_color = [1, 0.5, 0];
+    rendererConfiguration.color_depth_range = 10;
+    check(same(rendererConfiguration.background_color, [1, 0.5, 0]));
+    check(rendererConfiguration.color_depth_range === 10);
+    const colored = new rr.WgpuRendererConfiguration(4, 4, [0, 0, 1], 5);
+    check(same(colored.background_color, [0, 0, 1]) && colored.color_depth_range === 5);
 
     const identity = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
     const state = new rr.CameraState(identity, [0, 0, 5], [0, 0, -1]);
@@ -453,6 +461,50 @@ async function renderer_configure_checks_size() {
     await throws(() => renderer.configure(null), TypeError, "configuration");
     // A plain object works too.
     renderer.configure({ width: 8192, height: 1 });
+}
+
+async function renderer_configure_checks_colors() {
+    const renderer = await makeRenderer(8, 8);
+    for (const color_depth_range of [0, -1, NaN, Infinity]) {
+        await throws(() => renderer.configure({ width: 8, height: 8, color_depth_range }), RangeError, "color depth range");
+    }
+    for (const background_color of [[-0.1, 0, 0], [0, 1.1, 0], [0, 0, NaN]]) {
+        await throws(() => renderer.configure({ width: 8, height: 8, background_color }), RangeError, "background color");
+    }
+    await throws(() => renderer.configure({ width: 8, height: 8, background_color: [0, 0] }), TypeError,
+        "configuration.background_color");
+    await throws(() => renderer.configure({ width: 8, height: 8, color_depth_range: "5" }), TypeError,
+        "configuration.color_depth_range");
+}
+
+async function renderer_clears_to_background_color() {
+    const [w, h] = [8, 8];
+    const renderer = await makeRenderer(w, h);
+    const camera = new rr.OrbitCamera();
+    renderer.configure(new rr.WgpuRendererConfiguration(w, h, [1, 0, 0]));
+    const frame = await renderNow(renderer, camera, w, h);
+    check(pixelIs(frame, w, 0, 0, [0, 0, 255]));
+    check(pixelIs(frame, w, w - 1, h - 1, [0, 0, 255]));
+
+    // At the same size it applies to the next frame; components are sRGB.
+    renderer.configure({ width: w, height: h, background_color: [0, 0.5, 1] });
+    check(pixelIs(await renderNow(renderer, camera, w, h), w, w / 2, h / 2, [255, 128, 0]));
+}
+
+async function renderer_color_depth_range_recolors_voxels() {
+    const [w, h] = [32, 32];
+    const renderer = await makeRenderer(w, h);
+    addBlock(renderer, 1.0, 4, 4, 2);
+    const camera = new rr.OrbitCamera([6, 6, 3], 10);
+    const centre = 4 * ((h / 2) * w + w / 2);
+    // Near the start of the 50 m range: turbo's blue (BGRA).
+    let frame = await renderNow(renderer, camera, w, h);
+    check(frame[centre] > frame[centre + 2]);
+
+    // The block is beyond a 5 m range: turbo's red end.
+    renderer.configure({ width: w, height: h, color_depth_range: 5 });
+    frame = await renderNow(renderer, camera, w, h);
+    check(frame[centre + 2] > frame[centre]);
 }
 
 async function renderer_render_checks_arguments() {
@@ -817,6 +869,9 @@ const TEST_CASES = [
     tesselator_takes_voxelizer_points,
     tesselator_rejects_other_objects,
     renderer_configure_checks_size,
+    renderer_configure_checks_colors,
+    renderer_clears_to_background_color,
+    renderer_color_depth_range_recolors_voxels,
     renderer_render_checks_arguments,
     renderer_writes_any_byte_array,
     renderer_render_rgba_swaps_channels,

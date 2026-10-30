@@ -3,10 +3,26 @@ use std::ops::Range;
 use crate::wgpu_utils::*;
 use crate::{Renderer, camera, geometry, stl, vertex_arena::VertexArena};
 
+pub const DEFAULT_BACKGROUND_COLOR: [f32; 3] = [0.0; 3];
+pub const DEFAULT_COLOR_DEPTH_RANGE: f32 = 50.0;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WgpuAcceleratedConfiguration {
     pub width: u32,
     pub height: u32,
+    /// sRGB, each component in 0..1. The background is opaque.
+    pub background_color: [f32; 3],
+    /// Distance along the camera's forward axis over which the colormap runs once.
+    pub color_depth_range: f32,
+}
+
+fn srgb_to_linear(component: f32) -> f64 {
+    let c = f64::from(component);
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 struct WgpuAcceleratedState {
@@ -17,6 +33,7 @@ struct WgpuAcceleratedState {
     pub pixel_size: u32,
     pub camera_uniform_buffer: wgpu::Buffer,
     pub camera_bind_group: wgpu::BindGroup,
+    pub colormap_buffer: wgpu::Buffer,
     pub colormap_bind_group: wgpu::BindGroup,
 }
 
@@ -307,7 +324,7 @@ impl WgpuAccelerated {
         });
 
         // Colormap
-        let colormap_buffer = create_turbo_colormap_buffer(&device);
+        let colormap_buffer = create_turbo_colormap_buffer(&device, DEFAULT_COLOR_DEPTH_RANGE);
         let colormap_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Colormap Bind Group Layout"),
@@ -458,6 +475,7 @@ impl WgpuAccelerated {
             pixel_size: std::mem::size_of::<[u8; 4]>() as u32,
             camera_uniform_buffer,
             camera_bind_group,
+            colormap_buffer,
             colormap_bind_group,
         };
 
@@ -567,6 +585,8 @@ impl WgpuAccelerated {
             self.vertex_arena.draw_count()
         };
 
+        let [r, g, b] = config.background_color.map(srgb_to_linear);
+        let background = wgpu::Color { r, g, b, a: 1.0 };
         let targets = self.render_targets.as_ref().unwrap();
         if self.frame_index > 0 {
             let read_index = (self.frame_index + 1) % 2;
@@ -622,7 +642,7 @@ impl WgpuAccelerated {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(background),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -710,6 +730,11 @@ impl Renderer for WgpuAccelerated {
     type CameraState = camera::CameraState;
 
     fn configure(&mut self, configuration: Self::Configuration) {
+        self.state.queue.write_buffer(
+            &self.state.colormap_buffer,
+            COLORMAP_PARAMS_OFFSET,
+            bytemuck::bytes_of(&colormap_params(configuration.color_depth_range)),
+        );
         self.active_configuration = Some(configuration);
     }
 

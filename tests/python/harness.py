@@ -99,6 +99,12 @@ def lit(frame, width, x, y):
     return any(frame[offset:offset + 3])
 
 
+def pixel_is(frame, width, x, y, bgr):
+    """Whether the pixel at (x, y) is bgr, opaque, within 1 per channel."""
+    offset = (y * width + x) * 4
+    return all(abs(got - expected) <= 1 for got, expected in zip(frame[offset:offset + 4], (*bgr, 255)))
+
+
 # ------------------------------------------------------------------ main
 
 
