@@ -7,7 +7,6 @@
  */
 
 import process from "node:process";
-import { zstdCompressSync } from "node:zlib";
 
 import {
     addBlock, check, close, fmt, lit, main, makeRenderer, makeTesselator, pixelIs, renderNow, rr, same, throws,
@@ -210,15 +209,13 @@ const CLASSES = [
     "WgpuRendererConfiguration",
 ];
 
-const FUNCTIONS = ["decompress_zstd"];
-
 function module_exports_its_classes() {
     // Besides what wasm-bindgen's --target web adds to load the module.
     const loader = ["default", "initSync", "__wasm"];
     const exported = Object.keys(rr).filter((name) => !loader.includes(name)).sort();
-    check(same(exported, [...CLASSES, ...FUNCTIONS].sort()), `module exports ${fmt(exported)}`);
-    for (const name of [...CLASSES, ...FUNCTIONS]) {
-        check(typeof rr[name] === "function", `r3v_renderer.${name} is no class or function`);
+    check(same(exported, [...CLASSES].sort()), `module exports ${fmt(exported)}`);
+    for (const name of CLASSES) {
+        check(typeof rr[name] === "function", `r3v_renderer.${name} is no class`);
         check(rr[name].name === name, `${name} is named ${rr[name].name}`);
     }
 }
@@ -478,26 +475,6 @@ async function mesh_from_geometry_rejects_bad_input() {
     await throws(() => rr.Mesh.from_geometry({ type: "cylinder", radius: 1 }), TypeError, "geometry.length");
     await throws(() => rr.Mesh.from_geometry({ size: [1, 1, 1] }), TypeError, "geometry.type");
     await throws(() => rr.Mesh.from_geometry(null), TypeError, "geometry");
-}
-
-// ------------------------------------------------------------------ zstd
-
-function zstd_decompresses_a_frame() {
-    const data = new Uint8Array(100000);
-    for (let k = 0; k < data.length; ++k) {
-        data[k] = (k * 7919) % 251 < 30 ? k & 255 : 0;
-    }
-    for (const input of [data, new Uint8Array(0)]) {
-        const out = rr.decompress_zstd(new Uint8Array(zstdCompressSync(input)));
-        check(out instanceof Uint8Array);
-        check(out.length === input.length && out.every((byte, k) => byte === input[k]));
-    }
-}
-
-async function zstd_rejects_bad_input() {
-    await throws(() => rr.decompress_zstd(new Uint8Array([1, 2, 3, 4, 5, 6])), RangeError, "zstd");
-    const frame = new Uint8Array(zstdCompressSync(new Uint8Array(4096).fill(7)));
-    await throws(() => rr.decompress_zstd(frame.subarray(0, frame.length - 4)), RangeError, "zstd");
 }
 
 // ------------------------------------------------------------ tesselator
@@ -1446,8 +1423,6 @@ const TEST_CASES = [
     stl_triangles_are_copies,
     mesh_from_geometry_makes_primitives,
     mesh_from_geometry_rejects_bad_input,
-    zstd_decompresses_a_frame,
-    zstd_rejects_bad_input,
     tesselator_requires_configure,
     tesselator_checks_voxel_size,
     tesselator_rejects_unaligned_blocks,
