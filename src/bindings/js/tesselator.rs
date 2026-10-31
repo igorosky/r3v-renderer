@@ -74,6 +74,36 @@ fn words(value: &JsValue, what: What) -> Result<Box<[u64; VOXEL_GROUP_PAGES]>> {
 
 type Group = (PointI, Box<[u64; VOXEL_GROUP_PAGES]>);
 
+/// Bytes of a block in the wire layout: little endian int32 x, y, z and
+/// uint32 mask, as `PointI` is laid out.
+const BLOCK_BYTES: usize = 16;
+
+/// Bytes of a group in the wire layout: its key as a block, then the little
+/// endian words of its pages, as `VoxelGroup` is laid out.
+const GROUP_BYTES: usize = BLOCK_BYTES + 8 * VOXEL_GROUP_PAGES;
+
+/// A block from `BLOCK_BYTES` bytes of the wire layout.
+fn wire_block(bytes: &[u8]) -> PointI {
+    let word = |k: usize| <[u8; 4]>::try_from(&bytes[4 * k..4 * k + 4]).unwrap();
+    PointI {
+        x: i32::from_le_bytes(word(0)),
+        y: i32::from_le_bytes(word(1)),
+        z: i32::from_le_bytes(word(2)),
+        i: u32::from_le_bytes(word(3)),
+    }
+}
+
+/// `bytes` as `size` byte records of the wire layout.
+fn records<'a>(bytes: &'a [u8], size: usize, what: &str) -> Result<std::slice::ChunksExact<'a, u8>> {
+    if !bytes.len().is_multiple_of(size) {
+        return Err(range_error(format!(
+            "{} bytes are not a whole number of {size} byte {what}",
+            bytes.len()
+        )));
+    }
+    Ok(bytes.chunks_exact(size))
+}
+
 /// `groups` as keys and words: an array of `VoxelGroupLike`s.
 fn groups(value: &JsValue) -> Result<Vec<Group>> {
     array(value, &|| "groups".to_owned())?
@@ -182,6 +212,44 @@ impl JsCpuTesselator {
     ) -> Result<()> {
         let blocks = self::blocks(&blocks)?;
         Ok(self.0.update_input_geometry(blocks)?)
+    }
+
+    /// `update_input_geometry` with the blocks in their wire layout: 16
+    /// bytes each, little endian int32 x, y, z and uint32 mask, as the data
+    /// of an r3v_interfaces VoxelMapUpdate DELTA (decompressed) holds them.
+    ///
+    /// `RangeError` when the length is not a multiple of 16 or a block is not
+    /// aligned to the 4x4x2 grid; none of the blocks is applied then.
+    pub fn update_input_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        let blocks = records(bytes, BLOCK_BYTES, "blocks")?
+            .map(wire_block)
+            .collect();
+        Ok(self.0.update_input_geometry(blocks)?)
+    }
+
+    /// `replace_input_geometry` with the groups in their wire layout: 32784
+    /// bytes each, the key as a 16 byte block (mask ignored) followed by the
+    /// 4096 little endian uint64 words of its pages, as the data of an
+    /// r3v_interfaces VoxelMapUpdate FULL (decompressed) holds them. Every
+    /// voxel the tesselator held before is dropped, as there.
+    ///
+    /// `RangeError` when the length is not a multiple of 32784 or a key
+    /// coordinate is outside [-2^25, 2^25); none of the groups is applied
+    /// then.
+    pub fn replace_input_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        let groups = records(bytes, GROUP_BYTES, "groups")?
+            .map(|group| {
+                let mut words = Box::new([0; VOXEL_GROUP_PAGES]);
+                let (pages, _) = group[BLOCK_BYTES..].as_chunks::<8>();
+                for (word, bytes) in words.iter_mut().zip(pages) {
+                    *word = u64::from_le_bytes(*bytes);
+                }
+                (wire_block(&group[..BLOCK_BYTES]), words)
+            })
+            .collect::<Vec<Group>>();
+        Ok(self
+            .0
+            .replace_input_geometry(groups.iter().map(|(key, values)| (key.clone(), &**values)))?)
     }
 
     /// `CpuTesselator::replace_input_geometry`: drops every voxel the

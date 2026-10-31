@@ -199,9 +199,32 @@ impl Rendering {
     }
 }
 
+/// `canvas` as the surface a renderer draws into.
+#[cfg(target_arch = "wasm32")]
+fn canvas_target(canvas: JsValue) -> Result<wgpu::SurfaceTarget<'static>> {
+    // HTMLCanvasElement does not exist in workers, where OffscreenCanvas is
+    // the usual one
+    if canvas.is_instance_of::<web_sys::OffscreenCanvas>() {
+        Ok(wgpu::SurfaceTarget::OffscreenCanvas(canvas.unchecked_into()))
+    } else if canvas.is_instance_of::<web_sys::HtmlCanvasElement>() {
+        Ok(wgpu::SurfaceTarget::Canvas(canvas.unchecked_into()))
+    } else {
+        Err(type_error(format!(
+            "canvas must be an OffscreenCanvas or an HTMLCanvasElement (got {})",
+            super::describe(&canvas)
+        )))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn canvas_target(_canvas: JsValue) -> Result<wgpu::SurfaceTarget<'static>> {
+    Err(error("canvases exist only in a browser build (wasm32)"))
+}
+
 /// Renders voxel geometry and mesh instances on WebGPU
-/// (`renderer::WgpuAccelerated`). Created with the async `create`, configure
-/// it before rendering.
+/// (`renderer::WgpuAccelerated`). Created with the async `create`, which
+/// renders frames into arrays (`render`), or `create_for_canvas`, which draws
+/// them on a canvas (`present`). Configure it before rendering.
 ///
 /// `render` returns a Promise. Until it settles the renderer is busy: every
 /// other call throws, or rejects for `render`.
@@ -251,6 +274,24 @@ impl JsWgpuRenderer {
     /// WebGPU adapter. Rejects when there is no adapter or no device.
     pub async fn create() -> Result<JsWgpuRenderer> {
         let renderer = CheckedRenderer::new_async().await?;
+        Ok(Self(Rc::new(Cell::new(Some(Rendering {
+            renderer,
+            frame: Vec::new(),
+        })))))
+    }
+
+    /// `WgpuAccelerated::new_for_surface_async`: a renderer drawing into
+    /// `canvas` (an `OffscreenCanvas`, e.g. in a worker, or an
+    /// `HTMLCanvasElement`) on a device of a WebGPU adapter that can. Its
+    /// frames go to the canvas with `present`; `render` and `render_rgba`
+    /// reject. `configure` sets the canvas size too. Rejects with a
+    /// `TypeError` for anything else than a canvas, with an `Error` when there
+    /// is no such adapter or device.
+    pub async fn create_for_canvas(
+        #[wasm_bindgen(unchecked_param_type = "OffscreenCanvas | HTMLCanvasElement")]
+        canvas: JsValue,
+    ) -> Result<JsWgpuRenderer> {
+        let renderer = CheckedRenderer::new_for_surface_async(canvas_target(canvas)?).await?;
         Ok(Self(Rc::new(Cell::new(Some(Rendering {
             renderer,
             frame: Vec::new(),
@@ -310,6 +351,20 @@ impl JsWgpuRenderer {
             renderer.update_geometry(delta.take()?);
             Ok(())
         })
+    }
+
+    /// `WgpuAccelerated::set_environment_visible`: hides or shows the voxel
+    /// geometry, which is kept and updated while hidden.
+    pub fn set_environment_visible(&self, visible: bool) -> Result<()> {
+        self.with(|renderer| {
+            renderer.set_environment_visible(visible);
+            Ok(())
+        })
+    }
+
+    /// Whether the voxel geometry is drawn.
+    pub fn environment_visible(&self) -> Result<bool> {
+        self.with(|renderer| Ok(renderer.environment_visible()))
     }
 
     /// `Renderer::upload_asset`: uploads a copy of `mesh` with `instances`
@@ -377,6 +432,19 @@ impl JsWgpuRenderer {
         #[wasm_bindgen(unchecked_param_type = "Uint8Array | Uint8ClampedArray")] out: &JsValue,
     ) -> Promise {
         self.render_frame(camera_state, out, false)
+    }
+
+    /// `WgpuAccelerated::present`: draws a frame seen by `camera_state` on the
+    /// canvas of a renderer made by `create_for_canvas`, without reading it
+    /// back. False when the canvas had no texture to draw into (e.g. it was
+    /// resized meanwhile): the frame is skipped, draw the next one later.
+    /// `Error` for a renderer made by `create`.
+    pub fn present(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "CameraStateLike")] camera_state: &JsValue,
+    ) -> Result<bool> {
+        let camera_state = super::camera_state(camera_state, &|| "camera_state".to_owned())?;
+        self.with(|renderer| Ok(renderer.present(&camera_state)?))
     }
 
     /// `render` with RGBA pixels, as `ImageData` takes them: the channels are

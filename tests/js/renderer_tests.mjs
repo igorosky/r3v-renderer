@@ -7,6 +7,7 @@
  */
 
 import process from "node:process";
+import { zstdCompressSync } from "node:zlib";
 
 import {
     addBlock, check, close, fmt, lit, main, makeRenderer, makeTesselator, pixelIs, renderNow, rr, same, throws,
@@ -176,6 +177,31 @@ function facingZ({ v0, v1, v2 }) {
     return (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]);
 }
 
+/** `blocks` ([x, y, z, mask]) in the wire layout of a voxel stream DELTA. */
+function wireBlocks(blocks) {
+    const bytes = new Uint8Array(16 * blocks.length);
+    const view = new DataView(bytes.buffer);
+    blocks.forEach(([x, y, z, mask], k) => {
+        view.setInt32(16 * k, x, true);
+        view.setInt32(16 * k + 4, y, true);
+        view.setInt32(16 * k + 8, z, true);
+        view.setUint32(16 * k + 12, mask, true);
+    });
+    return bytes;
+}
+
+/** `groups` (VoxelGroupLike) in the wire layout of a voxel stream FULL. */
+function wireGroups(groups) {
+    const size = 16 + 8 * GROUP_PAGES;
+    const bytes = new Uint8Array(size * groups.length);
+    const view = new DataView(bytes.buffer);
+    groups.forEach(({ point, values }, k) => {
+        bytes.set(wireBlocks([[point.x, point.y, point.z, 0]]), size * k);
+        values.forEach((word, page) => view.setBigUint64(size * k + 16 + 8 * page, word, true));
+    });
+    return bytes;
+}
+
 // ---------------------------------------------------------------- JS API
 
 const CLASSES = [
@@ -184,13 +210,15 @@ const CLASSES = [
     "WgpuRendererConfiguration",
 ];
 
+const FUNCTIONS = ["decompress_zstd"];
+
 function module_exports_its_classes() {
     // Besides what wasm-bindgen's --target web adds to load the module.
     const loader = ["default", "initSync", "__wasm"];
     const exported = Object.keys(rr).filter((name) => !loader.includes(name)).sort();
-    check(same(exported, CLASSES), `module exports ${fmt(exported)}`);
-    for (const name of CLASSES) {
-        check(typeof rr[name] === "function", `r3v_renderer.${name} is no class`);
+    check(same(exported, [...CLASSES, ...FUNCTIONS].sort()), `module exports ${fmt(exported)}`);
+    for (const name of [...CLASSES, ...FUNCTIONS]) {
+        check(typeof rr[name] === "function", `r3v_renderer.${name} is no class or function`);
         check(rr[name].name === name, `${name} is named ${rr[name].name}`);
     }
 }
@@ -416,6 +444,60 @@ async function stl_triangles_are_copies() {
     check(new rr.StlMesh([]).triangles.length === 0);
     await throws(() => new rr.StlMesh([[0, 0, 0]]), TypeError, "triangles[0].v0");
     await throws(() => new rr.StlMesh(FRONT_TRIANGLE), TypeError, "triangles is not an array");
+}
+
+function stl_from_geometry_makes_primitives() {
+    const box = rr.StlMesh.from_geometry({ type: "box", size: [1, 2, 4] }).triangles;
+    check(box.length === 12, `a box has ${box.length} triangles`);
+    const extent = (triangles, axis) => {
+        const values = triangles.flatMap((t) => [t.v0[axis], t.v1[axis], t.v2[axis]]);
+        return [Math.min(...values), Math.max(...values)];
+    };
+    close([0, 1, 2].map((axis) => extent(box, axis)), [[-0.5, 0.5], [-1, 1], [-2, 2]]);
+    // Cylinders and capsules along Z, as in URDF.
+    const cylinder = rr.StlMesh.from_geometry({ type: "cylinder", radius: 0.5, length: 2 }).triangles;
+    close(extent(cylinder, 2), [-1, 1]);
+    close(extent(cylinder, 0), [-0.5, 0.5]);
+    const capsule = rr.StlMesh.from_geometry({ type: "capsule", radius: 0.5, length: 2 }).triangles;
+    close(extent(capsule, 2), [-1.5, 1.5]);
+    const sphere = rr.StlMesh.from_geometry({ type: "sphere", radius: 2 }).triangles;
+    close([0, 1, 2].map((axis) => extent(sphere, axis)), [[-2, 2], [-2, 2], [-2, 2]], 1e-3);
+    // What UrdfDescription returns works as it is.
+    const arm = rr.UrdfDescription.read_str(ROBOT_URDF).links.find((link) => link.name === "arm");
+    check(rr.StlMesh.from_geometry(arm.visuals[0].geometry).triangles.length === 12);
+}
+
+async function stl_from_geometry_rejects_bad_input() {
+    await throws(() => rr.StlMesh.from_geometry({ type: "mesh", filename: "a.stl", scale: null }), RangeError,
+        "read_bytes");
+    await throws(() => rr.StlMesh.from_geometry({ type: "cone", radius: 1 }), RangeError, "unknown geometry type");
+    await throws(() => rr.StlMesh.from_geometry({ type: "box", size: [1, 0, 1] }), RangeError, "geometry.size");
+    await throws(() => rr.StlMesh.from_geometry({ type: "sphere", radius: -1 }), RangeError, "geometry.radius");
+    await throws(() => rr.StlMesh.from_geometry({ type: "cylinder", radius: 1, length: NaN }), RangeError,
+        "geometry.length");
+    await throws(() => rr.StlMesh.from_geometry({ type: "cylinder", radius: 1 }), TypeError, "geometry.length");
+    await throws(() => rr.StlMesh.from_geometry({ size: [1, 1, 1] }), TypeError, "geometry.type");
+    await throws(() => rr.StlMesh.from_geometry(null), TypeError, "geometry");
+}
+
+// ------------------------------------------------------------------ zstd
+
+function zstd_decompresses_a_frame() {
+    const data = new Uint8Array(100000);
+    for (let k = 0; k < data.length; ++k) {
+        data[k] = (k * 7919) % 251 < 30 ? k & 255 : 0;
+    }
+    for (const input of [data, new Uint8Array(0)]) {
+        const out = rr.decompress_zstd(new Uint8Array(zstdCompressSync(input)));
+        check(out instanceof Uint8Array);
+        check(out.length === input.length && out.every((byte, k) => byte === input[k]));
+    }
+}
+
+async function zstd_rejects_bad_input() {
+    await throws(() => rr.decompress_zstd(new Uint8Array([1, 2, 3, 4, 5, 6])), RangeError, "zstd");
+    const frame = new Uint8Array(zstdCompressSync(new Uint8Array(4096).fill(7)));
+    await throws(() => rr.decompress_zstd(frame.subarray(0, frame.length - 4)), RangeError, "zstd");
 }
 
 // ------------------------------------------------------------ tesselator
@@ -670,6 +752,44 @@ async function tesselator_replace_rejects_bad_groups() {
         tesselator.replace_input_geometry([...block, { point: { x, y, z, i: 0 }, values: new BigUint64Array(GROUP_PAGES) }]);
     }
     check(tesselator.get_output_geometry_delta() === undefined);
+}
+
+async function tesselator_takes_wire_blocks() {
+    const expected = makeTesselator(0.5);
+    expected.update_input_geometry([new rr.PointI(4, 4, 2, U32_MAX), new rr.PointI(-8, 0, -2, 5)]);
+    const tesselator = makeTesselator(0.5);
+    tesselator.update_input_bytes(wireBlocks([[4, 4, 2, U32_MAX], [-8, 0, -2, 5]]));
+    check(same(chunkTriangles(tesselator.get_output_geometry_delta()),
+        chunkTriangles(expected.get_output_geometry_delta())));
+    // Errors apply none of the blocks.
+    await throws(() => tesselator.update_input_bytes(new Uint8Array(20)), RangeError, "16 byte blocks");
+    await throws(() => tesselator.update_input_bytes(wireBlocks([[0, 0, 0, 0], [1, 0, 0, 1]])), RangeError,
+        "blocks[1]");
+    check(tesselator.get_output_geometry_delta() === undefined);
+    tesselator.update_input_bytes(new Uint8Array(0));
+    check(tesselator.get_output_geometry_delta() === undefined);
+    await throws(() => new rr.CpuTesselator().update_input_bytes(wireBlocks([[0, 0, 0, 1]])), Error, "configure");
+}
+
+async function tesselator_replace_takes_wire_groups() {
+    const groups = voxelGroups([...blockVoxels(4, 4, 2), ...blockVoxels(68, 4, -64)]);
+    const expected = makeTesselator(1.0);
+    expected.replace_input_geometry(groups);
+    const tesselator = makeTesselator(1.0);
+    tesselator.update_input_geometry([new rr.PointI(200, 200, 200, U32_MAX)]);
+    tesselator.replace_input_bytes(wireGroups(groups));
+    // The voxels held before are gone (their chunk comes out empty), as with
+    // replace_input_geometry.
+    const filled = (delta) => chunkTriangles(delta).filter(([, triangles]) => triangles.length > 0);
+    check(same(filled(tesselator.get_output_geometry_delta()), filled(expected.get_output_geometry_delta())));
+    // Errors apply none of the groups.
+    const bytes = wireGroups(groups);
+    await throws(() => tesselator.replace_input_bytes(bytes.subarray(1)), RangeError, "32784 byte groups");
+    const bad = wireGroups([...groups, { point: { x: 2 ** 25, y: 0, z: 0 }, values: new BigUint64Array(GROUP_PAGES) }]);
+    await throws(() => tesselator.replace_input_bytes(bad), RangeError, "groups[2] has key");
+    check(tesselator.get_output_geometry_delta() === undefined);
+    tesselator.replace_input_bytes(new Uint8Array(0));
+    check(chunkTriangles(tesselator.get_output_geometry_delta()).every(([, triangles]) => triangles.length === 0));
 }
 
 // -------------------------------------------------------------- renderer
@@ -1038,6 +1158,37 @@ async function renderer_survives_a_detached_out() {
 
 // ----------------------------------------------------------------- robot
 
+async function renderer_hides_the_environment() {
+    const [w, h] = [32, 32];
+    const renderer = await makeRenderer(w, h);
+    const tesselator = addBlock(renderer, 1.0, 4, 4, 2);
+    const camera = new rr.OrbitCamera([6, 6, 3], 10);
+    check(renderer.environment_visible());
+    check(lit(await renderNow(renderer, camera, w, h), w, w / 2, h / 2));
+    renderer.set_environment_visible(false);
+    check(!renderer.environment_visible());
+    check(!lit(await renderNow(renderer, camera, w, h), w, w / 2, h / 2));
+    // Updates still apply while hidden.
+    tesselator.update_input_geometry([new rr.PointI(4, 4, 2, 0)]);
+    renderer.update_geometry(tesselator.get_output_geometry_delta());
+    tesselator.update_input_geometry([new rr.PointI(4, 4, 2, U32_MAX)]);
+    renderer.update_geometry(tesselator.get_output_geometry_delta());
+    renderer.set_environment_visible(true);
+    check(lit(await renderNow(renderer, camera, w, h), w, w / 2, h / 2));
+}
+
+async function renderer_canvas_checks_arguments() {
+    // Node.js has no canvas: only the argument checks can run here.
+    for (const canvas of [5, null, {}, new Uint8Array(4)]) {
+        await throws(() => rr.WgpuRenderer.create_for_canvas(canvas), TypeError, "canvas must be");
+    }
+    // A renderer of create has no canvas to present on.
+    const renderer = await makeRenderer(8, 8);
+    const state = new rr.OrbitCamera().get_state(1);
+    await throws(() => renderer.present(state), Error, "no canvas");
+    await throws(() => renderer.present({}), TypeError, "camera_state");
+}
+
 function urdf_description_reads_everything() {
     const description = rr.UrdfDescription.read_str(ROBOT_URDF);
     check(description.name === "test_bot");
@@ -1153,6 +1304,10 @@ const TEST_CASES = [
     stl_read_binary_bytes,
     stl_read_rejects_bad_input,
     stl_triangles_are_copies,
+    stl_from_geometry_makes_primitives,
+    stl_from_geometry_rejects_bad_input,
+    zstd_decompresses_a_frame,
+    zstd_rejects_bad_input,
     tesselator_requires_configure,
     tesselator_checks_voxel_size,
     tesselator_rejects_unaligned_blocks,
@@ -1166,6 +1321,8 @@ const TEST_CASES = [
     tesselator_replace_matches_update,
     tesselator_replace_clears_old_voxels,
     tesselator_replace_rejects_bad_groups,
+    tesselator_takes_wire_blocks,
+    tesselator_replace_takes_wire_groups,
     renderer_configure_checks_size,
     renderer_configure_checks_colors,
     renderer_configure_checks_terrain_coloring,
@@ -1186,6 +1343,8 @@ const TEST_CASES = [
     renderer_resize_restarts_readback,
     renderer_is_busy_while_rendering,
     renderer_survives_a_detached_out,
+    renderer_hides_the_environment,
+    renderer_canvas_checks_arguments,
     urdf_description_reads_everything,
     urdf_data_is_plain,
     urdf_read_rejects_bad_input,
