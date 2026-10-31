@@ -8,6 +8,9 @@ pub const DEFAULT_COLOR_DEPTH_RANGE: f32 = 50.0;
 pub const DEFAULT_HEIGHT_KNEE: f32 = 0.5;
 pub const DEFAULT_HEIGHT_GAIN: f32 = 0.35;
 
+/// Format of the frames `render` returns: BGRA, 8 bit sRGB.
+const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WgpuAcceleratedConfiguration {
     pub width: u32,
@@ -84,6 +87,39 @@ struct RenderTargets {
     output_buffers: [wgpu::Buffer; 2],
     padded_bytes_per_row: u32,
     unpadded_bytes_per_row: u32,
+}
+
+/// What `present` draws into: a surface such as a canvas, configured at the
+/// frame size once the renderer is configured, and a depth buffer as large.
+struct SurfaceTargets {
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    /// sRGB view of the surface textures, the pipelines' color format
+    view_format: wgpu::TextureFormat,
+    depth: Option<(wgpu::Texture, wgpu::TextureView)>,
+}
+
+fn create_depth_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Depth Texture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
 
 const INITIAL_ASSET_VERTEX_CAPACITY: usize = 1 << 20;
@@ -288,11 +324,13 @@ pub struct WgpuAccelerated {
     state: WgpuAcceleratedState,
     active_configuration: Option<WgpuAcceleratedConfiguration>,
     render_targets: Option<RenderTargets>,
+    surface: Option<SurfaceTargets>,
     vertex_arena: VertexArena,
     assets: Assets,
     frame_index: usize,
     frustum_culling: bool,
     drawn_chunks: u32,
+    environment_visible: bool,
 }
 
 impl WgpuAccelerated {
@@ -308,6 +346,22 @@ impl WgpuAccelerated {
         (self.drawn_chunks, self.vertex_arena.draw_count())
     }
 
+    /// Hides or shows the voxel geometry. It is kept while hidden, and
+    /// updates still apply to it.
+    pub fn set_environment_visible(&mut self, visible: bool) {
+        self.environment_visible = visible;
+    }
+
+    pub fn environment_visible(&self) -> bool {
+        self.environment_visible
+    }
+
+    /// Whether the renderer draws into a surface (`present`) rather than
+    /// returning frames (`render`).
+    pub fn has_surface(&self) -> bool {
+        self.surface.is_some()
+    }
+
     pub fn new() -> Option<Self> {
         pollster::block_on(Self::new_async())
     }
@@ -318,6 +372,85 @@ impl WgpuAccelerated {
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
             .ok()?;
+        Self::from_adapter(&adapter, OFFSCREEN_FORMAT).await
+    }
+
+    /// A renderer drawing into `target` (e.g. a canvas on the web) with
+    /// `present`, on an adapter that can. `render` does not work on it. Fails
+    /// without such an adapter or device, or when the surface takes no 8 bit
+    /// RGBA or BGRA format.
+    pub async fn new_for_surface_async(
+        target: impl Into<wgpu::SurfaceTarget<'static>>,
+    ) -> anyhow::Result<Self> {
+        let instance = wgpu::Instance::default();
+        let surface = instance.create_surface(target)?;
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                compatible_surface: Some(&surface),
+                ..Default::default()
+            })
+            .await?;
+        let capabilities = surface.get_capabilities(&adapter);
+        // The shaders write linear colors: they are drawn through an sRGB
+        // view, which the web only allows of its plain formats
+        let format = capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(|format| {
+                matches!(
+                    format.remove_srgb_suffix(),
+                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+                )
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "the surface takes no 8 bit RGBA or BGRA format, only {:?}",
+                    capabilities.formats
+                )
+            })?;
+        let view_format = format.add_srgb_suffix();
+        let alpha_mode = if capabilities
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::Opaque)
+        {
+            wgpu::CompositeAlphaMode::Opaque
+        } else {
+            capabilities.alpha_modes[0]
+        };
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            // Set by configure
+            width: 0,
+            height: 0,
+            present_mode: wgpu::PresentMode::AutoVsync,
+            desired_maximum_frame_latency: 2,
+            alpha_mode,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            view_formats: if view_format == format {
+                Vec::new()
+            } else {
+                vec![view_format]
+            },
+        };
+        let mut renderer = Self::from_adapter(&adapter, view_format)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("no GPU device is available for the surface"))?;
+        renderer.surface = Some(SurfaceTargets {
+            surface,
+            config,
+            view_format,
+            depth: None,
+        });
+        Ok(renderer)
+    }
+
+    /// A renderer on a device of `adapter`, drawing in `color_format`.
+    async fn from_adapter(
+        adapter: &wgpu::Adapter,
+        color_format: wgpu::TextureFormat,
+    ) -> Option<Self> {
         let required_limits = wgpu::Limits {
             max_buffer_size: adapter.limits().max_buffer_size,
             ..Default::default()
@@ -421,7 +554,7 @@ impl WgpuAccelerated {
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    format: color_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -480,7 +613,7 @@ impl WgpuAccelerated {
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    format: color_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -520,11 +653,13 @@ impl WgpuAccelerated {
             state,
             active_configuration: None,
             render_targets: None,
+            surface: None,
             vertex_arena,
             assets,
             frame_index: 0,
             frustum_culling: true,
             drawn_chunks: 0,
+            environment_visible: true,
         })
     }
 
@@ -548,28 +683,14 @@ impl WgpuAccelerated {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            format: OFFSCREEN_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         };
         let texture = self.state.device.create_texture(&texture_descriptor);
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let depth_texture_descriptor = wgpu::TextureDescriptor {
-            label: Some("Depth Texture"),
-            size: wgpu::Extent3d {
-                width: config.width,
-                height: config.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        };
-        let depth_texture = self.state.device.create_texture(&depth_texture_descriptor);
-        let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let (depth_texture, depth_texture_view) =
+            create_depth_texture(&self.state.device, config.width, config.height);
         let create_output_buffer = || {
             self.state.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Output Buffer"),
@@ -592,6 +713,156 @@ impl WgpuAccelerated {
         self.frame_index = 0;
     }
 
+    /// Flushes what changed since the last frame and culls the voxel
+    /// geometry for `camera_state`, before a frame is drawn.
+    fn prepare_frame(&mut self, camera_state: &camera::CameraState) {
+        self.assets.flush_instances(&self.state.queue);
+        self.drawn_chunks = if self.frustum_culling {
+            self.vertex_arena.cull(
+                &self.state.device,
+                &self.state.queue,
+                &camera_state.frustum(),
+            )
+        } else {
+            self.vertex_arena.draw_count()
+        };
+        self.state.queue.write_buffer(
+            &self.state.camera_uniform_buffer,
+            0,
+            bytemuck::bytes_of::<camera::CameraUniform>(&camera_state.into()),
+        );
+    }
+
+    /// Records drawing the scene into `color_view` and `depth_view`, both
+    /// cleared first.
+    fn encode_scene(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        color_view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
+        background_color: [f32; 3],
+    ) {
+        let [r, g, b] = background_color.map(srgb_to_linear);
+        let background = wgpu::Color { r, g, b, a: 1.0 };
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(background),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        let draw_count = self.drawn_chunks;
+        let draw_buffer = if self.frustum_culling {
+            self.vertex_arena.visible_buffer()
+        } else {
+            self.vertex_arena.draw_buffer()
+        };
+        if draw_count > 0 && self.environment_visible {
+            render_pass.set_pipeline(&self.state.environment_pipeline);
+            render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.state.colormap_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.vertex_arena.vertex_buffer().slice(..));
+            render_pass.multi_draw_indirect(draw_buffer, 0, draw_count);
+        }
+        if !self.assets.is_empty() {
+            render_pass.set_pipeline(&self.state.asset_pipeline);
+            render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.assets.vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, self.assets.transforms.buffer.slice(..));
+            render_pass.set_vertex_buffer(2, self.assets.colors.buffer.slice(..));
+            for asset in &self.assets.assets {
+                for instances in self.assets.visible_instances(asset) {
+                    render_pass.draw(
+                        asset.vertex_offset..asset.vertex_offset + asset.vertex_count,
+                        instances,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Configures the surface and its depth buffer at the configured frame
+    /// size, unless they have it already.
+    fn configure_surface(&mut self, force: bool) {
+        let (Some(configuration), Some(targets)) =
+            (self.active_configuration, self.surface.as_mut())
+        else {
+            return;
+        };
+        let resized = targets.config.width != configuration.width
+            || targets.config.height != configuration.height;
+        if !resized && !force && targets.depth.is_some() {
+            return;
+        }
+        targets.config.width = configuration.width;
+        targets.config.height = configuration.height;
+        targets.surface.configure(&self.state.device, &targets.config);
+        targets.depth = Some(create_depth_texture(
+            &self.state.device,
+            configuration.width,
+            configuration.height,
+        ));
+    }
+
+    /// Draws a frame seen by `camera_state` into the surface of a renderer
+    /// made by `new_for_surface_async` and presents it. False when the
+    /// surface had no texture to draw into (e.g. it is hidden or was
+    /// resized meanwhile): the frame is skipped, the next one may work.
+    pub fn present(&mut self, camera_state: &camera::CameraState) -> bool {
+        let config = self
+            .active_configuration
+            .expect("Renderer is not configured.");
+        assert!(
+            self.surface.is_some(),
+            "The renderer has no surface, use render()."
+        );
+        self.configure_surface(false);
+        let texture = match self.surface.as_ref().unwrap().surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(texture)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.configure_surface(true);
+                return false;
+            }
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Validation => return false,
+        };
+        self.prepare_frame(camera_state);
+        let targets = self.surface.as_ref().unwrap();
+        let view = texture.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(targets.view_format),
+            ..Default::default()
+        });
+        let depth_view = &targets.depth.as_ref().unwrap().1;
+        let mut encoder =
+            self.state
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Present Encoder"),
+                });
+        self.encode_scene(&mut encoder, &view, depth_view, config.background_color);
+        self.state.queue.submit(std::iter::once(encoder.finish()));
+        self.state.queue.present(texture);
+        true
+    }
+
     /// `Renderer::render` for callers that can not block: waiting for the
     /// previous frame to be read back is awaited instead. The web has to
     /// render this way, blocking there never lets the read back finish.
@@ -599,6 +870,10 @@ impl WgpuAccelerated {
         let config = self
             .active_configuration
             .expect("Renderer is not configured.");
+        assert!(
+            self.surface.is_none(),
+            "The renderer draws into a surface, use present()."
+        );
         assert!(
             output.len() >= (config.width * config.height * self.state.pixel_size) as usize,
             "Output buffer is too small."
@@ -611,19 +886,8 @@ impl WgpuAccelerated {
         if needs_rebuild {
             self.rebuild_targets();
         }
-        self.assets.flush_instances(&self.state.queue);
-        self.drawn_chunks = if self.frustum_culling {
-            self.vertex_arena.cull(
-                &self.state.device,
-                &self.state.queue,
-                &camera_state.frustum(),
-            )
-        } else {
-            self.vertex_arena.draw_count()
-        };
+        self.prepare_frame(camera_state);
 
-        let [r, g, b] = config.background_color.map(srgb_to_linear);
-        let background = wgpu::Color { r, g, b, a: 1.0 };
         let targets = self.render_targets.as_ref().unwrap();
         if self.frame_index > 0 {
             let read_index = (self.frame_index + 1) % 2;
@@ -660,70 +924,18 @@ impl WgpuAccelerated {
         } else {
             output.fill(0);
         }
-        self.state.queue.write_buffer(
-            &self.state.camera_uniform_buffer,
-            0,
-            bytemuck::bytes_of::<camera::CameraUniform>(&camera_state.into()),
-        );
         let mut encoder =
             self.state
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Render Encoder"),
                 });
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &targets.render_texture_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(background),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &targets.depth_texture_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            let draw_count = self.drawn_chunks;
-            let draw_buffer = if self.frustum_culling {
-                self.vertex_arena.visible_buffer()
-            } else {
-                self.vertex_arena.draw_buffer()
-            };
-            if draw_count > 0 {
-                render_pass.set_pipeline(&self.state.environment_pipeline);
-                render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
-                render_pass.set_bind_group(1, &self.state.colormap_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.vertex_arena.vertex_buffer().slice(..));
-                render_pass.multi_draw_indirect(draw_buffer, 0, draw_count);
-            }
-            if !self.assets.is_empty() {
-                render_pass.set_pipeline(&self.state.asset_pipeline);
-                render_pass.set_bind_group(0, &self.state.camera_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.assets.vertex_buffer.slice(..));
-                render_pass.set_vertex_buffer(1, self.assets.transforms.buffer.slice(..));
-                render_pass.set_vertex_buffer(2, self.assets.colors.buffer.slice(..));
-                for asset in &self.assets.assets {
-                    for instances in self.assets.visible_instances(asset) {
-                        render_pass.draw(
-                            asset.vertex_offset..asset.vertex_offset + asset.vertex_count,
-                            instances,
-                        );
-                    }
-                }
-            }
-        }
+        self.encode_scene(
+            &mut encoder,
+            &targets.render_texture_view,
+            &targets.depth_texture_view,
+            config.background_color,
+        );
         let write_index = self.frame_index % 2;
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -773,6 +985,7 @@ impl Renderer for WgpuAccelerated {
             bytemuck::bytes_of(&colormap_params(&configuration)),
         );
         self.active_configuration = Some(configuration);
+        self.configure_surface(false);
     }
 
     fn render(&mut self, camera_state: &Self::CameraState, output: &mut [u8]) {

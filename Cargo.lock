@@ -2228,6 +2228,7 @@ dependencies = [
  "urdf-rs",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
  "wgpu",
  "winit",
 ]

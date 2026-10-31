@@ -232,6 +232,17 @@ impl CheckedRenderer {
         Self::from_renderer(WgpuAccelerated::new_async().await)
     }
 
+    /// A renderer drawing into `target` with `present`.
+    #[cfg(feature = "js")]
+    pub(crate) async fn new_for_surface_async(
+        target: wgpu::SurfaceTarget<'static>,
+    ) -> Result<Self> {
+        let renderer = WgpuAccelerated::new_for_surface_async(target)
+            .await
+            .map_err(|e| Error::failed(format!("cannot render into the surface: {e:#}")))?;
+        Self::from_renderer(Some(renderer))
+    }
+
     fn from_renderer(renderer: Option<WgpuAccelerated>) -> Result<Self> {
         let renderer =
             renderer.ok_or_else(|| Error::failed("no GPU adapter or device is available"))?;
@@ -285,6 +296,16 @@ impl CheckedRenderer {
 
     pub(crate) fn update_geometry(&mut self, delta: Vec<TriangleChunk>) {
         self.renderer.update_geometry(delta);
+    }
+
+    #[cfg(feature = "js")]
+    pub(crate) fn set_environment_visible(&mut self, visible: bool) {
+        self.renderer.set_environment_visible(visible);
+    }
+
+    #[cfg(feature = "js")]
+    pub(crate) fn environment_visible(&self) -> bool {
+        self.renderer.environment_visible()
     }
 
     /// Checks that `instances` more instances of `mesh` fit, before anything
@@ -392,8 +413,25 @@ impl CheckedRenderer {
         camera_state: &CameraState,
         out: &mut [u8],
     ) -> Result<()> {
+        if self.renderer.has_surface() {
+            return Err(Error::failed(
+                "the renderer draws into a canvas, use present instead",
+            ));
+        }
         self.check_frame_buffer(out)?;
         self.renderer.render_async(camera_state, out).await;
         Ok(())
+    }
+
+    /// `WgpuAccelerated::present`: false when the frame was skipped.
+    #[cfg(feature = "js")]
+    pub(crate) fn present(&mut self, camera_state: &CameraState) -> Result<bool> {
+        if !self.renderer.has_surface() {
+            return Err(Error::failed(
+                "the renderer has no canvas, use render instead",
+            ));
+        }
+        self.frame_len()?;
+        Ok(self.renderer.present(camera_state))
     }
 }
