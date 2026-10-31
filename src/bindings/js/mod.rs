@@ -32,7 +32,6 @@ mod renderer;
 mod robot;
 mod stl;
 mod tesselator;
-mod zstd;
 
 #[wasm_bindgen(typescript_custom_section)]
 const TYPES: &str = r#"
