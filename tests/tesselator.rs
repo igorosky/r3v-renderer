@@ -1265,3 +1265,96 @@ fn replace_before_configure_panics() {
     let mut tesselator = CpuTesselator::new();
     tesselator.replace_input_geometry(&groups_of(&[brick([0, 0, 0], FULL)]));
 }
+
+fn chunks_redrawn_by_enabling_marching_cubes(voxels: &[Cell]) -> HashSet<Cell> {
+    let mut bricks: HashMap<Cell, u32> = HashMap::new();
+    for voxel in voxels {
+        let origin = std::array::from_fn(|a| voxel[a].div_euclid(BRICK[a]) * BRICK[a]);
+        let local = std::array::from_fn(|a| voxel[a] - origin[a]);
+        *bricks.entry(origin).or_default() |= bit(local);
+    }
+    let mut tesselator = CpuTesselator::new();
+    tesselator.configure(CpuTesselatorConfiguration {
+        voxel_size: 1.0,
+        marching_cubes_enabled: false,
+    });
+    tesselator.update_input_geometry(
+        &bricks
+            .into_iter()
+            .map(|(origin, mask)| brick(origin, mask))
+            .collect(),
+    );
+    tesselator.get_output_geometry_delta(&ALL_CHUNKS);
+    tesselator.set_marching_cubes_enabled(true);
+    tesselator
+        .get_output_geometry_delta(&ALL_CHUNKS)
+        .unwrap()
+        .iter()
+        .map(|chunk| [chunk.index.x, chunk.index.y, chunk.index.z])
+        .collect()
+}
+
+fn expected_redrawn_chunks(voxels: &[Cell]) -> HashSet<Cell> {
+    let mut chunks = HashSet::new();
+    for voxel in voxels {
+        let chunk = voxel.map(|c| c.div_euclid(CHUNK_WIDTH) * CHUNK_WIDTH);
+        for i in 0..8 {
+            let offset: Cell = std::array::from_fn(|a| -((i >> a) & 1));
+            if (0..3).all(|a| offset[a] == 0 || voxel[a] == chunk[a]) {
+                chunks.insert(std::array::from_fn(|a| chunk[a] + offset[a] * CHUNK_WIDTH));
+            }
+        }
+    }
+    chunks
+}
+
+#[test]
+fn enabling_marching_cubes_redraws_neighbours_of_low_boundary_voxels() {
+    let corner = [32, -16, 48];
+    let redrawn = chunks_redrawn_by_enabling_marching_cubes(&[corner]);
+    assert_eq!(redrawn.len(), 8);
+    assert!(redrawn.contains(&[16, -32, 32]));
+
+    let interior = [32 + 5, -16 + 7, 48 + 9];
+    assert_eq!(
+        chunks_redrawn_by_enabling_marching_cubes(&[interior]),
+        HashSet::from([[32, -16, 48]])
+    );
+
+    let high_corner = [32 + 15, -16 + 15, 48 + 15];
+    assert_eq!(
+        chunks_redrawn_by_enabling_marching_cubes(&[high_corner]),
+        HashSet::from([[32, -16, 48]])
+    );
+
+    let low_x_high_y = [32, -16 + 15, 48 + 3];
+    assert_eq!(
+        chunks_redrawn_by_enabling_marching_cubes(&[low_x_high_y]),
+        HashSet::from([[32, -16, 48], [16, -16, 48]])
+    );
+}
+
+#[test]
+fn enabling_marching_cubes_redraws_the_neighbours_a_voxel_scan_finds() {
+    let mut rng = Lcg::new(7);
+    for _ in 0..200 {
+        let chunk: Cell = std::array::from_fn(|_| rng.range(-2, 2) * CHUNK_WIDTH);
+        let voxels = (0..rng.range(1, 6))
+            .map(|_| {
+                std::array::from_fn(|a| {
+                    chunk[a]
+                        + match rng.range(0, 3) {
+                            0 => 0,
+                            1 => CHUNK_WIDTH - 1,
+                            _ => rng.range(0, CHUNK_WIDTH),
+                        }
+                })
+            })
+            .collect::<Vec<Cell>>();
+        assert_eq!(
+            chunks_redrawn_by_enabling_marching_cubes(&voxels),
+            expected_redrawn_chunks(&voxels),
+            "{voxels:?}"
+        );
+    }
+}

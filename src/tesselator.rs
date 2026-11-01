@@ -97,32 +97,28 @@ impl Chunk {
         self.subchunks[Self::subchunk_index(subchunk)]
     }
 
-    fn voxel(&self, local: Point<usize>) -> bool {
-        let subchunk = Point::from_fn(|axis| local[axis] / SUBCHUNK_SIZE[axis]);
-        let bit = PointI::voxel_bit(Point::from_fn(|axis| local[axis] % SUBCHUNK_SIZE[axis]));
-        self.subchunk_mask(subchunk) & (1 << bit) != 0
-    }
-
     fn has_voxel_on_boundary(&self, boundary: [i8; 3]) -> bool {
-        for z in 0..CHUNK_WIDTH {
-            if boundary[2] != 0 && z != if boundary[2] < 0 { 0 } else { CHUNK_WIDTH - 1 } {
-                continue;
-            }
-            for y in 0..CHUNK_WIDTH {
-                if boundary[1] != 0 && y != if boundary[1] < 0 { 0 } else { CHUNK_WIDTH - 1 } {
-                    continue;
+        let mut ranges = [(0, 0); 3];
+        let mut layer = u32::MAX;
+        for axis in Axis::ALL {
+            let [low_layer, high_layer] = BOUNDARY_LAYERS[axis as usize];
+            let last = CHUNK_SUBCHUNKS[axis] - 1;
+            ranges[axis as usize] = match boundary[axis as usize].signum() {
+                0 => (0, last),
+                -1 => {
+                    layer &= low_layer;
+                    (0, 0)
                 }
-                for x in 0..CHUNK_WIDTH {
-                    if boundary[0] != 0 && x != if boundary[0] < 0 { 0 } else { CHUNK_WIDTH - 1 } {
-                        continue;
-                    }
-                    if self.voxel(Point { x, y, z }) {
-                        return true;
-                    }
+                _ => {
+                    layer &= high_layer;
+                    (last, last)
                 }
-            }
+            };
         }
-        false
+        let [(x0, x1), (y0, y1), (z0, z1)] = ranges;
+        (z0..=z1).any(|z| {
+            (y0..=y1).any(|y| (x0..=x1).any(|x| self.subchunk_mask(Point { x, y, z }) & layer != 0))
+        })
     }
 
     fn set_subchunk_mask(&mut self, subchunk: Point<usize>, mask: u32) {
