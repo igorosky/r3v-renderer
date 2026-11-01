@@ -124,10 +124,7 @@ impl Robot for UrdfRobot {
                 continue;
             };
             for (visual_index, visual) in link.visuals.iter().enumerate() {
-                let local = visual
-                    .origin
-                    .map(origin_transform)
-                    .unwrap_or_else(identity_twist);
+                let local = origin_transform(visual.origin);
                 visual_world.insert(
                     (link.name.clone(), visual_index),
                     compose_twists(link_transform, local),
@@ -245,15 +242,8 @@ fn normalize_quaternion((x, y, z, w): (f32, f32, f32, f32)) -> (f32, f32, f32, f
 }
 
 fn joint_transform(joint: &urdf::UrdfJoint, value: f32) -> RealTwist {
-    let origin = joint
-        .origin
-        .map(origin_transform)
-        .unwrap_or_else(identity_twist);
-    let axis = joint.axis.unwrap_or(urdf::Vector3 {
-        x: 1.0,
-        y: 0.0,
-        z: 0.0,
-    });
+    let origin = origin_transform(joint.origin);
+    let axis = joint.axis;
 
     let motion = match joint.joint_type {
         urdf::UrdfJointType::Revolute | urdf::UrdfJointType::Continuous => RealTwist {

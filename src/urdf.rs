@@ -43,8 +43,8 @@ pub struct UrdfMaterial {
 #[derive(Debug, Clone, PartialEq)]
 pub struct UrdfVisual {
     pub name: Option<String>,
-    pub origin: Option<UrdfOrigin>,
-    pub geometry: Option<UrdfGeometry>,
+    pub origin: UrdfOrigin,
+    pub geometry: UrdfGeometry,
     pub material: Option<UrdfMaterial>,
 }
 
@@ -82,8 +82,8 @@ pub struct UrdfJoint {
     pub joint_type: UrdfJointType,
     pub parent: String,
     pub child: String,
-    pub origin: Option<UrdfOrigin>,
-    pub axis: Option<Vector3>,
+    pub origin: UrdfOrigin,
+    pub axis: Vector3,
     pub limit: Option<UrdfJointLimit>,
 }
 
@@ -111,8 +111,16 @@ pub fn read_str(xml: &str) -> Result<UrdfRobot, String> {
 
 fn read_str_with_base_dir(xml: &str, base_dir: Option<&Path>) -> Result<UrdfRobot, String> {
     check_root_element(xml)?;
+    let joint_has_limit = joints_with_limit(xml)?;
     let parsed = urdf_rs::read_from_string(xml)
         .map_err(|err| format!("urdf-rs failed to parse URDF: {err}"))?;
+    if joint_has_limit.len() != parsed.joints.len() {
+        return Err(format!(
+            "Found {} <joint> elements but urdf-rs read {} joints",
+            joint_has_limit.len(),
+            parsed.joints.len()
+        ));
+    }
 
     let mut named_colors = std::collections::HashMap::new();
     let inline_materials = parsed
@@ -152,8 +160,8 @@ fn read_str_with_base_dir(xml: &str, base_dir: Option<&Path>) -> Result<UrdfRobo
                     .into_iter()
                     .map(|visual| UrdfVisual {
                         name: visual.name,
-                        origin: Some(convert_origin(visual.origin)),
-                        geometry: Some(convert_geometry(visual.geometry, base_dir)),
+                        origin: convert_origin(visual.origin),
+                        geometry: convert_geometry(visual.geometry, base_dir),
                         material: visual.material.map(convert_material),
                     })
                     .collect(),
@@ -162,7 +170,8 @@ fn read_str_with_base_dir(xml: &str, base_dir: Option<&Path>) -> Result<UrdfRobo
         joints: parsed
             .joints
             .into_iter()
-            .map(|joint| UrdfJoint {
+            .zip(joint_has_limit)
+            .map(|(joint, has_limit)| UrdfJoint {
                 name: joint.name,
                 joint_type: match joint.joint_type {
                     urdf_rs::JointType::Revolute => UrdfJointType::Revolute,
@@ -175,9 +184,9 @@ fn read_str_with_base_dir(xml: &str, base_dir: Option<&Path>) -> Result<UrdfRobo
                 },
                 parent: joint.parent.link,
                 child: joint.child.link,
-                origin: Some(convert_origin(joint.origin)),
-                axis: Some(convert_vector3(joint.axis.xyz.0)),
-                limit: Some(convert_joint_limit(joint.limit)),
+                origin: convert_origin(joint.origin),
+                axis: convert_vector3(joint.axis.xyz.0),
+                limit: has_limit.then(|| convert_joint_limit(joint.limit)),
             })
             .collect(),
         materials: parsed.materials.into_iter().map(convert_material).collect(),
@@ -204,6 +213,46 @@ fn check_root_element(xml: &str) -> Result<(), String> {
             }
             Ok(_) => {}
             Err(err) => return Err(format!("Failed to parse URDF XML: {err}")),
+        }
+    }
+}
+
+fn joints_with_limit(xml: &str) -> Result<Vec<bool>, String> {
+    use quick_xml::events::Event;
+
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut joints = Vec::new();
+    let mut depth = 0;
+    let mut in_joint = false;
+    loop {
+        let event = reader
+            .read_event()
+            .map_err(|err| format!("Failed to parse URDF XML: {err}"))?;
+        match event {
+            Event::Start(element) => {
+                depth += 1;
+                match (depth, element.name().as_ref()) {
+                    (2, b"joint") => {
+                        joints.push(false);
+                        in_joint = true;
+                    }
+                    (3, b"limit") if in_joint => *joints.last_mut().unwrap() = true,
+                    _ => {}
+                }
+            }
+            Event::Empty(element) => match (depth + 1, element.name().as_ref()) {
+                (2, b"joint") => joints.push(false),
+                (3, b"limit") if in_joint => *joints.last_mut().unwrap() = true,
+                _ => {}
+            },
+            Event::End(_) => {
+                if depth == 2 {
+                    in_joint = false;
+                }
+                depth -= 1;
+            }
+            Event::Eof => return Ok(joints),
+            _ => {}
         }
     }
 }

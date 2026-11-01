@@ -293,9 +293,7 @@ typedef struct R3vUrdfVisual {
    * NULL when the visual has no name.
    */
   const char *name;
-  bool has_origin;
   struct R3vUrdfOrigin origin;
-  bool has_geometry;
   struct R3vUrdfGeometry geometry;
   bool has_material;
   struct R3vUrdfMaterial material;
@@ -329,9 +327,7 @@ typedef struct R3vUrdfJoint {
    * Child link name.
    */
   const char *child;
-  bool has_origin;
   struct R3vUrdfOrigin origin;
-  bool has_axis;
   struct R3vVec3 axis;
   bool has_limit;
   struct R3vUrdfJointLimit limit;

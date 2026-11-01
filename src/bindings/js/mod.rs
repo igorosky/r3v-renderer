@@ -84,8 +84,8 @@ export interface UrdfColor { rgba: Vec4 }
 export interface UrdfMaterial { name: string | null; color: UrdfColor | null }
 export interface UrdfVisual {
     name: string | null;
-    origin: UrdfOrigin | null;
-    geometry: UrdfGeometry | null;
+    origin: UrdfOrigin;
+    geometry: UrdfGeometry;
     material: UrdfMaterial | null;
 }
 export interface UrdfLink { name: string; visuals: UrdfVisual[] }
@@ -112,8 +112,8 @@ export interface UrdfJoint {
     joint_type: UrdfJointType;
     parent: string;
     child: string;
-    origin: UrdfOrigin | null;
-    axis: Vec3 | null;
+    origin: UrdfOrigin;
+    axis: Vec3;
     limit: UrdfJointLimit | null;
 }
 "#;

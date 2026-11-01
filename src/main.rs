@@ -777,13 +777,9 @@ impl RobotScene {
 
         type Visuals = Vec<((String, usize), Option<[f32; 3]>)>;
         let mut groups: Vec<(&urdf::UrdfGeometry, Visuals)> = Vec::new();
-        let mut skipped = 0;
         for link in &description.links {
             for (visual_index, visual) in link.visuals.iter().enumerate() {
-                let Some(geometry) = &visual.geometry else {
-                    skipped += 1;
-                    continue;
-                };
+                let geometry = &visual.geometry;
                 let color = visual
                     .material
                     .as_ref()
@@ -799,11 +795,23 @@ impl RobotScene {
 
         let mut instances = Vec::new();
         let mut triangle_count = 0;
+        let mut unloaded = 0;
         for (geometry, visuals) in groups {
             let mut mesh = match geometry {
                 urdf::UrdfGeometry::Mesh(mesh) => {
                     let path = resolve_mesh_file(&mesh.filename, urdf_dir);
-                    let mut stl_mesh = stl::read_file(&path)?;
+                    let mut stl_mesh = match load_mesh(&path) {
+                        Ok(stl_mesh) => stl_mesh,
+                        Err(err) => {
+                            eprintln!(
+                                "Skipping {} visual(s) using '{}': {err}",
+                                visuals.len(),
+                                mesh.filename
+                            );
+                            unloaded += visuals.len();
+                            continue;
+                        }
+                    };
                     let scale = mesh
                         .scale
                         .map_or([1.0; 3], |scale| [scale.x, scale.y, scale.z]);
@@ -876,11 +884,11 @@ impl RobotScene {
             .find(|link| !link.visuals.is_empty())
             .map(|link| link.name.clone());
         println!(
-            "Loaded robot '{}' in {:.0} ms: {} visuals ({} without geometry skipped), {} triangles, {} animated joints",
+            "Loaded robot '{}' in {:.0} ms: {} visuals ({} with unloadable meshes skipped), {} triangles, {} animated joints",
             description.name,
             load_start.elapsed().as_secs_f32() * 1000.0,
             instances.len(),
-            skipped,
+            unloaded,
             triangle_count,
             joints.len(),
         );
@@ -979,6 +987,20 @@ fn resolve_mesh_file(filename: &str, urdf_dir: &Path) -> std::path::PathBuf {
         Some((_, relative_path)) => urdf_dir.join(relative_path),
         None => Path::new(filename).to_path_buf(),
     }
+}
+
+fn load_mesh(path: &Path) -> Result<stl::StlMesh, String> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    if !extension.eq_ignore_ascii_case("stl") {
+        return Err(format!(
+            "unsupported mesh format '{}', only STL is supported",
+            path.display()
+        ));
+    }
+    stl::read_file(path)
 }
 
 fn scale_mesh(mesh: &mut stl::StlMesh, scale: [f32; 3]) {

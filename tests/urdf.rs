@@ -17,14 +17,13 @@ fn v(x: f32, y: f32, z: f32) -> Vector3 {
     Vector3 { x, y, z }
 }
 
-/// Origin as the URDF spec defines it: an omitted `<origin>` is the identity.
-fn origin_or_identity(origin: Option<UrdfOrigin>) -> (Vector3, Vector3) {
-    origin.map_or((ZERO, ZERO), |o| (o.xyz, o.rpy))
+fn origin_parts(origin: UrdfOrigin) -> (Vector3, Vector3) {
+    (origin.xyz, origin.rpy)
 }
 
 fn mesh_filename(robot: &UrdfRobot) -> &str {
     match &robot.links[0].visuals[0].geometry {
-        Some(UrdfGeometry::Mesh(mesh)) => &mesh.filename,
+        UrdfGeometry::Mesh(mesh) => &mesh.filename,
         other => panic!("expected mesh geometry, got: {other:?}"),
     }
 }
@@ -93,37 +92,34 @@ fn reads_every_primitive_geometry() {
 
     assert_eq!(
         visuals[0].geometry,
-        Some(UrdfGeometry::Box {
+        UrdfGeometry::Box {
             size: v(1.0, 2.0, 3.0)
-        })
+        }
     );
-    assert_eq!(
-        visuals[1].geometry,
-        Some(UrdfGeometry::Sphere { radius: 0.5 })
-    );
+    assert_eq!(visuals[1].geometry, UrdfGeometry::Sphere { radius: 0.5 });
     assert_eq!(
         visuals[2].geometry,
-        Some(UrdfGeometry::Cylinder {
+        UrdfGeometry::Cylinder {
             radius: 0.25,
             length: 2.0
-        })
+        }
     );
     assert_eq!(
         visuals[3].geometry,
-        Some(UrdfGeometry::Capsule {
+        UrdfGeometry::Capsule {
             radius: 0.125,
             length: 1.5
-        })
+        }
     );
     match &visuals[4].geometry {
-        Some(UrdfGeometry::Mesh(mesh)) => {
+        UrdfGeometry::Mesh(mesh) => {
             assert_eq!(mesh.filename, "part.stl");
             assert_eq!(mesh.scale, Some(v(0.001, 0.002, 0.003)));
         }
         other => panic!("expected mesh, got {other:?}"),
     }
     match &visuals[5].geometry {
-        Some(UrdfGeometry::Mesh(mesh)) => {
+        UrdfGeometry::Mesh(mesh) => {
             assert_eq!(mesh.filename, "other.stl");
             // No scale given: either omitted or the identity scale.
             assert!(mesh.scale.is_none_or(|s| s == v(1.0, 1.0, 1.0)));
@@ -152,14 +148,11 @@ fn reads_visual_origin_and_defaults_missing_origin_to_identity() {
     .unwrap();
     let visuals = &robot.links[0].visuals;
     assert_eq!(
-        origin_or_identity(visuals[0].origin),
+        origin_parts(visuals[0].origin),
         (v(1.0, -2.0, 3.5), v(0.1, -0.2, 0.3))
     );
-    assert_eq!(origin_or_identity(visuals[1].origin), (ZERO, ZERO));
-    assert_eq!(
-        origin_or_identity(visuals[2].origin),
-        (v(4.0, 5.0, 6.0), ZERO)
-    );
+    assert_eq!(origin_parts(visuals[1].origin), (ZERO, ZERO));
+    assert_eq!(origin_parts(visuals[2].origin), (v(4.0, 5.0, 6.0), ZERO));
 }
 
 #[test]
@@ -306,10 +299,10 @@ fn reads_joint_origin_axis_and_limits() {
     .unwrap();
     let joint = &robot.joints[0];
     assert_eq!(
-        origin_or_identity(joint.origin),
+        origin_parts(joint.origin),
         (v(0.1, 0.2, 0.3), v(0.0, 1.5, -0.5))
     );
-    assert_eq!(joint.axis, Some(v(0.0, 1.0, 0.0)));
+    assert_eq!(joint.axis, v(0.0, 1.0, 0.0));
     let limit = joint.limit.unwrap();
     assert_eq!(limit.lower, -2.5);
     assert_eq!(limit.upper, 1.25);
@@ -329,9 +322,43 @@ fn joint_without_origin_or_axis_uses_spec_defaults() {
     )
     .unwrap();
     let joint = &robot.joints[0];
-    assert_eq!(origin_or_identity(joint.origin), (ZERO, ZERO));
+    assert_eq!(origin_parts(joint.origin), (ZERO, ZERO));
     // URDF: the default axis is (1, 0, 0).
-    assert_eq!(joint.axis.unwrap_or(v(1.0, 0.0, 0.0)), v(1.0, 0.0, 0.0));
+    assert_eq!(joint.axis, v(1.0, 0.0, 0.0));
+    assert_eq!(joint.limit, None);
+}
+
+#[test]
+fn joint_limit_is_only_there_when_given() {
+    let robot = read_str(
+        r#"<robot name="arm">
+            <link name="base"/><link name="a"/><link name="b"/><link name="c"/>
+            <joint name="free" type="continuous">
+                <parent link="base"/><child link="a"/>
+            </joint>
+            <joint name="limited" type="revolute">
+                <parent link="a"/><child link="b"/>
+                <limit lower="0" upper="0" effort="0" velocity="0"/>
+            </joint>
+            <transmission name="t">
+                <joint name="free"><hardwareInterface>Effort</hardwareInterface></joint>
+            </transmission>
+            <joint name="fixed" type="fixed">
+                <parent link="b"/><child link="c"/>
+            </joint>
+        </robot>"#,
+    )
+    .unwrap();
+    let limits = robot
+        .joints
+        .iter()
+        .map(|joint| (joint.name.as_str(), joint.limit.is_some()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        limits,
+        [("free", false), ("limited", true), ("fixed", false)]
+    );
+    assert_eq!(robot.joints[1].limit.unwrap().upper, 0.0);
 }
 
 #[test]

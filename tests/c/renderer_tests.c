@@ -1134,9 +1134,7 @@ static void urdf_description_reads_everything(void) {
     R3vUrdfVisual visual;
     CHECK_OK(r3v_urdf_description_visual(description, 0, 0, &visual));
     CHECK(strcmp(visual.name, "body") == 0);
-    CHECK(visual.has_origin);
     CHECK_VEC3(visual.origin.xyz, 0.0f, 0.0f, 0.5f);
-    CHECK(visual.has_geometry);
     CHECK(visual.geometry.kind == R3V_URDF_GEOMETRY_MESH);
     /* read_str has no directory to resolve against. */
     CHECK(strcmp(visual.geometry.mesh_filename, "meshes/base.stl") == 0);
@@ -1164,9 +1162,7 @@ static void urdf_description_reads_everything(void) {
     CHECK(joint.joint_type == R3V_URDF_JOINT_REVOLUTE);
     CHECK(strcmp(joint.parent, "base") == 0);
     CHECK(strcmp(joint.child, "arm") == 0);
-    CHECK(joint.has_origin);
     CHECK_VEC3(joint.origin.xyz, 0.0f, 0.0f, 1.0f);
-    CHECK(joint.has_axis);
     CHECK_VEC3(joint.axis, 0.0f, 0.0f, 1.0f);
     CHECK(joint.has_limit);
     CHECK_CLOSE(joint.limit.lower, -1.5f);

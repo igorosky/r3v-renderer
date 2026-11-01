@@ -198,9 +198,7 @@ struct R3vUrdfMaterial {
 struct R3vUrdfVisual {
   /// NULL when the visual has no name.
   const char *name;
-  bool has_origin;
   R3vUrdfOrigin origin;
-  bool has_geometry;
   R3vUrdfGeometry geometry;
   bool has_material;
   R3vUrdfMaterial material;
@@ -226,9 +224,7 @@ struct R3vUrdfJoint {
   const char *parent;
   /// Child link name.
   const char *child;
-  bool has_origin;
   R3vUrdfOrigin origin;
-  bool has_axis;
   R3vVec3 axis;
   bool has_limit;
   R3vUrdfJointLimit limit;
