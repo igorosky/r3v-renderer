@@ -104,10 +104,22 @@ fn joint_limit(limit: urdf::UrdfJointLimit) -> JsValue {
     .into()
 }
 
+fn joint_type(joint_type: urdf::UrdfJointType) -> JsValue {
+    JsValue::from_str(match joint_type {
+        urdf::UrdfJointType::Revolute => "revolute",
+        urdf::UrdfJointType::Continuous => "continuous",
+        urdf::UrdfJointType::Prismatic => "prismatic",
+        urdf::UrdfJointType::Fixed => "fixed",
+        urdf::UrdfJointType::Floating => "floating",
+        urdf::UrdfJointType::Planar => "planar",
+        urdf::UrdfJointType::Spherical => "spherical",
+    })
+}
+
 fn joint(joint: &urdf::UrdfJoint) -> JsValue {
     object(&[
         ("name", JsValue::from_str(&joint.name)),
-        ("joint_type", JsValue::from_str(&joint.joint_type)),
+        ("joint_type", joint_type(joint.joint_type)),
         ("parent", JsValue::from_str(&joint.parent)),
         ("child", JsValue::from_str(&joint.child)),
         ("origin", nullable(joint.origin, origin)),

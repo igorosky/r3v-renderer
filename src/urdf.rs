@@ -65,10 +65,21 @@ pub struct UrdfJointLimit {
     pub jerk: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UrdfJointType {
+    Revolute,
+    Continuous,
+    Prismatic,
+    Fixed,
+    Floating,
+    Planar,
+    Spherical,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct UrdfJoint {
     pub name: String,
-    pub joint_type: String,
+    pub joint_type: UrdfJointType,
     pub parent: String,
     pub child: String,
     pub origin: Option<UrdfOrigin>,
@@ -154,15 +165,14 @@ fn read_str_with_base_dir(xml: &str, base_dir: Option<&Path>) -> Result<UrdfRobo
             .map(|joint| UrdfJoint {
                 name: joint.name,
                 joint_type: match joint.joint_type {
-                    urdf_rs::JointType::Revolute => "revolute",
-                    urdf_rs::JointType::Continuous => "continuous",
-                    urdf_rs::JointType::Prismatic => "prismatic",
-                    urdf_rs::JointType::Fixed => "fixed",
-                    urdf_rs::JointType::Floating => "floating",
-                    urdf_rs::JointType::Planar => "planar",
-                    urdf_rs::JointType::Spherical => "spherical",
-                }
-                .to_string(),
+                    urdf_rs::JointType::Revolute => UrdfJointType::Revolute,
+                    urdf_rs::JointType::Continuous => UrdfJointType::Continuous,
+                    urdf_rs::JointType::Prismatic => UrdfJointType::Prismatic,
+                    urdf_rs::JointType::Fixed => UrdfJointType::Fixed,
+                    urdf_rs::JointType::Floating => UrdfJointType::Floating,
+                    urdf_rs::JointType::Planar => UrdfJointType::Planar,
+                    urdf_rs::JointType::Spherical => UrdfJointType::Spherical,
+                },
                 parent: joint.parent.link,
                 child: joint.child.link,
                 origin: Some(convert_origin(joint.origin)),

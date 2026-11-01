@@ -240,8 +240,8 @@ fn joint_transform(joint: &urdf::UrdfJoint, value: f32) -> RealTwist {
         z: 0.0,
     });
 
-    let motion = match joint.joint_type.as_str() {
-        "revolute" | "continuous" => RealTwist {
+    let motion = match joint.joint_type {
+        urdf::UrdfJointType::Revolute | urdf::UrdfJointType::Continuous => RealTwist {
             linear: Vector3D {
                 x: 0.0,
                 y: 0.0,
@@ -249,7 +249,7 @@ fn joint_transform(joint: &urdf::UrdfJoint, value: f32) -> RealTwist {
             },
             rotational: tuple_to_quaternion(axis_angle_to_quaternion(axis, value)),
         },
-        "prismatic" => {
+        urdf::UrdfJointType::Prismatic => {
             let length = (axis.x * axis.x + axis.y * axis.y + axis.z * axis.z).sqrt();
             let distance = if length == 0.0 { 0.0 } else { value / length };
             RealTwist {
@@ -261,7 +261,10 @@ fn joint_transform(joint: &urdf::UrdfJoint, value: f32) -> RealTwist {
                 rotational: tuple_to_quaternion(quaternion_identity()),
             }
         }
-        _ => identity_twist(),
+        urdf::UrdfJointType::Fixed
+        | urdf::UrdfJointType::Floating
+        | urdf::UrdfJointType::Planar
+        | urdf::UrdfJointType::Spherical => identity_twist(),
     };
     compose_twists(origin, motion)
 }

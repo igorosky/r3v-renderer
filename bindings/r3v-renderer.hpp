@@ -41,6 +41,16 @@ enum class R3vUrdfGeometryKind {
   R3V_URDF_GEOMETRY_CAPSULE,
 };
 
+enum class R3vUrdfJointType {
+  R3V_URDF_JOINT_REVOLUTE,
+  R3V_URDF_JOINT_CONTINUOUS,
+  R3V_URDF_JOINT_PRISMATIC,
+  R3V_URDF_JOINT_FIXED,
+  R3V_URDF_JOINT_FLOATING,
+  R3V_URDF_JOINT_PLANAR,
+  R3V_URDF_JOINT_SPHERICAL,
+};
+
 /// Turns blocks of voxels into triangles (`tesselator::CpuTesselator`).
 struct R3vCpuTesselator;
 
@@ -211,9 +221,7 @@ struct R3vUrdfJointLimit {
 /// which optional parts are there.
 struct R3vUrdfJoint {
   const char *name;
-  /// "revolute", "continuous", "prismatic", "fixed", "floating", "planar"
-  /// or "spherical".
-  const char *joint_type;
+  R3vUrdfJointType joint_type;
   /// Parent link name.
   const char *parent;
   /// Child link name.

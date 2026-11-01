@@ -301,12 +301,22 @@ class UrdfJointLimit:
     def jerk(self) -> float: ...
 
 @final
+class UrdfJointType:
+    REVOLUTE: ClassVar[UrdfJointType]
+    CONTINUOUS: ClassVar[UrdfJointType]
+    PRISMATIC: ClassVar[UrdfJointType]
+    FIXED: ClassVar[UrdfJointType]
+    FLOATING: ClassVar[UrdfJointType]
+    PLANAR: ClassVar[UrdfJointType]
+    SPHERICAL: ClassVar[UrdfJointType]
+
+@final
 class UrdfJoint:
     __hash__: ClassVar[None]  # type: ignore[assignment]
     @property
     def name(self) -> str: ...
     @property
-    def joint_type(self) -> str: ...
+    def joint_type(self) -> UrdfJointType: ...
     @property
     def parent(self) -> str: ...
     @property

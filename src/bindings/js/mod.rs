@@ -98,11 +98,18 @@ export interface UrdfJointLimit {
     deceleration: number;
     jerk: number;
 }
-/** `joint_type` is "revolute", "continuous", "prismatic", "fixed", "floating",
- * "planar" or "spherical"; `parent` and `child` are link names. */
+export type UrdfJointType =
+    | "revolute"
+    | "continuous"
+    | "prismatic"
+    | "fixed"
+    | "floating"
+    | "planar"
+    | "spherical";
+/** `parent` and `child` are link names. */
 export interface UrdfJoint {
     name: string;
-    joint_type: string;
+    joint_type: UrdfJointType;
     parent: string;
     child: string;
     origin: UrdfOrigin | null;

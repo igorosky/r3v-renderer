@@ -838,21 +838,25 @@ impl RobotScene {
             .enumerate()
             .filter_map(|(index, joint)| {
                 let phase = index as f32 * 0.7;
-                let motion = match (joint.joint_type.as_str(), joint.limit) {
+                let motion = match (joint.joint_type, joint.limit) {
                     // Only leaf links (wheels) spin freely; spinning a rocker would lift its wheels off the ground.
-                    ("continuous", _) if !parent_links.contains(joint.child.as_str()) => {
+                    (urdf::UrdfJointType::Continuous, _)
+                        if !parent_links.contains(joint.child.as_str()) =>
+                    {
                         JointMotion::Spin { phase }
                     }
-                    ("continuous", _) => JointMotion::Sweep {
+                    (urdf::UrdfJointType::Continuous, _) => JointMotion::Sweep {
                         phase,
                         center: 0.0,
                         amplitude: ROBOT_CONTINUOUS_SWEEP,
                     },
-                    ("revolute", Some(limit)) if limit.upper > limit.lower => JointMotion::Sweep {
-                        phase,
-                        center: (limit.upper + limit.lower) * 0.5,
-                        amplitude: (limit.upper - limit.lower) * 0.5,
-                    },
+                    (urdf::UrdfJointType::Revolute, Some(limit)) if limit.upper > limit.lower => {
+                        JointMotion::Sweep {
+                            phase,
+                            center: (limit.upper + limit.lower) * 0.5,
+                            amplitude: (limit.upper - limit.lower) * 0.5,
+                        }
+                    }
                     _ => return None,
                 };
                 Some((joint.name.clone(), motion))

@@ -3,7 +3,9 @@ mod common;
 use std::path::Path;
 
 use common::TempDir;
-use r3v_renderer::urdf::{UrdfGeometry, UrdfOrigin, UrdfRobot, Vector3, read_file, read_str};
+use r3v_renderer::urdf::{
+    UrdfGeometry, UrdfJointType, UrdfOrigin, UrdfRobot, Vector3, read_file, read_str,
+};
 
 const ZERO: Vector3 = Vector3 {
     x: 0.0,
@@ -259,16 +261,16 @@ fn material_references_take_the_first_color_defined_for_the_name() {
 #[test]
 fn maps_every_joint_type_to_its_urdf_name() {
     let types = [
-        "revolute",
-        "continuous",
-        "prismatic",
-        "fixed",
-        "floating",
-        "planar",
-        "spherical",
+        ("revolute", UrdfJointType::Revolute),
+        ("continuous", UrdfJointType::Continuous),
+        ("prismatic", UrdfJointType::Prismatic),
+        ("fixed", UrdfJointType::Fixed),
+        ("floating", UrdfJointType::Floating),
+        ("planar", UrdfJointType::Planar),
+        ("spherical", UrdfJointType::Spherical),
     ];
     let mut xml = String::from(r#"<robot name="joints"><link name="base"/>"#);
-    for (i, joint_type) in types.iter().enumerate() {
+    for (i, (joint_type, _)) in types.iter().enumerate() {
         xml += &format!(
             r#"<link name="l{i}"/>
             <joint name="j{i}" type="{joint_type}">
@@ -280,7 +282,7 @@ fn maps_every_joint_type_to_its_urdf_name() {
     xml += "</robot>";
     let robot = read_str(&xml).unwrap();
     assert_eq!(robot.joints.len(), types.len());
-    for (i, (joint, joint_type)) in robot.joints.iter().zip(types).enumerate() {
+    for (i, (joint, (_, joint_type))) in robot.joints.iter().zip(types).enumerate() {
         assert_eq!(joint.name, format!("j{i}"));
         assert_eq!(joint.joint_type, joint_type);
         assert_eq!(joint.parent, "base");

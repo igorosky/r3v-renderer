@@ -272,8 +272,8 @@ mod r3v_renderer {
         renderer::{PyTerrainColoring, PyWgpuRenderer, PyWgpuRendererConfiguration},
         robot::{
             PyRobotTransforms, PyUrdfBox, PyUrdfCapsule, PyUrdfColor, PyUrdfCylinder,
-            PyUrdfDescription, PyUrdfJoint, PyUrdfJointLimit, PyUrdfLink, PyUrdfMaterial,
-            PyUrdfMesh, PyUrdfOrigin, PyUrdfRobot, PyUrdfSphere, PyUrdfVisual,
+            PyUrdfDescription, PyUrdfJoint, PyUrdfJointLimit, PyUrdfJointType, PyUrdfLink,
+            PyUrdfMaterial, PyUrdfMesh, PyUrdfOrigin, PyUrdfRobot, PyUrdfSphere, PyUrdfVisual,
         },
         stl::PyStlMesh,
         tesselator::{

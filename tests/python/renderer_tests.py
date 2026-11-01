@@ -135,8 +135,8 @@ def project(state, point):
 CLASSES = [
     "CameraState", "CpuTesselator", "CpuTesselatorConfiguration", "GeometryDelta", "OrbitCamera", "PointI",
     "RobotTransforms", "StlMesh", "TerrainColoring", "Triangle", "TriangleChunk", "Twist", "UrdfBox", "UrdfCapsule",
-    "UrdfColor", "UrdfCylinder", "UrdfDescription", "UrdfJoint", "UrdfJointLimit", "UrdfLink", "UrdfMaterial",
-    "UrdfMesh", "UrdfOrigin", "UrdfRobot", "UrdfSphere", "UrdfVisual", "VoxelGroup", "WgpuRenderer",
+    "UrdfColor", "UrdfCylinder", "UrdfDescription", "UrdfJoint", "UrdfJointLimit", "UrdfJointType", "UrdfLink",
+    "UrdfMaterial", "UrdfMesh", "UrdfOrigin", "UrdfRobot", "UrdfSphere", "UrdfVisual", "VoxelGroup", "WgpuRenderer",
     "WgpuRendererConfiguration",
 ]
 
@@ -163,12 +163,15 @@ BASETYPE = 1 << 10
 
 def stub_members(node):
     """{name: kind} of the class `node` of the stub, kind being "property",
-    "method" or "staticmethod", and whether it declares `__hash__` None."""
+    "constant", "method" or "staticmethod", and whether it declares `__hash__`
+    None."""
     members = {}
     unhashable = False
     for item in node.body:
         if isinstance(item, ast.AnnAssign) and item.target.id == "__hash__":
             unhashable = True
+        elif isinstance(item, ast.AnnAssign) and ast.unparse(item.annotation) == f"ClassVar[{node.name}]":
+            members[item.target.id] = "constant"
         elif isinstance(item, ast.AnnAssign):
             members[item.target.id] = "property"
         elif isinstance(item, ast.FunctionDef):
@@ -191,7 +194,9 @@ def runtime_members(cls):
     for name, value in vars(cls).items():
         if name.startswith("_") and name not in PROTOCOL_DUNDERS:
             continue
-        if isinstance(value, staticmethod):
+        if isinstance(value, cls):
+            members[name] = "constant"
+        elif isinstance(value, staticmethod):
             members[name] = "staticmethod"
         elif inspect.isdatadescriptor(value):
             members[name] = "property"
@@ -263,7 +268,7 @@ def stub_matches_module():
         functions = {item.name: item for item in node.body if isinstance(item, ast.FunctionDef)}
         for member, kind in members.items():
             # Only the stub has the __iter__ that runtime_members adds.
-            if kind == "property" or member not in vars(cls):
+            if kind in ("property", "constant") or member not in vars(cls):
                 continue
             got = stub_parameters(functions[member])
             expected = runtime_parameters(cls, member, kind)
@@ -1011,7 +1016,8 @@ def urdf_description_reads_everything():
     close((cylinder.geometry.radius, cylinder.geometry.length), (0.5, 2))
 
     (joint,) = description.joints
-    check((joint.name, joint.joint_type, joint.parent, joint.child) == ("shoulder", "revolute", "base", "arm"))
+    check((joint.name, joint.parent, joint.child) == ("shoulder", "base", "arm"))
+    check(joint.joint_type == rr.UrdfJointType.REVOLUTE)
     close(joint.origin.xyz, (0, 0, 1))
     close(joint.axis, (0, 0, 1))
     close((joint.limit.lower, joint.limit.upper, joint.limit.effort, joint.limit.velocity), (-1.5, 1.5, 10, 2))

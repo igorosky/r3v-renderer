@@ -1161,7 +1161,7 @@ static void urdf_description_reads_everything(void) {
     R3vUrdfJoint joint;
     CHECK_OK(r3v_urdf_description_joint(description, 0, &joint));
     CHECK(strcmp(joint.name, "shoulder") == 0);
-    CHECK(strcmp(joint.joint_type, "revolute") == 0);
+    CHECK(joint.joint_type == R3V_URDF_JOINT_REVOLUTE);
     CHECK(strcmp(joint.parent, "base") == 0);
     CHECK(strcmp(joint.child, "arm") == 0);
     CHECK(joint.has_origin);
