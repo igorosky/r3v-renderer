@@ -324,7 +324,6 @@ mod tests {
         (0..triangles * 3)
             .map(|i| Vertex {
                 position: [chunk as f32, version as f32, i as f32],
-                color: [1.0, 0.5, 0.25],
                 normal: [0.0, 1.0, 0.0],
             })
             .collect()
@@ -551,8 +550,7 @@ mod tests {
                 };
                 Vertex {
                     position: [pick(0), pick(1), pick(2)],
-                    color: [tag; 3],
-                    normal: [0.0, 1.0, 0.0],
+                    normal: [tag, 1.0, 0.0],
                 }
             })
             .collect()
@@ -577,7 +575,7 @@ mod tests {
             .iter()
             .map(|draw| {
                 assert_eq!(draw.vertex_count, 24);
-                vertices[draw.first_vertex as usize].color[0]
+                vertices[draw.first_vertex as usize].normal[0]
             })
             .collect();
             tags.sort_by(f32::total_cmp);

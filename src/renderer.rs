@@ -88,6 +88,7 @@ struct RenderTargets {
 
 const INITIAL_ASSET_VERTEX_CAPACITY: usize = 1 << 20;
 const INITIAL_ASSET_INSTANCE_CAPACITY: usize = 1024;
+const DEFAULT_ASSET_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
 
 struct Asset {
     vertex_offset: u32,
@@ -218,8 +219,7 @@ impl Assets {
         let first_instance = self.transforms.len();
         self.transforms
             .extend(device, geometry::RealTwist::identity(), instances);
-        self.colors
-            .extend(device, geometry::Vertex::DEFAULT_COLOR, instances);
+        self.colors.extend(device, DEFAULT_ASSET_COLOR, instances);
         self.visible.extend(std::iter::repeat_n(true, instances));
         self.assets.push(Asset {
             vertex_offset: self.vertex_count as u32,
@@ -464,14 +464,14 @@ impl WgpuAccelerated {
                         array_stride: InstanceData::<geometry::RealTwist>::STRIDE,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &wgpu::vertex_attr_array![
-                            3 => Float32x3, // linear.x, linear.y, linear.z
-                            4 => Float32x4, // rotational.x, rotational.y, rotational.z, rotational.w
+                            2 => Float32x3, // linear.x, linear.y, linear.z
+                            3 => Float32x4, // rotational.x, rotational.y, rotational.z, rotational.w
                         ],
                     }),
                     Some(wgpu::VertexBufferLayout {
                         array_stride: InstanceData::<[f32; 3]>::STRIDE,
                         step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![5 => Float32x3],
+                        attributes: &wgpu::vertex_attr_array![4 => Float32x3],
                     }),
                 ],
             },

@@ -418,7 +418,6 @@ fn triangle_to_vertices_keeps_positions_and_shares_normal() {
     assert_eq!(vertices[2].position, triangle.v2);
     for vertex in vertices {
         close3(vertex.normal, [0.0, 0.0, -1.0]);
-        assert_eq!(vertex.color, Vertex::DEFAULT_COLOR);
     }
 }
 
@@ -517,7 +516,6 @@ fn quad_map_and_triangles() {
     for vertex in first.to_vertices().into_iter().chain(second.to_vertices()) {
         assert_eq!(vertex.position[2], 0.5);
         close3(vertex.normal, [0.0, 0.0, 1.0]);
-        assert_eq!(vertex.color, Vertex::DEFAULT_COLOR);
     }
 }
 
@@ -539,7 +537,7 @@ fn identity_twist_has_no_translation_and_unit_quaternion() {
 }
 
 #[test]
-fn vertex_conversions_use_default_colour_and_zero_normal() {
+fn vertex_conversions_use_zero_normal() {
     let from_array = Vertex::from([1.0, 2.0, 3.0]);
     let from_point = Vertex::from(Point {
         x: 1.0,
@@ -548,7 +546,6 @@ fn vertex_conversions_use_default_colour_and_zero_normal() {
     });
     for vertex in [from_array, from_point] {
         assert_eq!(vertex.position, [1.0, 2.0, 3.0]);
-        assert_eq!(vertex.color, [1.0, 1.0, 1.0]);
         assert_eq!(vertex.normal, [0.0, 0.0, 0.0]);
     }
     let lit = from_array.with_normal(Vector3D {
@@ -558,20 +555,18 @@ fn vertex_conversions_use_default_colour_and_zero_normal() {
     });
     assert_eq!(lit.normal, [0.0, 1.0, 0.0]);
     assert_eq!(lit.position, from_array.position);
-    assert_eq!(lit.color, from_array.color);
 }
 
 #[test]
 fn gpu_types_have_packed_layouts() {
-    assert_eq!(std::mem::size_of::<Vertex>(), 9 * 4);
+    assert_eq!(std::mem::size_of::<Vertex>(), 6 * 4);
     assert_eq!(std::mem::size_of::<RealTwist>(), 7 * 4);
     let vertex = Vertex {
         position: [1.0, 2.0, 3.0],
-        color: [4.0, 5.0, 6.0],
-        normal: [7.0, 8.0, 9.0],
+        normal: [4.0, 5.0, 6.0],
     };
     let floats: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&vertex));
-    assert_eq!(floats, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    assert_eq!(floats, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let twist = RealTwist::identity();
     let floats: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&twist));
     assert_eq!(floats, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);

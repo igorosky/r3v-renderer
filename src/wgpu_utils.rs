@@ -14,8 +14,7 @@ pub const BASIC_VERTEX_BUFFER_LAYOUT: wgpu::VertexBufferLayout = wgpu::VertexBuf
     step_mode: wgpu::VertexStepMode::Vertex,
     attributes: &wgpu::vertex_attr_array![
         0 => Float32x3, // position
-        1 => Float32x3, // color
-        2 => Float32x3, // normal
+        1 => Float32x3, // normal
     ],
 };
 
@@ -241,8 +240,8 @@ mod tests {
 
     #[test]
     fn strides_match_gpu_layouts() {
-        // position, color and normal: three vec3<f32>.
-        assert_eq!(VERTEX_STRIDE, 36);
+        // position and normal: two vec3<f32>.
+        assert_eq!(VERTEX_STRIDE, 24);
         assert_eq!(VERTEX_STRIDE, std::mem::size_of::<Vertex>() as u64);
         // DrawIndirect: vertex_count, instance_count, first_vertex, first_instance.
         assert_eq!(DRAW_ARGS_STRIDE, 4 * 4);
@@ -255,8 +254,7 @@ mod tests {
         assert_eq!(layout.step_mode, wgpu::VertexStepMode::Vertex);
         let expected = [
             (0, std::mem::offset_of!(Vertex, position)),
-            (1, std::mem::offset_of!(Vertex, color)),
-            (2, std::mem::offset_of!(Vertex, normal)),
+            (1, std::mem::offset_of!(Vertex, normal)),
         ];
         assert_eq!(layout.attributes.len(), expected.len());
         for (attribute, (location, offset)) in layout.attributes.iter().zip(expected) {

@@ -10,14 +10,13 @@ var<uniform> camera: CameraUniform;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
-    @location(2) normal: vec3<f32>,
+    @location(1) normal: vec3<f32>,
 };
 
 struct InstanceInput {
-    @location(3) translation: vec3<f32>,
-    @location(4) rotation: vec4<f32>,
-    @location(5) color: vec3<f32>,
+    @location(2) translation: vec3<f32>,
+    @location(3) rotation: vec4<f32>,
+    @location(4) color: vec3<f32>,
 };
 
 struct VertexOutput {
@@ -37,7 +36,7 @@ fn vs_main(
     instance: InstanceInput,
 ) -> VertexOutput {
     var out: VertexOutput;
-    out.color = model.color * instance.color;
+    out.color = instance.color;
     let world_position = rotate(instance.rotation, model.position) + instance.translation;
     out.clip_position = camera.view_proj * vec4<f32>(world_position, 1.0);
     out.normal = rotate(instance.rotation, model.normal);
