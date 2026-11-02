@@ -1,9 +1,9 @@
-use crate::{geometry::RealTriangle, stl::StlMesh, urdf::UrdfGeometry};
+use crate::{geometry::RealTriangle, mesh::Mesh, urdf::UrdfGeometry};
 
 pub const ROUND_SEGMENTS: usize = 32;
 pub const SPHERE_RINGS: usize = 16;
 
-pub fn tessellate(geometry: &UrdfGeometry) -> Option<StlMesh> {
+pub fn tessellate(geometry: &UrdfGeometry) -> Option<Mesh> {
     let triangles = match *geometry {
         UrdfGeometry::Mesh(_) => return None,
         UrdfGeometry::Box { size } => cuboid([size.x, size.y, size.z]),
@@ -11,7 +11,10 @@ pub fn tessellate(geometry: &UrdfGeometry) -> Option<StlMesh> {
         UrdfGeometry::Cylinder { radius, length } => cylinder(radius, length),
         UrdfGeometry::Capsule { radius, length } => capsule(radius, length),
     };
-    Some(StlMesh { triangles })
+    Some(Mesh {
+        triangles,
+        uvs: None,
+    })
 }
 
 pub fn cuboid(size: [f32; 3]) -> Vec<RealTriangle> {

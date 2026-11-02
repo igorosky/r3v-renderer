@@ -16,14 +16,13 @@ var asset_sampler: sampler;
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
 };
 
 struct InstanceInput {
-    @location(2) translation: vec3<f32>,
-    @location(3) rotation: vec4<f32>,
-    @location(4) color: vec3<f32>,
-    @location(5) bounds_min: vec3<f32>,
-    @location(6) bounds_max: vec3<f32>,
+    @location(3) translation: vec3<f32>,
+    @location(4) rotation: vec4<f32>,
+    @location(5) color: vec3<f32>,
 };
 
 struct VertexOutput {
@@ -38,18 +37,6 @@ fn rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
     return v + q.w * t + cross(q.xyz, t);
 }
 
-fn box_uv(position: vec3<f32>, normal: vec3<f32>, bounds_min: vec3<f32>, bounds_max: vec3<f32>) -> vec2<f32> {
-    let p = (position - bounds_min) / max(bounds_max - bounds_min, vec3<f32>(1e-6));
-    let n = abs(normal);
-    var uv = p.xy;
-    if n.x >= n.y && n.x >= n.z {
-        uv = p.yz;
-    } else if n.y >= n.z {
-        uv = p.xz;
-    }
-    return vec2<f32>(uv.x, 1.0 - uv.y);
-}
-
 @vertex
 fn vs_main(
     model: VertexInput,
@@ -60,7 +47,7 @@ fn vs_main(
     let world_position = rotate(instance.rotation, model.position) + instance.translation;
     out.clip_position = camera.view_proj * vec4<f32>(world_position, 1.0);
     out.normal = rotate(instance.rotation, model.normal);
-    out.uv = box_uv(model.position, model.normal, instance.bounds_min, instance.bounds_max);
+    out.uv = model.uv;
     return out;
 }
 

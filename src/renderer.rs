@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::wgpu_utils::*;
-use crate::{Renderer, camera, geometry, stl, vertex_arena::VertexArena};
+use crate::{Renderer, camera, geometry, mesh, vertex_arena::VertexArena};
 
 pub const DEFAULT_BACKGROUND_COLOR: [f32; 3] = [0.0; 3];
 pub const DEFAULT_COLOR_DEPTH_RANGE: f32 = 50.0;
@@ -90,6 +90,17 @@ const INITIAL_ASSET_VERTEX_CAPACITY: usize = 1 << 20;
 const INITIAL_ASSET_INSTANCE_CAPACITY: usize = 1024;
 const DEFAULT_ASSET_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+struct AssetVertex {
+    position: [f32; 3],
+    normal: [f32; 3],
+    uv: [f32; 2],
+}
+
+const ASSET_VERTEX_STRIDE: wgpu::BufferAddress =
+    std::mem::size_of::<AssetVertex>() as wgpu::BufferAddress;
+
 struct Asset {
     vertex_offset: u32,
     vertex_count: u32,
@@ -158,7 +169,6 @@ struct Assets {
     vertex_count: usize,
     transforms: InstanceData<geometry::RealTwist>,
     colors: InstanceData<[f32; 3]>,
-    bounds: InstanceData<[[f32; 3]; 2]>,
     visible: Vec<bool>,
     textures: Vec<usize>,
     texture_bind_groups: Vec<wgpu::BindGroup>,
@@ -190,6 +200,68 @@ fn vertex_bounds(vertices: &[geometry::Vertex]) -> [[f32; 3]; 2] {
                 std::array::from_fn(|axis| max[axis].max(vertex.position[axis])),
             ]
         })
+}
+
+fn box_uv(vertex: &geometry::Vertex, [min, max]: [[f32; 3]; 2]) -> [f32; 2] {
+    let p: [f32; 3] = std::array::from_fn(|axis| {
+        (vertex.position[axis] - min[axis]) / (max[axis] - min[axis]).max(1e-6)
+    });
+    let n = vertex.normal.map(f32::abs);
+    let [u, v] = if n[0] >= n[1] && n[0] >= n[2] {
+        [p[1], p[2]]
+    } else if n[1] >= n[2] {
+        [p[0], p[2]]
+    } else {
+        [p[0], p[1]]
+    };
+    [u, 1.0 - v]
+}
+
+fn asset_vertices(mesh: &mesh::Mesh) -> Vec<AssetVertex> {
+    let vertices = mesh
+        .triangles
+        .iter()
+        .flat_map(|triangle| triangle.to_vertices())
+        .collect::<Vec<geometry::Vertex>>();
+    let uvs = match &mesh.uvs {
+        Some(uvs) => {
+            assert_eq!(
+                uvs.len(),
+                mesh.triangles.len(),
+                "mesh has UVs for {} of its {} triangles",
+                uvs.len(),
+                mesh.triangles.len()
+            );
+            uvs.iter().flatten().copied().collect()
+        }
+        None => {
+            let bounds = vertex_bounds(&vertices);
+            vertices
+                .iter()
+                .map(|vertex| box_uv(vertex, bounds))
+                .collect::<Vec<_>>()
+        }
+    };
+    vertices
+        .into_iter()
+        .zip(uvs)
+        .map(|(vertex, uv)| AssetVertex {
+            position: vertex.position,
+            normal: vertex.normal,
+            uv,
+        })
+        .collect()
+}
+
+fn create_asset_vertex_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Asset Vertex Buffer"),
+        size: capacity as wgpu::BufferAddress * ASSET_VERTEX_STRIDE,
+        usage: wgpu::BufferUsages::VERTEX
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    })
 }
 
 fn create_texture_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -232,12 +304,11 @@ fn create_instance_buffer<T>(
 impl Assets {
     fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let mut assets = Self {
-            vertex_buffer: create_vertex_buffer(device, INITIAL_ASSET_VERTEX_CAPACITY),
+            vertex_buffer: create_asset_vertex_buffer(device, INITIAL_ASSET_VERTEX_CAPACITY),
             vertex_capacity: INITIAL_ASSET_VERTEX_CAPACITY,
             vertex_count: 0,
             transforms: InstanceData::new(device, "Asset Transform Buffer"),
             colors: InstanceData::new(device, "Asset Color Buffer"),
-            bounds: InstanceData::new(device, "Asset Bounds Buffer"),
             visible: Vec::new(),
             textures: Vec::new(),
             texture_bind_groups: Vec::new(),
@@ -321,21 +392,19 @@ impl Assets {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        vertices: &[geometry::Vertex],
+        vertices: &[AssetVertex],
         instances: usize,
     ) -> usize {
         self.reserve_vertices(device, queue, vertices.len());
         queue.write_buffer(
             &self.vertex_buffer,
-            self.vertex_count as wgpu::BufferAddress * VERTEX_STRIDE,
+            self.vertex_count as wgpu::BufferAddress * ASSET_VERTEX_STRIDE,
             bytemuck::cast_slice(vertices),
         );
         let first_instance = self.transforms.len();
         self.transforms
             .extend(device, geometry::RealTwist::identity(), instances);
         self.colors.extend(device, DEFAULT_ASSET_COLOR, instances);
-        self.bounds
-            .extend(device, vertex_bounds(vertices), instances);
         self.visible.extend(std::iter::repeat_n(true, instances));
         self.textures.extend(std::iter::repeat_n(0, instances));
         self.assets.push(Asset {
@@ -382,7 +451,6 @@ impl Assets {
     fn flush_instances(&mut self, queue: &wgpu::Queue) {
         self.transforms.flush(queue);
         self.colors.flush(queue);
-        self.bounds.flush(queue);
     }
 
     fn reserve_vertices(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, additional: usize) {
@@ -394,7 +462,7 @@ impl Assets {
         while new_capacity < required {
             new_capacity *= 2;
         }
-        let new_buffer = create_vertex_buffer(device, new_capacity);
+        let new_buffer = create_asset_vertex_buffer(device, new_capacity);
         if self.vertex_count > 0 {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Asset Vertex Buffer Grow Encoder"),
@@ -404,7 +472,7 @@ impl Assets {
                 0,
                 &new_buffer,
                 0,
-                self.vertex_count as wgpu::BufferAddress * VERTEX_STRIDE,
+                self.vertex_count as wgpu::BufferAddress * ASSET_VERTEX_STRIDE,
             );
             queue.submit(Some(encoder.finish()));
         }
@@ -593,24 +661,27 @@ impl WgpuAccelerated {
                 entry_point: Some("vs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[
-                    Some(BASIC_VERTEX_BUFFER_LAYOUT),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: ASSET_VERTEX_STRIDE,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![
+                            0 => Float32x3,
+                            1 => Float32x3,
+                            2 => Float32x2,
+                        ],
+                    }),
                     Some(wgpu::VertexBufferLayout {
                         array_stride: InstanceData::<geometry::RealTwist>::STRIDE,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &wgpu::vertex_attr_array![
-                            2 => Float32x3, // linear.x, linear.y, linear.z
-                            3 => Float32x4, // rotational.x, rotational.y, rotational.z, rotational.w
+                            3 => Float32x3, // linear.x, linear.y, linear.z
+                            4 => Float32x4, // rotational.x, rotational.y, rotational.z, rotational.w
                         ],
                     }),
                     Some(wgpu::VertexBufferLayout {
                         array_stride: InstanceData::<[f32; 3]>::STRIDE,
                         step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![4 => Float32x3],
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: InstanceData::<[[f32; 3]; 2]>::STRIDE,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![5 => Float32x3, 6 => Float32x3],
+                        attributes: &wgpu::vertex_attr_array![5 => Float32x3],
                     }),
                 ],
             },
@@ -851,7 +922,6 @@ impl WgpuAccelerated {
                 render_pass.set_vertex_buffer(0, self.assets.vertex_buffer.slice(..));
                 render_pass.set_vertex_buffer(1, self.assets.transforms.buffer.slice(..));
                 render_pass.set_vertex_buffer(2, self.assets.colors.buffer.slice(..));
-                render_pass.set_vertex_buffer(3, self.assets.bounds.buffer.slice(..));
                 for asset in &self.assets.assets {
                     for (instances, texture) in self.assets.draw_runs(asset) {
                         render_pass.set_bind_group(
@@ -904,7 +974,7 @@ impl Renderer for WgpuAccelerated {
     type GeometryDelta = Vec<geometry::TriangleChunk>;
 
     type AssetInstanceId = u64;
-    type AssetDescription = stl::StlMesh;
+    type AssetDescription = mesh::Mesh;
     type AssetTransform = geometry::RealTwist;
     type TextureId = usize;
 
@@ -944,11 +1014,7 @@ impl Renderer for WgpuAccelerated {
         description: Self::AssetDescription,
         instances: usize,
     ) -> Vec<Self::AssetInstanceId> {
-        let vertices = description
-            .triangles
-            .iter()
-            .flat_map(|triangle| triangle.to_vertices())
-            .collect::<Vec<geometry::Vertex>>();
+        let vertices = asset_vertices(&description);
         let first_instance =
             self.assets
                 .upload(&self.state.device, &self.state.queue, &vertices, instances)
@@ -1033,7 +1099,7 @@ mod tests {
             Camera, Renderer,
             camera::OrbitCamera,
             geometry::{RealTriangle, RealTwist, Vector3D},
-            stl::StlMesh,
+            mesh::Mesh,
             wgpu_utils::test_support::TestGpu,
         };
 
@@ -1056,7 +1122,13 @@ mod tests {
         let triangles = [[a, b, c], [a, c, d], [a, c, b], [a, d, c]]
             .map(|[v0, v1, v2]| RealTriangle { v0, v1, v2 })
             .to_vec();
-        let ids = renderer.upload_asset(StlMesh { triangles }, 2);
+        let ids = renderer.upload_asset(
+            Mesh {
+                triangles,
+                uvs: None,
+            },
+            2,
+        );
         for (id, x) in ids.iter().zip([-0.6, 0.6]) {
             let mut transform = RealTwist::identity();
             transform.linear = Vector3D { x, y: 0.0, z: 0.0 };
@@ -1094,7 +1166,7 @@ mod tests {
             Camera, Renderer,
             camera::OrbitCamera,
             geometry::{RealTriangle, RealTwist, Vector3D},
-            stl::StlMesh,
+            mesh::Mesh,
             wgpu_utils::test_support::TestGpu,
         };
 
@@ -1117,7 +1189,13 @@ mod tests {
         let triangles = [[a, b, c], [a, c, d], [a, c, b], [a, d, c]]
             .map(|[v0, v1, v2]| RealTriangle { v0, v1, v2 })
             .to_vec();
-        let ids = renderer.upload_asset(StlMesh { triangles }, 2);
+        let ids = renderer.upload_asset(
+            Mesh {
+                triangles,
+                uvs: None,
+            },
+            2,
+        );
         for (id, x) in ids.iter().zip([-0.6, 0.6]) {
             let mut transform = RealTwist::identity();
             transform.linear = Vector3D { x, y: 0.0, z: 0.0 };
@@ -1157,6 +1235,69 @@ mod tests {
             unreachable!()
         };
         assert!(r > 0 && r == g && g == b, "{:?}", [r, g, b]);
+    }
+
+    #[test]
+    fn mesh_uvs_replace_box_projection() {
+        use super::{WgpuAccelerated, WgpuAcceleratedConfiguration};
+        use crate::{
+            Camera, Renderer,
+            camera::OrbitCamera,
+            geometry::{RealTriangle, RealTwist},
+            mesh::Mesh,
+            wgpu_utils::test_support::TestGpu,
+        };
+
+        let _lock = TestGpu::new();
+        let mut renderer = WgpuAccelerated::new().expect("no wgpu adapter available");
+        let size = 64;
+        renderer.configure(WgpuAcceleratedConfiguration {
+            width: size,
+            height: size,
+            background_color: super::DEFAULT_BACKGROUND_COLOR,
+            color_depth_range: super::DEFAULT_COLOR_DEPTH_RANGE,
+            terrain_coloring: super::TerrainColoring::default(),
+        });
+        let [a, b, c, d] = [
+            [-0.5, -0.5, 0.0],
+            [0.5, -0.5, 0.0],
+            [0.5, 0.5, 0.0],
+            [-0.5, 0.5, 0.0],
+        ];
+        let triangles = [[a, b, c], [a, c, d], [a, c, b], [a, d, c]]
+            .map(|[v0, v1, v2]| RealTriangle { v0, v1, v2 })
+            .to_vec();
+        let uvs = vec![[[0.75, 0.5]; 3]; triangles.len()];
+        let ids = renderer.upload_asset(
+            Mesh {
+                triangles,
+                uvs: Some(uvs),
+            },
+            1,
+        );
+        renderer.set_asset_transform(ids[0], RealTwist::identity());
+        let red_green = renderer.upload_texture(2, 1, &[255, 0, 0, 255, 0, 255, 0, 255]);
+        renderer.set_asset_texture(ids[0], Some(red_green));
+
+        let camera = OrbitCamera::default().get_state(1.0);
+        let mut output = vec![0; (size * size * 4) as usize];
+        renderer.render(&camera, &mut output);
+        renderer.render(&camera, &mut output);
+        let lit = (0..size)
+            .map(|x| {
+                let offset = ((size / 2 * size + x) * 4) as usize;
+                let [b, g, r, _] = output[offset..offset + 4] else {
+                    unreachable!()
+                };
+                [r, g, b]
+            })
+            .filter(|pixel| pixel.iter().any(|&channel| channel > 0))
+            .collect::<Vec<_>>();
+        assert!(!lit.is_empty(), "the asset is not in view");
+        assert!(
+            lit.iter().all(|&[r, g, b]| g > 0 && r == 0 && b == 0),
+            "{lit:?}"
+        );
     }
 
     #[test]

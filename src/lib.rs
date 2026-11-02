@@ -1,5 +1,7 @@
 pub mod camera;
 pub mod geometry;
+pub mod mesh;
+pub mod obj;
 pub mod renderer;
 pub mod robot;
 pub mod shapes;

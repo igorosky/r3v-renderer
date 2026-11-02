@@ -1,4 +1,4 @@
-//! `stl::StlMesh` and `stl::read_file`.
+//! `mesh::Mesh` and `mesh::read_file`.
 
 use std::path::PathBuf;
 
@@ -6,31 +6,31 @@ use pyo3::prelude::*;
 
 use crate::{
     bindings::checked,
-    stl::{self, StlMesh},
+    mesh::{self, Mesh},
 };
 
 use super::PyTriangle;
 
-/// Triangle mesh for `WgpuRenderer.upload_asset` (`stl::StlMesh`).
-#[pyclass(module = "r3v_renderer", name = "StlMesh")]
-pub(super) struct PyStlMesh(pub(super) StlMesh);
+/// Triangle mesh for `WgpuRenderer.upload_asset` (`mesh::Mesh`).
+#[pyclass(module = "r3v_renderer", name = "Mesh")]
+pub(super) struct PyMesh(pub(super) Mesh);
 
 #[pymethods]
-impl PyStlMesh {
+impl PyMesh {
     /// A mesh of `triangles`.
     #[new]
     fn new(triangles: Vec<PyTriangle>) -> Self {
-        Self(StlMesh {
+        Self(Mesh {
             triangles: triangles.into_iter().map(Into::into).collect(),
+            uvs: None,
         })
     }
 
-    /// `stl::read_file`: reads an ASCII or binary STL file and winds every
-    /// triangle to match the normal declared for it. `RuntimeError` on
-    /// failure.
+    /// `mesh::read_file`: reads an STL or OBJ file, picked by its extension.
+    /// `RuntimeError` on failure.
     #[staticmethod]
     fn read_file(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
-        let mesh = py.detach(|| stl::read_file(&path).map_err(checked::Error::failed))?;
+        let mesh = py.detach(|| mesh::read_file(&path).map_err(checked::Error::failed))?;
         Ok(Self(mesh))
     }
 
@@ -43,9 +43,10 @@ impl PyStlMesh {
     #[setter]
     fn set_triangles(&mut self, triangles: Vec<PyTriangle>) {
         self.0.triangles = triangles.into_iter().map(Into::into).collect();
+        self.0.uvs = None;
     }
 
     fn __repr__(&self) -> String {
-        format!("StlMesh(<{} triangles>)", self.0.triangles.len())
+        format!("Mesh(<{} triangles>)", self.0.triangles.len())
     }
 }

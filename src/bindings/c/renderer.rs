@@ -3,8 +3,8 @@
 use crate::{bindings::checked::CheckedRenderer, renderer::TerrainColoring};
 
 use super::{
-    R3vCameraState, R3vStatus, R3vTwist, R3vVec3, arg, arg_mut, drop_handle, new_handle,
-    slice_arg_mut, status, stl::R3vStlMesh, take_handle, tesselator::R3vGeometryDelta,
+    R3vCameraState, R3vStatus, R3vTwist, R3vVec3, arg, arg_mut, drop_handle, mesh::R3vMesh,
+    new_handle, slice_arg_mut, status, take_handle, tesselator::R3vGeometryDelta,
 };
 
 /// Renders voxel geometry and mesh instances on the GPU
@@ -125,7 +125,7 @@ pub extern "C" fn r3v_wgpu_renderer_update_geometry(
 #[unsafe(no_mangle)]
 pub extern "C" fn r3v_wgpu_renderer_upload_asset(
     renderer: *mut R3vWgpuRenderer,
-    mesh: *const R3vStlMesh,
+    mesh: *const R3vMesh,
     instances: usize,
     out_ids: *mut u64,
 ) -> R3vStatus {

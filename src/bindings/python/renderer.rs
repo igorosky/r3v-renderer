@@ -10,7 +10,7 @@ use crate::{
     },
 };
 
-use super::{PyCameraState, PyTwist, Vec3, stl::PyStlMesh, tesselator::PyGeometryDelta};
+use super::{PyCameraState, PyTwist, Vec3, mesh::PyMesh, tesselator::PyGeometryDelta};
 
 #[pyclass(
     module = "r3v_renderer",
@@ -222,7 +222,7 @@ impl PyWgpuRenderer {
     fn upload_asset(
         &mut self,
         py: Python<'_>,
-        mesh: PyRef<'_, PyStlMesh>,
+        mesh: PyRef<'_, PyMesh>,
         instances: usize,
     ) -> PyResult<Vec<u64>> {
         let mesh = mesh.0.clone();

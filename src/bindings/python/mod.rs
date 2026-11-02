@@ -17,9 +17,9 @@ use super::checked::{self, ErrorKind};
 use crate::{camera::CameraState, geometry};
 
 mod camera;
+mod mesh;
 mod renderer;
 mod robot;
-mod stl;
 mod tesselator;
 
 impl From<checked::Error> for PyErr {
@@ -269,13 +269,13 @@ mod r3v_renderer {
     use super::{
         PyCameraState, PyPointI, PyTriangle, PyTwist,
         camera::PyOrbitCamera,
+        mesh::PyMesh,
         renderer::{PyTerrainColoring, PyWgpuRenderer, PyWgpuRendererConfiguration},
         robot::{
             PyRobotTransforms, PyUrdfBox, PyUrdfCapsule, PyUrdfColor, PyUrdfCylinder,
             PyUrdfDescription, PyUrdfJoint, PyUrdfJointLimit, PyUrdfJointType, PyUrdfLink,
             PyUrdfMaterial, PyUrdfMesh, PyUrdfOrigin, PyUrdfRobot, PyUrdfSphere, PyUrdfVisual,
         },
-        stl::PyStlMesh,
         tesselator::{
             PyCpuTesselator, PyCpuTesselatorConfiguration, PyGeometryDelta, PyTriangleChunk,
             PyVoxelGroup,

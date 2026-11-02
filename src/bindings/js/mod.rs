@@ -28,9 +28,9 @@ use crate::{
 };
 
 mod camera;
+mod mesh;
 mod renderer;
 mod robot;
-mod stl;
 mod tesselator;
 
 #[wasm_bindgen(typescript_custom_section)]

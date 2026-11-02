@@ -4,9 +4,10 @@ use r3v_renderer::{
     Camera, Renderer, Robot, Tesselator,
     camera::OrbitCamera,
     geometry::{self, PointI, RealTwist},
+    mesh,
     renderer::{self, TerrainColoring, WgpuAccelerated},
     robot::UrdfRobot,
-    shapes, stl,
+    shapes,
     tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext},
     urdf,
 };
@@ -805,8 +806,8 @@ impl RobotScene {
             let mut mesh = match geometry {
                 urdf::UrdfGeometry::Mesh(mesh) => {
                     let path = resolve_mesh_file(&mesh.filename, urdf_dir);
-                    let mut stl_mesh = match load_mesh(&path) {
-                        Ok(stl_mesh) => stl_mesh,
+                    let mut file_mesh = match mesh::read_file(&path) {
+                        Ok(file_mesh) => file_mesh,
                         Err(err) => {
                             eprintln!(
                                 "Skipping {} visual(s) using '{}': {err}",
@@ -820,8 +821,8 @@ impl RobotScene {
                     let scale = mesh
                         .scale
                         .map_or([1.0; 3], |scale| [scale.x, scale.y, scale.z]);
-                    scale_mesh(&mut stl_mesh, scale);
-                    stl_mesh
+                    scale_mesh(&mut file_mesh, scale);
+                    file_mesh
                 }
                 primitive => shapes::tessellate(primitive).expect("only meshes are files"),
             };
@@ -1002,20 +1003,6 @@ fn resolve_mesh_file(filename: &str, urdf_dir: &Path) -> std::path::PathBuf {
     }
 }
 
-fn load_mesh(path: &Path) -> Result<stl::StlMesh, String> {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default();
-    if !extension.eq_ignore_ascii_case("stl") {
-        return Err(format!(
-            "unsupported mesh format '{}', only STL is supported",
-            path.display()
-        ));
-    }
-    stl::read_file(path)
-}
-
 fn load_texture(path: &Path, renderer: &mut WgpuAccelerated) -> Result<usize, String> {
     let image = image::open(path)
         .map_err(|err| format!("failed to read '{}': {err}", path.display()))?
@@ -1023,7 +1010,7 @@ fn load_texture(path: &Path, renderer: &mut WgpuAccelerated) -> Result<usize, St
     Ok(renderer.upload_texture(image.width(), image.height(), image.as_raw()))
 }
 
-fn scale_mesh(mesh: &mut stl::StlMesh, scale: [f32; 3]) {
+fn scale_mesh(mesh: &mut mesh::Mesh, scale: [f32; 3]) {
     let mirrored = scale[0] * scale[1] * scale[2] < 0.0;
     for triangle in &mut mesh.triangles {
         for vertex in [&mut triangle.v0, &mut triangle.v1, &mut triangle.v2] {
@@ -1034,6 +1021,11 @@ fn scale_mesh(mesh: &mut stl::StlMesh, scale: [f32; 3]) {
         // A mirroring scale flips the winding, which would get the triangle back-face culled.
         if mirrored {
             *triangle = triangle.reverse();
+        }
+    }
+    if mirrored && let Some(uvs) = &mut mesh.uvs {
+        for uv in uvs {
+            uv.swap(1, 2);
         }
     }
 }

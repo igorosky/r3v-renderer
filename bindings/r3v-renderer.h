@@ -79,15 +79,15 @@ typedef struct R3vCpuTesselator R3vCpuTesselator;
 typedef struct R3vGeometryDelta R3vGeometryDelta;
 
 /**
+ * Triangle mesh for `r3v_wgpu_renderer_upload_asset` (`mesh::Mesh`).
+ */
+typedef struct R3vMesh R3vMesh;
+
+/**
  * Transforms of every link and visual for one set of joint positions
  * (`robot::RobotTransforms`).
  */
 typedef struct R3vRobotTransforms R3vRobotTransforms;
-
-/**
- * Triangle mesh for `r3v_wgpu_renderer_upload_asset` (`stl::StlMesh`).
- */
-typedef struct R3vStlMesh R3vStlMesh;
 
 /**
  * Robot description read from URDF (`urdf::UrdfRobot`). Every string it
@@ -162,6 +162,16 @@ typedef struct R3vCameraState {
    */
   struct R3vVec3 forward;
 } R3vCameraState;
+
+/**
+ * Triangle (`geometry::RealTriangle`), counter-clockwise when seen from
+ * its front side.
+ */
+typedef struct R3vTriangle {
+  float v0[3];
+  float v1[3];
+  float v2[3];
+} R3vTriangle;
 
 typedef struct R3vTerrainColoring {
   bool height_coloring_enabled;
@@ -334,16 +344,6 @@ typedef struct R3vUrdfJoint {
 } R3vUrdfJoint;
 
 /**
- * Triangle (`geometry::RealTriangle`), counter-clockwise when seen from
- * its front side.
- */
-typedef struct R3vTriangle {
-  float v0[3];
-  float v1[3];
-  float v2[3];
-} R3vTriangle;
-
-/**
  * `tesselator::CpuTesselatorConfiguration`.
  */
 typedef struct R3vCpuTesselatorConfiguration {
@@ -484,6 +484,34 @@ enum R3vStatus r3v_orbit_camera_get_state(struct R3vOrbitCamera camera,
                                           float aspect_ratio,
                                           struct R3vCameraState *out);
 
+/**
+ * `stl::read_file`: reads an ASCII or binary STL file and winds every
+ * triangle to match the normal declared for it. NULL on failure.
+ */
+struct R3vMesh *r3v_stl_read_file(const char *path);
+
+/**
+ * A mesh of the `count` triangles at `triangles` (copied), which may be NULL
+ * when `count` is 0. NULL on failure.
+ */
+struct R3vMesh *r3v_mesh_from_triangles(const struct R3vTriangle *triangles, size_t count);
+
+/**
+ * Number of triangles of the mesh, 0 for NULL.
+ */
+size_t r3v_mesh_triangle_count(const struct R3vMesh *mesh);
+
+/**
+ * The triangles of the mesh, writable in place (e.g. to scale it) and valid
+ * until the mesh is dropped. NULL for NULL or an empty mesh.
+ */
+struct R3vTriangle *r3v_mesh_triangles(struct R3vMesh *mesh);
+
+/**
+ * Frees a mesh. NULL is ignored.
+ */
+void r3v_mesh_drop(struct R3vMesh *mesh);
+
 struct R3vTerrainColoring r3v_terrain_coloring_default(void);
 
 /**
@@ -516,7 +544,7 @@ enum R3vStatus r3v_wgpu_renderer_update_geometry(struct R3vWgpuRenderer *rendere
  * with the identity transform. Ids count up from 0 over all uploads.
  */
 enum R3vStatus r3v_wgpu_renderer_upload_asset(struct R3vWgpuRenderer *renderer,
-                                              const struct R3vStlMesh *mesh,
+                                              const struct R3vMesh *mesh,
                                               size_t instances,
                                               uint64_t *out_ids);
 
@@ -693,34 +721,6 @@ enum R3vStatus r3v_robot_transforms_transform_visual_point(const struct R3vRobot
  * ones from `r3v_urdf_robot_last_transform`. NULL is ignored.
  */
 void r3v_robot_transforms_drop(struct R3vRobotTransforms *transforms);
-
-/**
- * `stl::read_file`: reads an ASCII or binary STL file and winds every
- * triangle to match the normal declared for it. NULL on failure.
- */
-struct R3vStlMesh *r3v_stl_read_file(const char *path);
-
-/**
- * A mesh of the `count` triangles at `triangles` (copied), which may be NULL
- * when `count` is 0. NULL on failure.
- */
-struct R3vStlMesh *r3v_stl_mesh_from_triangles(const struct R3vTriangle *triangles, size_t count);
-
-/**
- * Number of triangles of the mesh, 0 for NULL.
- */
-size_t r3v_stl_mesh_triangle_count(const struct R3vStlMesh *mesh);
-
-/**
- * The triangles of the mesh, writable in place (e.g. to scale it) and valid
- * until the mesh is dropped. NULL for NULL or an empty mesh.
- */
-struct R3vTriangle *r3v_stl_mesh_triangles(struct R3vStlMesh *mesh);
-
-/**
- * Frees a mesh. NULL is ignored.
- */
-void r3v_stl_mesh_drop(struct R3vStlMesh *mesh);
 
 /**
  * `CpuTesselator::new`, with marching cubes disabled. Configure it before

@@ -37,7 +37,7 @@ def add_stairs(renderer):
 
 def add_flags(renderer):
     """Two instances of one triangle above the stairs."""
-    mesh = rr.StlMesh([rr.Triangle((0, 0, 0), (1, 0, 0), (0, 1, 0))])
+    mesh = rr.Mesh([rr.Triangle((0, 0, 0), (1, 0, 0), (0, 1, 0))])
     for k, instance in enumerate(renderer.upload_asset(mesh, 2)):
         renderer.set_asset_transform(instance, rr.Twist(linear=(1 + 4 * k, 3, 2.5)))
 

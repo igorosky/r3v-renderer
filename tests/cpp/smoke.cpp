@@ -68,12 +68,12 @@ int main() {
         renderer, R3vWgpuRendererConfiguration{width, height, {0.0f, 0.0f, 0.0f}, 50.0f, coloring}));
     CHECK_OK(r3v_wgpu_renderer_update_geometry(renderer, delta));
     const R3vTriangle triangle{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
-    R3vStlMesh *mesh = r3v_stl_mesh_from_triangles(&triangle, 1);
+    R3vMesh *mesh = r3v_mesh_from_triangles(&triangle, 1);
     uint64_t id = 0;
     CHECK_OK(r3v_wgpu_renderer_upload_asset(renderer, mesh, 1, &id));
     CHECK_OK(r3v_wgpu_renderer_set_asset_color(renderer, id, R3vVec3{1.0f, 0.5f, 0.0f}));
     CHECK_OK(r3v_wgpu_renderer_set_asset_visibility(renderer, id, false));
-    r3v_stl_mesh_drop(mesh);
+    r3v_mesh_drop(mesh);
 
     R3vOrbitCamera camera = r3v_orbit_camera_default();
     CHECK_OK(r3v_orbit_camera_look_at(&camera, R3vVec3{6, 6, 3}, 10, 0, 0));

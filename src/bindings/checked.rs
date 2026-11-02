@@ -8,8 +8,8 @@ use crate::{
     geometry::{
         PointI, RealTwist, TriangleChunk, VOXEL_GROUP_PAGES, VOXEL_GROUP_SHIFT, group_blocks,
     },
+    mesh::Mesh,
     renderer::{TerrainColoring, WgpuAccelerated, WgpuAcceleratedConfiguration},
-    stl::StlMesh,
     tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext, SUBCHUNK_SIZE},
 };
 
@@ -289,7 +289,7 @@ impl CheckedRenderer {
 
     /// Checks that `instances` more instances of `mesh` fit, before anything
     /// is uploaded.
-    pub(crate) fn check_upload(&self, mesh: &StlMesh, instances: u64) -> Result<()> {
+    pub(crate) fn check_upload(&self, mesh: &Mesh, instances: u64) -> Result<()> {
         // The renderer keeps vertex and instance offsets in u32
         let fits = self
             .instance_count
@@ -310,7 +310,7 @@ impl CheckedRenderer {
         Ok(())
     }
 
-    pub(crate) fn upload_asset(&mut self, mesh: StlMesh, instances: u64) -> Result<Vec<u64>> {
+    pub(crate) fn upload_asset(&mut self, mesh: Mesh, instances: u64) -> Result<Vec<u64>> {
         self.check_upload(&mesh, instances)?;
         // Checked to fit in u32
         let ids = self.renderer.upload_asset(mesh, instances as usize);
