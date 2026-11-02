@@ -38,6 +38,7 @@ pub struct UrdfColor {
 pub struct UrdfMaterial {
     pub name: Option<String>,
     pub color: Option<UrdfColor>,
+    pub texture: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,18 +124,25 @@ fn read_str_with_base_dir(xml: &str, base_dir: Option<&Path>) -> Result<UrdfRobo
     }
 
     let mut named_colors = std::collections::HashMap::new();
+    let mut named_textures = std::collections::HashMap::new();
     let inline_materials = parsed
         .links
         .iter()
         .flat_map(|link| &link.visual)
         .filter_map(|visual| visual.material.as_ref());
     for material in parsed.materials.iter().chain(inline_materials) {
-        if let Some(color) = &material.color
-            && !material.name.is_empty()
-        {
+        if material.name.is_empty() {
+            continue;
+        }
+        if let Some(color) = &material.color {
             named_colors
                 .entry(material.name.clone())
                 .or_insert(color.rgba.0);
+        }
+        if let Some(texture) = &material.texture {
+            named_textures
+                .entry(material.name.clone())
+                .or_insert(texture.filename.clone());
         }
     }
     let convert_material = |mut material: urdf_rs::Material| {
@@ -145,7 +153,14 @@ fn read_str_with_base_dir(xml: &str, base_dir: Option<&Path>) -> Result<UrdfRobo
                 rgba: urdf_rs::Vec4(rgba),
             });
         }
-        convert_material(material)
+        if material.texture.is_none()
+            && let Some(filename) = named_textures.get(&material.name)
+        {
+            material.texture = Some(urdf_rs::Texture {
+                filename: filename.clone(),
+            });
+        }
+        convert_material(material, base_dir)
     };
 
     Ok(UrdfRobot {
@@ -344,11 +359,14 @@ fn resolve_mesh_path(filename: &str, base_dir: Option<&Path>) -> String {
         .to_string()
 }
 
-fn convert_material(material: urdf_rs::Material) -> UrdfMaterial {
+fn convert_material(material: urdf_rs::Material, base_dir: Option<&Path>) -> UrdfMaterial {
     UrdfMaterial {
         name: (!material.name.is_empty()).then_some(material.name),
         color: material.color.map(|color| UrdfColor {
             rgba: color.rgba.0.map(|channel| channel as f32),
         }),
+        texture: material
+            .texture
+            .map(|texture| resolve_mesh_path(&texture.filename, base_dir)),
     }
 }

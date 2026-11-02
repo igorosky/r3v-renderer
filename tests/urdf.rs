@@ -534,3 +534,70 @@ fn material_defined_in_one_link_colors_references_in_others() {
     assert_eq!(material.name.as_deref(), Some("steel"));
     assert_eq!(material.color.as_ref().unwrap().rgba, [0.5, 0.5, 0.6, 1.0]);
 }
+
+#[test]
+fn materials_read_textures_and_inherit_them_by_name() {
+    let robot = read_str(
+        r#"<robot name="textures">
+            <material name="wood"><texture filename="textures/wood.png"/></material>
+            <link name="base">
+                <visual>
+                    <geometry><box size="1 1 1"/></geometry>
+                    <material name="wood"/>
+                </visual>
+                <visual>
+                    <geometry><box size="1 1 1"/></geometry>
+                    <material name="">
+                        <color rgba="1 0 0 1"/>
+                        <texture filename="package://pkg/stripes.png"/>
+                    </material>
+                </visual>
+                <visual>
+                    <geometry><box size="1 1 1"/></geometry>
+                    <material name="plain"><color rgba="0 0 1 1"/></material>
+                </visual>
+            </link>
+        </robot>"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        robot.materials[0].texture.as_deref(),
+        Some("textures/wood.png")
+    );
+    let textures = robot.links[0]
+        .visuals
+        .iter()
+        .map(|visual| visual.material.as_ref().unwrap().texture.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        textures,
+        [
+            Some("textures/wood.png"),
+            Some("package://pkg/stripes.png"),
+            None
+        ]
+    );
+    let red = robot.links[0].visuals[1].material.as_ref().unwrap();
+    assert_eq!(red.color.as_ref().unwrap().rgba, [1.0, 0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn read_file_resolves_package_texture_paths() {
+    let dir = TempDir::new("urdf");
+    let texture = dir.write("description/textures/wood.png", b"dummy");
+    let urdf = dir.write(
+        "description/urdf/robot.urdf",
+        r#"<robot name="demo"><link name="base"><visual>
+            <geometry><box size="1 1 1"/></geometry>
+            <material name="wood"><texture filename="package://description/textures/wood.png"/></material>
+        </visual></link></robot>"#,
+    );
+
+    let robot = read_file(&urdf).unwrap();
+    let material = robot.links[0].visuals[0].material.as_ref().unwrap();
+    assert_eq!(
+        material.texture.as_deref(),
+        Some(canonical(&texture).as_str())
+    );
+}

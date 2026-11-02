@@ -775,8 +775,8 @@ impl RobotScene {
         let description = urdf::read_file(urdf_path)?;
         let urdf_dir = urdf_path.parent().unwrap_or(Path::new("."));
 
-        type Visuals = Vec<((String, usize), Option<[f32; 3]>)>;
-        let mut groups: Vec<(&urdf::UrdfGeometry, Visuals)> = Vec::new();
+        type Visuals<'a> = Vec<((String, usize), Option<[f32; 3]>, Option<&'a str>)>;
+        let mut groups: Vec<(&urdf::UrdfGeometry, Visuals<'_>)> = Vec::new();
         for link in &description.links {
             for (visual_index, visual) in link.visuals.iter().enumerate() {
                 let geometry = &visual.geometry;
@@ -785,7 +785,11 @@ impl RobotScene {
                     .as_ref()
                     .and_then(|material| material.color.as_ref())
                     .map(|color| [color.rgba[0], color.rgba[1], color.rgba[2]]);
-                let visual_key = ((link.name.clone(), visual_index), color);
+                let texture = visual
+                    .material
+                    .as_ref()
+                    .and_then(|material| material.texture.as_deref());
+                let visual_key = ((link.name.clone(), visual_index), color, texture);
                 match groups.iter_mut().find(|(group, _)| *group == geometry) {
                     Some((_, visuals)) => visuals.push(visual_key),
                     None => groups.push((geometry, vec![visual_key])),
@@ -794,6 +798,7 @@ impl RobotScene {
         }
 
         let mut instances = Vec::new();
+        let mut textures: HashMap<&str, Option<usize>> = HashMap::new();
         let mut triangle_count = 0;
         let mut unloaded = 0;
         for (geometry, visuals) in groups {
@@ -824,9 +829,17 @@ impl RobotScene {
             triangle_count += mesh.triangles.len();
             let is_shape = !matches!(geometry, urdf::UrdfGeometry::Mesh(_));
             let ids = renderer.upload_asset(mesh, visuals.len());
-            for ((visual_key, color), id) in visuals.into_iter().zip(ids) {
+            for ((visual_key, color, texture), id) in visuals.into_iter().zip(ids) {
                 if let Some(color) = color {
                     renderer.set_asset_color(id, color);
+                }
+                if let Some(filename) = texture {
+                    let texture = *textures.entry(filename).or_insert_with(|| {
+                        load_texture(&resolve_mesh_file(filename, urdf_dir), renderer)
+                            .inspect_err(|err| eprintln!("Skipping texture '{filename}': {err}"))
+                            .ok()
+                    });
+                    renderer.set_asset_texture(id, texture);
                 }
                 if is_shape && !ROBOT_SHOW_SHAPES {
                     renderer.set_asset_visibility(id, false);
@@ -1001,6 +1014,13 @@ fn load_mesh(path: &Path) -> Result<stl::StlMesh, String> {
         ));
     }
     stl::read_file(path)
+}
+
+fn load_texture(path: &Path, renderer: &mut WgpuAccelerated) -> Result<usize, String> {
+    let image = image::open(path)
+        .map_err(|err| format!("failed to read '{}': {err}", path.display()))?
+        .to_rgba8();
+    Ok(renderer.upload_texture(image.width(), image.height(), image.as_raw()))
 }
 
 fn scale_mesh(mesh: &mut stl::StlMesh, scale: [f32; 3]) {
