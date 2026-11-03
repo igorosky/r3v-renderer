@@ -9,13 +9,14 @@ use wasm_bindgen_futures::future_to_promise;
 use crate::{
     bindings::checked::CheckedRenderer,
     camera::CameraState,
+    grid::GridDescription,
     renderer::{DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE, TerrainColoring},
 };
 
 use super::{
     Result, U32_MAX, What, error, f32_property, flag_property, index, integer_property,
-    mesh::JsMesh, number, numbers, object, property, range_error, tesselator::JsGeometryDelta,
-    twist, type_error, vector, vector_property,
+    mesh::JsMesh, number, numbers, object, property, range_error, string,
+    tesselator::JsGeometryDelta, twist, type_error, vector, vector_property,
 };
 
 fn terrain_coloring(value: &JsValue, what: What) -> Result<TerrainColoring> {
@@ -38,6 +39,35 @@ fn terrain_coloring(value: &JsValue, what: What) -> Result<TerrainColoring> {
             default.height_bands
         } else {
             integer_property(value, "height_bands", 0.0, U32_MAX, what)? as u32
+        },
+    })
+}
+
+/// A `GridDescription`, with the defaults for what is left out.
+fn grid_description(value: &JsValue, what: What) -> Result<GridDescription> {
+    let default = GridDescription::default();
+    let vector_or = |key: &str, default: [f32; 3]| {
+        if property(value, key, what)?.is_undefined() {
+            Ok(default)
+        } else {
+            vector_property(value, key, what)
+        }
+    };
+    let frame = property(value, "frame", what)?;
+    let pose = property(value, "pose", what)?;
+    Ok(GridDescription {
+        size: vector_or("size", default.size)?,
+        resolution: vector_or("resolution", default.resolution)?,
+        color: vector_or("color", default.color)?,
+        frame: if frame.is_undefined() || frame.is_null() {
+            None
+        } else {
+            Some(string(&frame, &|| format!("{}.frame", what()))?)
+        },
+        pose: if pose.is_undefined() {
+            default.pose
+        } else {
+            twist(&pose, &|| format!("{}.pose", what()))?
         },
     })
 }
@@ -360,6 +390,65 @@ impl JsWgpuRenderer {
         let instance_id = index(&instance_id, &|| "instance_id".to_owned())?;
         let color = vector(&color, &|| "color".to_owned())?;
         self.with(|renderer| Ok(renderer.set_asset_color(instance_id, color)?))
+    }
+
+    /// `Renderer::create_grid`: adds a grid and returns its id. Ids count up
+    /// from 0 and are not reused. `RangeError` for a negative or non finite
+    /// size, a resolution that is not positive, color components outside
+    /// 0..1, an empty frame name or more than 2**20 lines.
+    pub fn create_grid(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "GridDescription")] description: JsValue,
+    ) -> Result<f64> {
+        let description = grid_description(&description, &|| "description".to_owned())?;
+        let id = self.with(|renderer| Ok(renderer.create_grid(description)?))?;
+        Ok(id as f64)
+    }
+
+    /// `Renderer::update_grid`: replaces the description of a grid, checked
+    /// as by `create_grid`. `RangeError` for an id that is not a grid (any
+    /// more) too.
+    pub fn update_grid(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "number")] grid_id: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "GridDescription")] description: JsValue,
+    ) -> Result<()> {
+        let grid_id = index(&grid_id, &|| "grid_id".to_owned())?;
+        let description = grid_description(&description, &|| "description".to_owned())?;
+        self.with(|renderer| Ok(renderer.update_grid(grid_id, description)?))
+    }
+
+    /// `Renderer::remove_grid`. `RangeError` for an id that is not a grid
+    /// (any more).
+    pub fn remove_grid(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "number")] grid_id: JsValue,
+    ) -> Result<()> {
+        let grid_id = index(&grid_id, &|| "grid_id".to_owned())?;
+        self.with(|renderer| Ok(renderer.remove_grid(grid_id)?))
+    }
+
+    /// `Renderer::set_frame_transform`: sets the world pose of the frame
+    /// named `frame` (e.g. a robot link), which the grids placed relative to
+    /// it follow. `RangeError` for an empty name.
+    pub fn set_frame_transform(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "string")] frame: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "TwistLike")] transform: JsValue,
+    ) -> Result<()> {
+        let frame = string(&frame, &|| "frame".to_owned())?;
+        let transform = twist(&transform, &|| "transform".to_owned())?;
+        self.with(|renderer| Ok(renderer.set_frame_transform(&frame, transform)?))
+    }
+
+    /// `Renderer::remove_frame`: forgets a frame, its grids are not drawn
+    /// until it is set again. Nothing happens for an unknown frame.
+    pub fn remove_frame(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "string")] frame: JsValue,
+    ) -> Result<()> {
+        let frame = string(&frame, &|| "frame".to_owned())?;
+        self.with(|renderer| Ok(renderer.remove_frame(&frame)?))
     }
 
     /// `WgpuAccelerated::render_async`: renders a frame seen by

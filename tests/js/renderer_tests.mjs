@@ -1008,6 +1008,8 @@ async function renderer_is_busy_while_rendering() {
         () => renderer.update_geometry(delta),
         () => renderer.upload_asset(mesh, 1),
         () => renderer.set_asset_visibility(0, false),
+        () => renderer.create_grid({}),
+        () => renderer.set_frame_transform("base_link", IDENTITY),
     ].map((call) => throws(call, Error, "still running"));
     await pending;
     await Promise.all(busy);
@@ -1016,6 +1018,7 @@ async function renderer_is_busy_while_rendering() {
     check(delta.length === chunks);
     renderer.update_geometry(delta);
     check(same(renderer.upload_asset(mesh, 1), [0]));
+    check(renderer.create_grid({}) === 0);
     await renderer.render(state, new Uint8Array(64));
 }
 
@@ -1135,6 +1138,143 @@ async function urdf_robot_moves_links() {
     await throws(() => robot.feed_sensor_input(5), TypeError, "input");
 }
 
+// ----------------------------------------------------------------- grids
+
+const ORANGE = [1.0, 0.5, 0.0];
+const ORANGE_BGR = [0, 128, 255];
+
+function topDown() {
+    return new rr.OrbitCamera([0, 0, 0], 10, 0, 89);
+}
+
+function countPixels(frame, w, h, bgr) {
+    let count = 0;
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            count += pixelIs(frame, w, x, y, bgr);
+        }
+    }
+    return count;
+}
+
+function countLit(frame, w, h) {
+    let count = 0;
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            count += lit(frame, w, x, y);
+        }
+    }
+    return count;
+}
+
+function orangeFloor(fields = {}) {
+    return { size: [4, 0, 4], color: ORANGE, ...fields };
+}
+
+async function renderer_draws_grids() {
+    const [w, h] = [32, 32];
+    const renderer = await makeRenderer(w, h);
+    const first = renderer.create_grid(orangeFloor());
+    check(first === 0);
+    let frame = await renderNow(renderer, topDown(), w, h);
+    const orange = countPixels(frame, w, h, ORANGE_BGR);
+    check(orange > 20, `${orange} grid pixels`);
+    check(countLit(frame, w, h) === orange);
+    check(!lit(frame, w, 0, 0));
+
+    renderer.update_grid(first, orangeFloor({ color: [0, 1, 0] }));
+    frame = await renderNow(renderer, topDown(), w, h);
+    check(countPixels(frame, w, h, ORANGE_BGR) === 0);
+    check(countPixels(frame, w, h, [0, 255, 0]) === orange);
+
+    renderer.update_grid(first, orangeFloor({ resolution: [0.5, 0.5, 0.5] }));
+    check(countPixels(await renderNow(renderer, topDown(), w, h), w, h, ORANGE_BGR) > orange);
+
+    // Left out fields take their defaults: a gray 10 by 10 plane.
+    const second = renderer.create_grid({});
+    check(second === 1);
+    frame = await renderNow(renderer, topDown(), w, h);
+    check(countPixels(frame, w, h, [128, 128, 128]) > 0);
+    renderer.remove_grid(first);
+    renderer.remove_grid(second);
+    check(countLit(await renderNow(renderer, topDown(), w, h), w, h) === 0);
+    await throws(() => renderer.remove_grid(second), RangeError, "grid 1");
+    await throws(() => renderer.update_grid(first, orangeFloor()), RangeError, "grid 0");
+    // Ids are not reused.
+    check(renderer.create_grid(orangeFloor()) === 2);
+}
+
+async function renderer_grid_follows_frames() {
+    const [w, h] = [32, 32];
+    const renderer = await makeRenderer(w, h);
+    const grid = renderer.create_grid(orangeFloor({ frame: "base_link" }));
+    check(countLit(await renderNow(renderer, topDown(), w, h), w, h) === 0);
+
+    renderer.set_frame_transform("base_link", IDENTITY);
+    const inView = countPixels(await renderNow(renderer, topDown(), w, h), w, h, ORANGE_BGR);
+    check(inView > 20, `${inView} grid pixels`);
+
+    renderer.set_frame_transform("base_link", { linear: [100, 0, 0], rotational: [0, 0, 0, 1] });
+    check(countLit(await renderNow(renderer, topDown(), w, h), w, h) === 0);
+
+    // The pose is relative to the frame.
+    renderer.update_grid(grid, orangeFloor({ frame: "base_link", pose: new rr.Twist([-100, 0, 0]) }));
+    check(countPixels(await renderNow(renderer, topDown(), w, h), w, h, ORANGE_BGR) === inView);
+
+    renderer.remove_frame("base_link");
+    check(countLit(await renderNow(renderer, topDown(), w, h), w, h) === 0);
+    renderer.remove_frame("never_set");
+
+    // A null frame is the world.
+    renderer.update_grid(grid, orangeFloor({ frame: null }));
+    check(countPixels(await renderNow(renderer, topDown(), w, h), w, h, ORANGE_BGR) === inView);
+
+    // A robot link as the frame.
+    const robot = rr.UrdfRobot.from_description(rr.UrdfDescription.read_str(ROBOT_URDF));
+    const transforms = robot.feed_sensor_input({});
+    renderer.update_grid(grid, orangeFloor({ frame: "arm" }));
+    for (const [link, transform] of Object.entries(transforms.links)) {
+        renderer.set_frame_transform(link, transform);
+    }
+    check(countPixels(await renderNow(renderer, topDown(), w, h), w, h, ORANGE_BGR) > 20);
+}
+
+async function renderer_grid_checks_arguments() {
+    const renderer = await makeRenderer(4, 4);
+    await throws(() => renderer.create_grid({ size: [-1, 0, 1] }), RangeError, "grid size");
+    await throws(() => renderer.create_grid({ size: [NaN, 0, 1] }), RangeError, "grid size");
+    await throws(() => renderer.create_grid({ resolution: [1, 0, 1] }), RangeError, "grid resolution");
+    await throws(() => renderer.create_grid({ resolution: [1, Infinity, 1] }), RangeError, "grid resolution");
+    await throws(() => renderer.create_grid({ color: [1.5, 0, 0] }), RangeError, "between 0 and 1");
+    await throws(() => renderer.create_grid({ frame: "" }), RangeError, "must not be empty");
+    await throws(() => renderer.create_grid({ size: [10000, 10000, 10000] }), RangeError, "lines");
+    await throws(() => renderer.create_grid({ size: [1, 2] }), TypeError, "description.size");
+    await throws(() => renderer.create_grid({ frame: 5 }), TypeError, "description.frame");
+    await throws(() => renderer.create_grid({ pose: { linear: [0, 0, 0] } }), TypeError, "description.pose.rotational");
+    await throws(() => renderer.create_grid(null), TypeError, "description");
+    await throws(() => renderer.create_grid(), TypeError, "description");
+
+    // Failed calls take no ids and leave the grid as it was.
+    const grid = renderer.create_grid({});
+    check(grid === 0);
+    await throws(() => renderer.update_grid(grid, { resolution: [0, 0, 0] }), RangeError, "grid resolution");
+    renderer.update_grid(grid, {});
+    await throws(() => renderer.remove_grid(grid + 1), RangeError, "grid 1");
+    for (const id of [-1, 0.5, NaN, 2 ** 53]) {
+        await throws(() => renderer.remove_grid(id), RangeError, "grid_id");
+    }
+    for (const id of ["0", null, undefined, 0n]) {
+        await throws(() => renderer.update_grid(id, {}), TypeError, "grid_id");
+    }
+    renderer.remove_grid(grid);
+
+    await throws(() => renderer.set_frame_transform("", IDENTITY), RangeError, "must not be empty");
+    await throws(() => renderer.remove_frame(""), RangeError, "must not be empty");
+    await throws(() => renderer.set_frame_transform(null, IDENTITY), TypeError, "frame");
+    await throws(() => renderer.set_frame_transform("base_link", null), TypeError, "transform");
+    await throws(() => renderer.remove_frame(5), TypeError, "frame");
+}
+
 const TEST_CASES = [
     module_exports_its_classes,
     point_i_has_the_voxelizer_interface,
@@ -1190,6 +1330,9 @@ const TEST_CASES = [
     urdf_data_is_plain,
     urdf_read_rejects_bad_input,
     urdf_robot_moves_links,
+    renderer_draws_grids,
+    renderer_grid_follows_frames,
+    renderer_grid_checks_arguments,
 ];
 
 process.exit(await main(TEST_CASES));

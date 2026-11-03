@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::wgpu_utils::*;
-use crate::{Renderer, camera, geometry, mesh, vertex_arena::VertexArena};
+use crate::{Renderer, camera, geometry, grid, mesh, vertex_arena::VertexArena};
 
 pub const DEFAULT_BACKGROUND_COLOR: [f32; 3] = [0.0; 3];
 pub const DEFAULT_COLOR_DEPTH_RANGE: f32 = 50.0;
@@ -487,6 +487,7 @@ pub struct WgpuAccelerated {
     render_targets: Option<RenderTargets>,
     vertex_arena: VertexArena,
     assets: Assets,
+    grids: grid::Grids,
     frame_index: usize,
     frustum_culling: bool,
     drawn_chunks: u32,
@@ -503,6 +504,11 @@ impl WgpuAccelerated {
 
     pub fn drawn_chunks(&self) -> (u32, u32) {
         (self.drawn_chunks, self.vertex_arena.draw_count())
+    }
+
+    /// Whether `grid_id` was returned by `create_grid` and not removed since.
+    pub fn has_grid(&self, grid_id: u64) -> bool {
+        self.grids.contains(grid_id)
     }
 
     pub fn new() -> Option<Self> {
@@ -636,6 +642,7 @@ impl WgpuAccelerated {
         });
         let vertex_arena = VertexArena::new(&device);
         let assets = Assets::new(&device, &queue);
+        let grids = grid::Grids::new(&device, &camera_bind_group_layout);
         let asset_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Asset Pipeline Layout"),
@@ -730,6 +737,7 @@ impl WgpuAccelerated {
             render_targets: None,
             vertex_arena,
             assets,
+            grids,
             frame_index: 0,
             frustum_culling: true,
             drawn_chunks: 0,
@@ -820,6 +828,7 @@ impl WgpuAccelerated {
             self.rebuild_targets();
         }
         self.assets.flush_instances(&self.state.queue);
+        self.grids.prepare(&self.state.device, &self.state.queue);
         self.drawn_chunks = if self.frustum_culling {
             self.vertex_arena.cull(
                 &self.state.device,
@@ -936,6 +945,8 @@ impl WgpuAccelerated {
                     }
                 }
             }
+            self.grids
+                .draw(&mut render_pass, &self.state.camera_bind_group);
         }
         let write_index = self.frame_index % 2;
         encoder.copy_texture_to_buffer(
@@ -977,6 +988,9 @@ impl Renderer for WgpuAccelerated {
     type AssetDescription = mesh::Mesh;
     type AssetTransform = geometry::RealTwist;
     type TextureId = usize;
+
+    type GridId = u64;
+    type GridDescription = grid::GridDescription;
 
     type CameraState = camera::CameraState;
 
@@ -1049,6 +1063,26 @@ impl Renderer for WgpuAccelerated {
         texture: Option<Self::TextureId>,
     ) {
         self.assets.set_texture(instance_id as usize, texture);
+    }
+
+    fn create_grid(&mut self, description: Self::GridDescription) -> Self::GridId {
+        self.grids.create(&self.state.device, description)
+    }
+
+    fn update_grid(&mut self, grid_id: Self::GridId, description: Self::GridDescription) {
+        self.grids.update(&self.state.device, grid_id, description);
+    }
+
+    fn remove_grid(&mut self, grid_id: Self::GridId) {
+        self.grids.remove(grid_id);
+    }
+
+    fn set_frame_transform(&mut self, frame: &str, transform: Self::AssetTransform) {
+        self.grids.set_frame(frame, transform);
+    }
+
+    fn remove_frame(&mut self, frame: &str) {
+        self.grids.remove_frame(frame);
     }
 }
 

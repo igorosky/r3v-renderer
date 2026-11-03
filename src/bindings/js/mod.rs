@@ -55,6 +55,22 @@ export interface TriangleLike { v0: Vec3; v1: Vec3; v2: Vec3 }
 /** A `CameraState` or a plain object. */
 export interface CameraStateLike { view_proj: Mat4; position: Vec3; forward: Vec3 }
 
+/** Lines `resolution` apart (the cell size) along the x, y and z axes of
+ * `pose`, spanning `size` centered on its origin. Lines go through the
+ * origin and along the boundary; there are none along an axis of size 0.
+ * Left out, `size` is [10, 0, 10] (a plane on the ground, Y is up),
+ * `resolution` [1, 1, 1] and `color` gray. `color` is sRGB, components
+ * between 0 and 1. `pose` is relative to the frame named `frame`, set with
+ * `WgpuRenderer.set_frame_transform`, or to the world when `frame` is null
+ * or left out. The grid is drawn only while its frame is known. */
+export interface GridDescription {
+    size?: Vec3;
+    resolution?: Vec3;
+    color?: Vec3;
+    frame?: string | null;
+    pose?: TwistLike;
+}
+
 export interface TerrainColoring {
     height_coloring_enabled?: boolean;
     relative_to_robot?: boolean;

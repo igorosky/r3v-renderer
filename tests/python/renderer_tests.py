@@ -133,8 +133,9 @@ def project(state, point):
 # ------------------------------------------------------------ Python API
 
 CLASSES = [
-    "CameraState", "CpuTesselator", "CpuTesselatorConfiguration", "GeometryDelta", "Mesh", "OrbitCamera", "PointI",
-    "RobotTransforms", "TerrainColoring", "Triangle", "TriangleChunk", "Twist", "UrdfBox", "UrdfCapsule",
+    "CameraState", "CpuTesselator", "CpuTesselatorConfiguration", "GeometryDelta", "GridDescription", "Mesh",
+    "OrbitCamera", "PointI", "RobotTransforms", "TerrainColoring", "Triangle", "TriangleChunk", "Twist", "UrdfBox",
+    "UrdfCapsule",
     "UrdfColor", "UrdfCylinder", "UrdfDescription", "UrdfJoint", "UrdfJointLimit", "UrdfJointType", "UrdfLink",
     "UrdfMaterial", "UrdfMesh", "UrdfOrigin", "UrdfRobot", "UrdfSphere", "UrdfVisual", "VoxelGroup", "WgpuRenderer",
     "WgpuRendererConfiguration",
@@ -341,6 +342,21 @@ def value_classes_have_properties():
     check(state == rr.CameraState(state.view_proj, state.position, state.forward))
     with raises(ValueError, "length 3"):
         rr.Twist(linear=(1, 2))
+
+    grid = rr.GridDescription()
+    check(grid.size == (10.0, 0.0, 10.0) and grid.resolution == (1.0, 1.0, 1.0))
+    check(grid.color == (0.5, 0.5, 0.5) and grid.frame is None and grid.pose == rr.Twist())
+    check(repr(grid)
+          == "GridDescription(size=(10.0, 0.0, 10.0), resolution=(1.0, 1.0, 1.0), color=(0.5, 0.5, 0.5), "
+             "frame=None, pose=Twist(linear=(0.0, 0.0, 0.0), rotational=(0.0, 0.0, 0.0, 1.0)))")
+    grid.size = (4, 2, 4)
+    grid.frame = "base_link"
+    check(grid == rr.GridDescription(size=(4.0, 2.0, 4.0), frame="base_link"))
+    check('frame="base_link"' in repr(grid))
+    grid.frame = None
+    check(grid == rr.GridDescription((4, 2, 4)))
+    with raises(ValueError, "length 3"):
+        rr.GridDescription(size=(1, 2))
 
 
 def output_classes_can_not_be_created():
@@ -1078,6 +1094,131 @@ def urdf_robot_moves_links():
         robot.feed_sensor_input({"shoulder": "far"})
 
 
+# ------------------------------------------------------------------ grids
+
+ORANGE = (1.0, 0.5, 0.0)
+ORANGE_BGR = (0, 128, 255)
+
+
+def top_down():
+    return rr.OrbitCamera((0, 0, 0), 10, 0, 89)
+
+
+def count_pixels(frame, w, h, bgr):
+    return sum(pixel_is(frame, w, x, y, bgr) for y in range(h) for x in range(w))
+
+
+def count_lit(frame, w, h):
+    return sum(lit(frame, w, x, y) for y in range(h) for x in range(w))
+
+
+def orange_floor(**fields):
+    return rr.GridDescription(**{"size": (4, 0, 4), "color": ORANGE, **fields})
+
+
+def renderer_draws_grids():
+    w, h = 32, 32
+    renderer = make_renderer(w, h)
+    first = renderer.create_grid(orange_floor())
+    check(first == 0)
+    frame = render_now(renderer, top_down(), w, h)
+    orange = count_pixels(frame, w, h, ORANGE_BGR)
+    check(orange > 20, f"{orange} grid pixels")
+    check(count_lit(frame, w, h) == orange)
+    check(not lit(frame, w, 0, 0))
+
+    renderer.update_grid(first, orange_floor(color=(0, 1, 0)))
+    frame = render_now(renderer, top_down(), w, h)
+    check(count_pixels(frame, w, h, ORANGE_BGR) == 0)
+    check(count_pixels(frame, w, h, (0, 255, 0)) == orange)
+
+    renderer.update_grid(first, orange_floor(resolution=(0.5, 0.5, 0.5)))
+    check(count_pixels(render_now(renderer, top_down(), w, h), w, h, ORANGE_BGR) > orange)
+
+    second = renderer.create_grid(orange_floor())
+    check(second == 1)
+    renderer.remove_grid(first)
+    renderer.remove_grid(second)
+    check(count_lit(render_now(renderer, top_down(), w, h), w, h) == 0)
+    with raises(IndexError, "grid 1"):
+        renderer.remove_grid(second)
+    with raises(IndexError):
+        renderer.update_grid(first, orange_floor())
+    # Ids are not reused.
+    check(renderer.create_grid(orange_floor()) == 2)
+
+
+def renderer_grid_follows_frames():
+    w, h = 32, 32
+    renderer = make_renderer(w, h)
+    grid = renderer.create_grid(orange_floor(frame="base_link"))
+    check(count_lit(render_now(renderer, top_down(), w, h), w, h) == 0)
+
+    renderer.set_frame_transform("base_link", IDENTITY)
+    in_view = count_pixels(render_now(renderer, top_down(), w, h), w, h, ORANGE_BGR)
+    check(in_view > 20, f"{in_view} grid pixels")
+
+    renderer.set_frame_transform("base_link", rr.Twist(linear=(100, 0, 0)))
+    check(count_lit(render_now(renderer, top_down(), w, h), w, h) == 0)
+
+    # The pose is relative to the frame.
+    renderer.update_grid(grid, orange_floor(frame="base_link", pose=rr.Twist(linear=(-100, 0, 0))))
+    check(count_pixels(render_now(renderer, top_down(), w, h), w, h, ORANGE_BGR) == in_view)
+
+    renderer.remove_frame("base_link")
+    check(count_lit(render_now(renderer, top_down(), w, h), w, h) == 0)
+    renderer.remove_frame("never_set")
+
+    # A robot link as the frame.
+    robot = rr.UrdfRobot.from_description(rr.UrdfDescription.read_str(ROBOT_URDF))
+    transforms = robot.feed_sensor_input({})
+    renderer.update_grid(grid, orange_floor(frame="arm"))
+    for link, transform in transforms.links.items():
+        renderer.set_frame_transform(link, transform)
+    check(count_pixels(render_now(renderer, top_down(), w, h), w, h, ORANGE_BGR) > 20)
+
+
+def renderer_grid_checks_arguments():
+    renderer = make_renderer(4, 4)
+    with raises(ValueError, "grid size"):
+        renderer.create_grid(rr.GridDescription(size=(-1, 0, 1)))
+    with raises(ValueError, "grid size"):
+        renderer.create_grid(rr.GridDescription(size=(float("nan"), 0, 1)))
+    with raises(ValueError, "grid resolution"):
+        renderer.create_grid(rr.GridDescription(resolution=(1, 0, 1)))
+    with raises(ValueError, "grid resolution"):
+        renderer.create_grid(rr.GridDescription(resolution=(1, float("inf"), 1)))
+    with raises(ValueError, "between 0 and 1"):
+        renderer.create_grid(rr.GridDescription(color=(1.5, 0, 0)))
+    with raises(ValueError, "must not be empty"):
+        renderer.create_grid(rr.GridDescription(frame=""))
+    with raises(ValueError, "lines"):
+        renderer.create_grid(rr.GridDescription(size=(10000, 10000, 10000)))
+    with raises(TypeError):
+        renderer.create_grid(None)
+
+    # Failed calls take no ids and leave the grid as it was.
+    grid = renderer.create_grid(rr.GridDescription())
+    check(grid == 0)
+    with raises(ValueError):
+        renderer.update_grid(grid, rr.GridDescription(resolution=(0, 0, 0)))
+    renderer.update_grid(grid, rr.GridDescription())
+    with raises(IndexError):
+        renderer.remove_grid(grid + 1)
+    with raises(OverflowError):
+        renderer.remove_grid(-1)
+    renderer.remove_grid(grid)
+
+    with raises(ValueError, "must not be empty"):
+        renderer.set_frame_transform("", IDENTITY)
+    with raises(ValueError, "must not be empty"):
+        renderer.remove_frame("")
+    with raises(TypeError):
+        renderer.set_frame_transform(None, IDENTITY)
+    with raises(TypeError):
+        renderer.set_frame_transform("base_link", None)
+
+
 TEST_CASES = [
     module_exports_its_classes,
     stub_matches_module,
@@ -1128,6 +1269,9 @@ TEST_CASES = [
     urdf_read_rejects_bad_input,
     urdf_read_file_resolves_meshes,
     urdf_robot_moves_links,
+    renderer_draws_grids,
+    renderer_grid_follows_frames,
+    renderer_grid_checks_arguments,
 ]
 
 if __name__ == "__main__":

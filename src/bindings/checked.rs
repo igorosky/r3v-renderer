@@ -8,6 +8,7 @@ use crate::{
     geometry::{
         PointI, RealTwist, TriangleChunk, VOXEL_GROUP_PAGES, VOXEL_GROUP_SHIFT, group_blocks,
     },
+    grid::{GridDescription, MAX_GRID_LINES, line_count},
     mesh::Mesh,
     renderer::{TerrainColoring, WgpuAccelerated, WgpuAcceleratedConfiguration},
     tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext, SUBCHUNK_SIZE},
@@ -96,6 +97,53 @@ fn check_terrain_coloring(coloring: &TerrainColoring) -> Result<()> {
         return Err(Error::invalid_argument(format!(
             "robot height must be finite, got {}",
             coloring.robot_height
+        )));
+    }
+    Ok(())
+}
+
+fn check_frame(frame: &str) -> Result<()> {
+    if frame.is_empty() {
+        return Err(Error::invalid_argument(
+            "frame name must not be empty, a grid without a frame is in the world",
+        ));
+    }
+    Ok(())
+}
+
+fn check_grid(description: &GridDescription) -> Result<()> {
+    let GridDescription {
+        size,
+        resolution,
+        color,
+        frame,
+        ..
+    } = description;
+    if !size.iter().all(|size| size.is_finite() && *size >= 0.0) {
+        return Err(Error::invalid_argument(format!(
+            "grid size must be finite and at least 0, got {size:?}"
+        )));
+    }
+    if !resolution
+        .iter()
+        .all(|resolution| resolution.is_finite() && *resolution > 0.0)
+    {
+        return Err(Error::invalid_argument(format!(
+            "grid resolution must be positive and finite, got {resolution:?}"
+        )));
+    }
+    if !color.iter().all(|channel| (0.0..=1.0).contains(channel)) {
+        return Err(Error::invalid_argument(format!(
+            "grid color channels must be between 0 and 1, got {color:?}"
+        )));
+    }
+    if let Some(frame) = frame {
+        check_frame(frame)?;
+    }
+    let lines = line_count(*size, *resolution);
+    if lines > MAX_GRID_LINES {
+        return Err(Error::invalid_argument(format!(
+            "grid has {lines} lines, at most {MAX_GRID_LINES} fit: make it smaller or coarser"
         )));
     }
     Ok(())
@@ -213,8 +261,8 @@ impl CheckedTesselator {
 }
 
 /// `WgpuAccelerated`, which panics on a frame size the GPU cannot take, on
-/// rendering before it is configured, on a too small frame buffer and on
-/// unknown instances.
+/// rendering before it is configured, on a too small frame buffer, on
+/// unknown instances and grids and on grids it can not draw.
 pub(crate) struct CheckedRenderer {
     renderer: WgpuAccelerated,
     configuration: Option<WgpuAcceleratedConfiguration>,
@@ -353,6 +401,46 @@ impl CheckedRenderer {
             )));
         }
         self.renderer.set_asset_color(instance_id, color);
+        Ok(())
+    }
+
+    pub(crate) fn create_grid(&mut self, description: GridDescription) -> Result<u64> {
+        check_grid(&description)?;
+        Ok(self.renderer.create_grid(description))
+    }
+
+    fn check_grid_id(&self, grid_id: u64) -> Result<()> {
+        if self.renderer.has_grid(grid_id) {
+            Ok(())
+        } else {
+            Err(Error::out_of_range(format!(
+                "grid {grid_id} does not exist or was removed"
+            )))
+        }
+    }
+
+    pub(crate) fn update_grid(&mut self, grid_id: u64, description: GridDescription) -> Result<()> {
+        self.check_grid_id(grid_id)?;
+        check_grid(&description)?;
+        self.renderer.update_grid(grid_id, description);
+        Ok(())
+    }
+
+    pub(crate) fn remove_grid(&mut self, grid_id: u64) -> Result<()> {
+        self.check_grid_id(grid_id)?;
+        self.renderer.remove_grid(grid_id);
+        Ok(())
+    }
+
+    pub(crate) fn set_frame_transform(&mut self, frame: &str, transform: RealTwist) -> Result<()> {
+        check_frame(frame)?;
+        self.renderer.set_frame_transform(frame, transform);
+        Ok(())
+    }
+
+    pub(crate) fn remove_frame(&mut self, frame: &str) -> Result<()> {
+        check_frame(frame)?;
+        self.renderer.remove_frame(frame);
         Ok(())
     }
 
