@@ -28,9 +28,9 @@ use crate::{
 };
 
 mod camera;
+mod mesh;
 mod renderer;
 mod robot;
-mod stl;
 mod tesselator;
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -84,8 +84,8 @@ export interface UrdfColor { rgba: Vec4 }
 export interface UrdfMaterial { name: string | null; color: UrdfColor | null }
 export interface UrdfVisual {
     name: string | null;
-    origin: UrdfOrigin | null;
-    geometry: UrdfGeometry | null;
+    origin: UrdfOrigin;
+    geometry: UrdfGeometry;
     material: UrdfMaterial | null;
 }
 export interface UrdfLink { name: string; visuals: UrdfVisual[] }
@@ -98,15 +98,22 @@ export interface UrdfJointLimit {
     deceleration: number;
     jerk: number;
 }
-/** `joint_type` is "revolute", "continuous", "prismatic", "fixed", "floating",
- * "planar" or "spherical"; `parent` and `child` are link names. */
+export type UrdfJointType =
+    | "revolute"
+    | "continuous"
+    | "prismatic"
+    | "fixed"
+    | "floating"
+    | "planar"
+    | "spherical";
+/** `parent` and `child` are link names. */
 export interface UrdfJoint {
     name: string;
-    joint_type: string;
+    joint_type: UrdfJointType;
     parent: string;
     child: string;
-    origin: UrdfOrigin | null;
-    axis: Vec3 | null;
+    origin: UrdfOrigin;
+    axis: Vec3;
     limit: UrdfJointLimit | null;
 }
 "#;

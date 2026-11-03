@@ -166,8 +166,8 @@ pub(super) struct PyUrdfMaterial {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PyUrdfVisual {
     name: Option<String>,
-    origin: Option<PyUrdfOrigin>,
-    geometry: Option<PyUrdfGeometry>,
+    origin: PyUrdfOrigin,
+    geometry: PyUrdfGeometry,
     material: Option<PyUrdfMaterial>,
 }
 
@@ -206,9 +206,43 @@ pub(super) struct PyUrdfJointLimit {
     jerk: f32,
 }
 
-/// Joint of a robot description (`urdf::UrdfJoint`). `joint_type` is
-/// "revolute", "continuous", "prismatic", "fixed", "floating", "planar" or
-/// "spherical"; `parent` and `child` are link names.
+#[pyclass(
+    module = "r3v_renderer",
+    name = "UrdfJointType",
+    frozen,
+    skip_from_py_object,
+    eq,
+    eq_int,
+    hash,
+    rename_all = "SCREAMING_SNAKE_CASE"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum PyUrdfJointType {
+    Revolute,
+    Continuous,
+    Prismatic,
+    Fixed,
+    Floating,
+    Planar,
+    Spherical,
+}
+
+impl From<urdf::UrdfJointType> for PyUrdfJointType {
+    fn from(joint_type: urdf::UrdfJointType) -> Self {
+        match joint_type {
+            urdf::UrdfJointType::Revolute => Self::Revolute,
+            urdf::UrdfJointType::Continuous => Self::Continuous,
+            urdf::UrdfJointType::Prismatic => Self::Prismatic,
+            urdf::UrdfJointType::Fixed => Self::Fixed,
+            urdf::UrdfJointType::Floating => Self::Floating,
+            urdf::UrdfJointType::Planar => Self::Planar,
+            urdf::UrdfJointType::Spherical => Self::Spherical,
+        }
+    }
+}
+
+/// Joint of a robot description (`urdf::UrdfJoint`). `parent` and `child`
+/// are link names.
 #[pyclass(
     module = "r3v_renderer",
     name = "UrdfJoint",
@@ -220,11 +254,11 @@ pub(super) struct PyUrdfJointLimit {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PyUrdfJoint {
     name: String,
-    joint_type: String,
+    joint_type: PyUrdfJointType,
     parent: String,
     child: String,
-    origin: Option<PyUrdfOrigin>,
-    axis: Option<Vec3>,
+    origin: PyUrdfOrigin,
+    axis: Vec3,
     limit: Option<PyUrdfJointLimit>,
 }
 
@@ -273,8 +307,8 @@ impl From<&urdf::UrdfVisual> for PyUrdfVisual {
     fn from(visual: &urdf::UrdfVisual) -> Self {
         Self {
             name: visual.name.clone(),
-            origin: visual.origin.map(Into::into),
-            geometry: visual.geometry.as_ref().map(Into::into),
+            origin: visual.origin.into(),
+            geometry: (&visual.geometry).into(),
             material: visual.material.as_ref().map(Into::into),
         }
     }
@@ -307,11 +341,11 @@ impl From<&urdf::UrdfJoint> for PyUrdfJoint {
     fn from(joint: &urdf::UrdfJoint) -> Self {
         Self {
             name: joint.name.clone(),
-            joint_type: joint.joint_type.clone(),
+            joint_type: joint.joint_type.into(),
             parent: joint.parent.clone(),
             child: joint.child.clone(),
-            origin: joint.origin.map(Into::into),
-            axis: joint.axis.map(vec3),
+            origin: joint.origin.into(),
+            axis: vec3(joint.axis),
             limit: joint.limit.map(Into::into),
         }
     }

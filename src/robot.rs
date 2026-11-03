@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     Robot,
@@ -8,6 +8,8 @@ use crate::{
 
 pub struct UrdfRobot {
     description: urdf::UrdfRobot,
+    root_links: Vec<usize>,
+    joint_order: Vec<usize>,
     last_transforms: Option<RobotTransforms>,
 }
 
@@ -62,45 +64,58 @@ impl Robot for UrdfRobot {
     type Transform = RobotTransforms;
 
     fn from_description(description: Self::RobotDescription) -> Self {
+        let mut joints_by_parent: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut child_links = HashSet::new();
+        for (index, joint) in description.joints.iter().enumerate() {
+            joints_by_parent
+                .entry(&joint.parent)
+                .or_default()
+                .push(index);
+            child_links.insert(joint.child.as_str());
+        }
+
+        let mut root_links = Vec::new();
+        let mut visited = HashSet::new();
+        let mut pending = VecDeque::new();
+        for (index, link) in description.links.iter().enumerate() {
+            if !child_links.contains(link.name.as_str()) {
+                root_links.push(index);
+                visited.insert(link.name.as_str());
+                pending.push_back(link.name.as_str());
+            }
+        }
+
+        let mut joint_order = Vec::new();
+        while let Some(parent_name) = pending.pop_front() {
+            for &index in joints_by_parent.get(parent_name).into_iter().flatten() {
+                let child = description.joints[index].child.as_str();
+                if visited.insert(child) {
+                    joint_order.push(index);
+                    pending.push_back(child);
+                }
+            }
+        }
+
         Self {
             description,
+            root_links,
+            joint_order,
             last_transforms: None,
         }
     }
 
     fn feed_sensor_input(&mut self, input: &Self::SensorInput) -> Self::Transform {
-        let mut joints_by_parent: HashMap<&str, Vec<&urdf::UrdfJoint>> = HashMap::new();
-        let mut child_links = std::collections::HashSet::new();
-        for joint in &self.description.joints {
-            joints_by_parent
-                .entry(&joint.parent)
-                .or_default()
-                .push(joint);
-            child_links.insert(joint.child.as_str());
-        }
-
         let mut link_world = HashMap::new();
-        let mut pending = VecDeque::new();
-        for link in &self.description.links {
-            if !child_links.contains(link.name.as_str()) {
-                link_world.insert(link.name.clone(), identity_twist());
-                pending.push_back(link.name.as_str());
-            }
+        for &index in &self.root_links {
+            link_world.insert(self.description.links[index].name.clone(), identity_twist());
         }
 
-        while let Some(parent_name) = pending.pop_front() {
-            let parent_world = link_world[parent_name];
-            if let Some(joints) = joints_by_parent.get(parent_name) {
-                for joint in joints {
-                    if link_world.contains_key(&joint.child) {
-                        continue;
-                    }
-                    let value = input.get(&joint.name).copied().unwrap_or(0.0);
-                    let child_world = compose_twists(parent_world, joint_transform(joint, value));
-                    link_world.insert(joint.child.clone(), child_world);
-                    pending.push_back(joint.child.as_str());
-                }
-            }
+        for &index in &self.joint_order {
+            let joint = &self.description.joints[index];
+            let parent_world = link_world[&joint.parent];
+            let value = input.get(&joint.name).copied().unwrap_or(0.0);
+            let child_world = compose_twists(parent_world, joint_transform(joint, value));
+            link_world.insert(joint.child.clone(), child_world);
         }
 
         let mut visual_world = HashMap::new();
@@ -109,10 +124,7 @@ impl Robot for UrdfRobot {
                 continue;
             };
             for (visual_index, visual) in link.visuals.iter().enumerate() {
-                let local = visual
-                    .origin
-                    .map(origin_transform)
-                    .unwrap_or_else(identity_twist);
+                let local = origin_transform(visual.origin);
                 visual_world.insert(
                     (link.name.clone(), visual_index),
                     compose_twists(link_transform, local),
@@ -230,18 +242,11 @@ fn normalize_quaternion((x, y, z, w): (f32, f32, f32, f32)) -> (f32, f32, f32, f
 }
 
 fn joint_transform(joint: &urdf::UrdfJoint, value: f32) -> RealTwist {
-    let origin = joint
-        .origin
-        .map(origin_transform)
-        .unwrap_or_else(identity_twist);
-    let axis = joint.axis.unwrap_or(urdf::Vector3 {
-        x: 1.0,
-        y: 0.0,
-        z: 0.0,
-    });
+    let origin = origin_transform(joint.origin);
+    let axis = joint.axis;
 
-    let motion = match joint.joint_type.as_str() {
-        "revolute" | "continuous" => RealTwist {
+    let motion = match joint.joint_type {
+        urdf::UrdfJointType::Revolute | urdf::UrdfJointType::Continuous => RealTwist {
             linear: Vector3D {
                 x: 0.0,
                 y: 0.0,
@@ -249,7 +254,7 @@ fn joint_transform(joint: &urdf::UrdfJoint, value: f32) -> RealTwist {
             },
             rotational: tuple_to_quaternion(axis_angle_to_quaternion(axis, value)),
         },
-        "prismatic" => {
+        urdf::UrdfJointType::Prismatic => {
             let length = (axis.x * axis.x + axis.y * axis.y + axis.z * axis.z).sqrt();
             let distance = if length == 0.0 { 0.0 } else { value / length };
             RealTwist {
@@ -261,7 +266,10 @@ fn joint_transform(joint: &urdf::UrdfJoint, value: f32) -> RealTwist {
                 rotational: tuple_to_quaternion(quaternion_identity()),
             }
         }
-        _ => identity_twist(),
+        urdf::UrdfJointType::Fixed
+        | urdf::UrdfJointType::Floating
+        | urdf::UrdfJointType::Planar
+        | urdf::UrdfJointType::Spherical => identity_twist(),
     };
     compose_twists(origin, motion)
 }

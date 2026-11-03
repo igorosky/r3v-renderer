@@ -70,12 +70,12 @@ static void add_stairs(R3vWgpuRenderer *renderer) {
 /* Two instances of one triangle above the stairs. */
 static void add_flags(R3vWgpuRenderer *renderer) {
     const R3vTriangle triangle = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
-    R3vStlMesh *mesh =
-        check_handle(r3v_stl_mesh_from_triangles(&triangle, 1), "creating the mesh");
+    R3vMesh *mesh =
+        check_handle(r3v_mesh_from_triangles(&triangle, 1), "creating the mesh");
     uint64_t ids[2];
     check(r3v_wgpu_renderer_upload_asset(renderer, mesh, 2, ids), "upload_asset");
     /* The renderer keeps a copy. */
-    r3v_stl_mesh_drop(mesh);
+    r3v_mesh_drop(mesh);
 
     for (size_t k = 0; k < 2; ++k) {
         R3vTwist twist = {{1.0f + 4.0f * (float)k, 3.0f, 2.5f}, {0.0f, 0.0f, 0.0f, 1.0f}};

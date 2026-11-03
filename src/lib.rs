@@ -1,5 +1,7 @@
 pub mod camera;
 pub mod geometry;
+pub mod mesh;
+pub mod obj;
 pub mod renderer;
 pub mod robot;
 pub mod shapes;
@@ -59,6 +61,7 @@ pub trait Renderer {
     type AssetInstanceId;
     type AssetDescription;
     type AssetTransform;
+    type TextureId;
 
     type CameraState;
 
@@ -76,5 +79,11 @@ pub trait Renderer {
     );
     fn set_asset_visibility(&mut self, instance_id: Self::AssetInstanceId, visible: bool);
     fn set_asset_color(&mut self, instance_id: Self::AssetInstanceId, color: [f32; 3]);
+    fn upload_texture(&mut self, width: u32, height: u32, rgba: &[u8]) -> Self::TextureId;
+    fn set_asset_texture(
+        &mut self,
+        instance_id: Self::AssetInstanceId,
+        texture: Option<Self::TextureId>,
+    );
     fn render(&mut self, camera_state: &Self::CameraState, output: &mut [u8]);
 }

@@ -598,13 +598,10 @@ unsafe impl bytemuck::Pod for Twist<f32> {}
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
-    pub color: [f32; 3],
     pub normal: [f32; 3],
 }
 
 impl Vertex {
-    pub const DEFAULT_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
-
     pub fn with_normal(self, normal: Vector3D<f32>) -> Self {
         Self {
             normal: [normal.x, normal.y, normal.z],
@@ -617,7 +614,6 @@ impl From<Point<f32>> for Vertex {
     fn from(point: Point<f32>) -> Self {
         Self {
             position: point.to_array(),
-            color: Self::DEFAULT_COLOR,
             normal: [0.0; 3],
         }
     }
@@ -627,7 +623,6 @@ impl From<[f32; 3]> for Vertex {
     fn from(position: [f32; 3]) -> Self {
         Self {
             position,
-            color: Self::DEFAULT_COLOR,
             normal: [0.0; 3],
         }
     }

@@ -133,10 +133,10 @@ def project(state, point):
 # ------------------------------------------------------------ Python API
 
 CLASSES = [
-    "CameraState", "CpuTesselator", "CpuTesselatorConfiguration", "GeometryDelta", "OrbitCamera", "PointI",
-    "RobotTransforms", "StlMesh", "TerrainColoring", "Triangle", "TriangleChunk", "Twist", "UrdfBox", "UrdfCapsule",
-    "UrdfColor", "UrdfCylinder", "UrdfDescription", "UrdfJoint", "UrdfJointLimit", "UrdfLink", "UrdfMaterial",
-    "UrdfMesh", "UrdfOrigin", "UrdfRobot", "UrdfSphere", "UrdfVisual", "VoxelGroup", "WgpuRenderer",
+    "CameraState", "CpuTesselator", "CpuTesselatorConfiguration", "GeometryDelta", "Mesh", "OrbitCamera", "PointI",
+    "RobotTransforms", "TerrainColoring", "Triangle", "TriangleChunk", "Twist", "UrdfBox", "UrdfCapsule",
+    "UrdfColor", "UrdfCylinder", "UrdfDescription", "UrdfJoint", "UrdfJointLimit", "UrdfJointType", "UrdfLink",
+    "UrdfMaterial", "UrdfMesh", "UrdfOrigin", "UrdfRobot", "UrdfSphere", "UrdfVisual", "VoxelGroup", "WgpuRenderer",
     "WgpuRendererConfiguration",
 ]
 
@@ -163,12 +163,15 @@ BASETYPE = 1 << 10
 
 def stub_members(node):
     """{name: kind} of the class `node` of the stub, kind being "property",
-    "method" or "staticmethod", and whether it declares `__hash__` None."""
+    "constant", "method" or "staticmethod", and whether it declares `__hash__`
+    None."""
     members = {}
     unhashable = False
     for item in node.body:
         if isinstance(item, ast.AnnAssign) and item.target.id == "__hash__":
             unhashable = True
+        elif isinstance(item, ast.AnnAssign) and ast.unparse(item.annotation) == f"ClassVar[{node.name}]":
+            members[item.target.id] = "constant"
         elif isinstance(item, ast.AnnAssign):
             members[item.target.id] = "property"
         elif isinstance(item, ast.FunctionDef):
@@ -191,7 +194,9 @@ def runtime_members(cls):
     for name, value in vars(cls).items():
         if name.startswith("_") and name not in PROTOCOL_DUNDERS:
             continue
-        if isinstance(value, staticmethod):
+        if isinstance(value, cls):
+            members[name] = "constant"
+        elif isinstance(value, staticmethod):
             members[name] = "staticmethod"
         elif inspect.isdatadescriptor(value):
             members[name] = "property"
@@ -263,7 +268,7 @@ def stub_matches_module():
         functions = {item.name: item for item in node.body if isinstance(item, ast.FunctionDef)}
         for member, kind in members.items():
             # Only the stub has the __iter__ that runtime_members adds.
-            if kind == "property" or member not in vars(cls):
+            if kind in ("property", "constant") or member not in vars(cls):
                 continue
             got = stub_parameters(functions[member])
             expected = runtime_parameters(cls, member, kind)
@@ -432,21 +437,21 @@ def stl_read_ascii_file():
     path = temp_path("triangle.stl")
     write_file(path, "solid t\nfacet normal 0 0 1\n outer loop\n  vertex 0 0 0\n  vertex 1 0 0\n"
                      "  vertex 0 1 0\n endloop\nendfacet\nendsolid t\n")
-    mesh = rr.StlMesh.read_file(path)
+    mesh = rr.Mesh.read_file(path)
     check(mesh.triangles == [rr.Triangle((0, 0, 0), (1, 0, 0), (0, 1, 0))])
-    check(repr(mesh) == "StlMesh(<1 triangles>)")
+    check(repr(mesh) == "Mesh(<1 triangles>)")
 
 
 def stl_missing_file_fails():
     with raises(RuntimeError, "missing.stl"):
-        rr.StlMesh.read_file(temp_path("missing.stl"))
+        rr.Mesh.read_file(temp_path("missing.stl"))
     with raises(TypeError):
-        rr.StlMesh.read_file(None)
+        rr.Mesh.read_file(None)
 
 
 def stl_triangles_are_copies():
     other = rr.Triangle((0, 0, 0), (1, 0, 0), (0, 0, 7))
-    mesh = rr.StlMesh([FRONT_TRIANGLE, other])
+    mesh = rr.Mesh([FRONT_TRIANGLE, other])
     triangles = mesh.triangles
     check(triangles == [FRONT_TRIANGLE, other])
     # Changing a copy does not change the mesh, assigning does.
@@ -454,9 +459,9 @@ def stl_triangles_are_copies():
     check(mesh.triangles[0] == FRONT_TRIANGLE)
     mesh.triangles = [rr.Triangle(*(tuple(3 * c for c in v) for v in (t.v0, t.v1, t.v2))) for t in triangles]
     close(mesh.triangles[1].v2, (0, 0, 21))
-    check(len(rr.StlMesh([]).triangles) == 0)
+    check(len(rr.Mesh([]).triangles) == 0)
     with raises(TypeError):
-        rr.StlMesh([(0, 0, 0)])
+        rr.Mesh([(0, 0, 0)])
 
 
 # ------------------------------------------------------------ tesselator
@@ -810,7 +815,7 @@ def renderer_render_checks_arguments():
 
 def renderer_writes_any_byte_buffer():
     renderer = make_renderer(4, 4)
-    renderer.upload_asset(rr.StlMesh([FRONT_TRIANGLE]), 1)
+    renderer.upload_asset(rr.Mesh([FRONT_TRIANGLE]), 1)
     state = rr.OrbitCamera().get_state(1.0)
     renderer.render(state, bytearray(64))
     for out in (bytearray(64), array.array("B", [0] * 64), memoryview(bytearray(64))):
@@ -889,7 +894,7 @@ def renderer_update_geometry_takes_the_delta():
 def renderer_draws_assets():
     w = h = 32
     renderer = make_renderer(w, h)
-    mesh = rr.StlMesh([FRONT_TRIANGLE])
+    mesh = rr.Mesh([FRONT_TRIANGLE])
     ids = renderer.upload_asset(mesh, 2)
     check(ids == [0, 1])
     check(renderer.upload_asset(mesh, 1) == [2])
@@ -918,7 +923,7 @@ def renderer_draws_assets():
 def renderer_colors_assets():
     w, h = 32, 32
     renderer = make_renderer(w, h)
-    (instance,) = renderer.upload_asset(rr.StlMesh([FRONT_TRIANGLE]), 1)
+    (instance,) = renderer.upload_asset(rr.Mesh([FRONT_TRIANGLE]), 1)
     camera = rr.OrbitCamera()
     center = (h // 2 * w + w // 2) * 4
 
@@ -944,7 +949,7 @@ def renderer_rejects_unknown_instances():
     renderer = make_renderer(4, 4)
     with raises(IndexError, "instance 0"):
         renderer.set_asset_transform(0, IDENTITY)
-    (instance,) = renderer.upload_asset(rr.StlMesh([FRONT_TRIANGLE]), 1)
+    (instance,) = renderer.upload_asset(rr.Mesh([FRONT_TRIANGLE]), 1)
     renderer.set_asset_transform(instance, IDENTITY)
     with raises(IndexError):
         renderer.set_asset_transform(instance + 1, IDENTITY)
@@ -956,7 +961,7 @@ def renderer_rejects_unknown_instances():
 
 def renderer_upload_checks_arguments():
     renderer = make_renderer(4, 4)
-    mesh = rr.StlMesh([FRONT_TRIANGLE])
+    mesh = rr.Mesh([FRONT_TRIANGLE])
     check(renderer.upload_asset(mesh, 0) == [])
     with raises(ValueError, "instances"):
         renderer.upload_asset(mesh, 2**32)
@@ -970,7 +975,7 @@ def renderer_upload_checks_arguments():
 
 def renderer_resize_restarts_readback():
     renderer = make_renderer(32, 32)
-    renderer.upload_asset(rr.StlMesh([FRONT_TRIANGLE]), 1)
+    renderer.upload_asset(rr.Mesh([FRONT_TRIANGLE]), 1)
     camera = rr.OrbitCamera()
     check(lit(render_now(renderer, camera, 32, 32), 32, 16, 16))
     renderer.configure(rr.WgpuRendererConfiguration(16, 8))
@@ -1011,7 +1016,8 @@ def urdf_description_reads_everything():
     close((cylinder.geometry.radius, cylinder.geometry.length), (0.5, 2))
 
     (joint,) = description.joints
-    check((joint.name, joint.joint_type, joint.parent, joint.child) == ("shoulder", "revolute", "base", "arm"))
+    check((joint.name, joint.parent, joint.child) == ("shoulder", "base", "arm"))
+    check(joint.joint_type == rr.UrdfJointType.REVOLUTE)
     close(joint.origin.xyz, (0, 0, 1))
     close(joint.axis, (0, 0, 1))
     close((joint.limit.lower, joint.limit.upper, joint.limit.effort, joint.limit.velocity), (-1.5, 1.5, 10, 2))

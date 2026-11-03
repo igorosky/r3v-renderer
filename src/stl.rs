@@ -3,14 +3,9 @@ use std::{
     path::Path,
 };
 
-use crate::geometry::{self, RealTriangle};
+use crate::{geometry, mesh::Mesh};
 
-#[derive(Debug, Clone)]
-pub struct StlMesh {
-    pub triangles: Vec<RealTriangle>,
-}
-
-pub fn read_file(path: &Path) -> Result<StlMesh, String> {
+pub fn read_file(path: &Path) -> Result<Mesh, String> {
     let file = std::fs::File::open(path)
         .map_err(|err| format!("Failed to read STL '{}': {err}", path.display()))?;
     read(&mut std::io::BufReader::new(file))
@@ -19,12 +14,12 @@ pub fn read_file(path: &Path) -> Result<StlMesh, String> {
 
 /// [`read_file`] for the contents of a file, e.g. where there is no file
 /// system.
-pub fn read_bytes(bytes: &[u8]) -> Result<StlMesh, String> {
+pub fn read_bytes(bytes: &[u8]) -> Result<Mesh, String> {
     read(&mut std::io::Cursor::new(bytes))
         .map_err(|err| format!("stl_io failed to parse STL: {err}"))
 }
 
-fn read(reader: &mut (impl Read + Seek)) -> std::io::Result<StlMesh> {
+fn read(reader: &mut (impl Read + Seek)) -> std::io::Result<Mesh> {
     let parsed = stl_io::read_stl(reader)?;
     let triangles = parsed
         .faces
@@ -35,5 +30,8 @@ fn read(reader: &mut (impl Read + Seek)) -> std::io::Result<StlMesh> {
                 .with_winding(geometry::Winding::CounterClockwise, face.normal.into())
         })
         .collect();
-    Ok(StlMesh { triangles })
+    Ok(Mesh {
+        triangles,
+        uvs: None,
+    })
 }

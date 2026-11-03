@@ -46,7 +46,7 @@ function addStairs(renderer) {
 
 /** Two instances of one triangle above the stairs. */
 function addFlags(renderer) {
-    const mesh = new rr.StlMesh([new rr.Triangle([0, 0, 0], [1, 0, 0], [0, 1, 0])]);
+    const mesh = new rr.Mesh([new rr.Triangle([0, 0, 0], [1, 0, 0], [0, 1, 0])]);
     renderer.upload_asset(mesh, 2).forEach((instance, k) => {
         renderer.set_asset_transform(instance, new rr.Twist([1 + 4 * k, 3, 2.5]));
     });

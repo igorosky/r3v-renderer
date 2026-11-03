@@ -3,7 +3,9 @@ mod common;
 use std::path::Path;
 
 use common::TempDir;
-use r3v_renderer::urdf::{UrdfGeometry, UrdfOrigin, UrdfRobot, Vector3, read_file, read_str};
+use r3v_renderer::urdf::{
+    UrdfGeometry, UrdfJointType, UrdfOrigin, UrdfRobot, Vector3, read_file, read_str,
+};
 
 const ZERO: Vector3 = Vector3 {
     x: 0.0,
@@ -15,14 +17,13 @@ fn v(x: f32, y: f32, z: f32) -> Vector3 {
     Vector3 { x, y, z }
 }
 
-/// Origin as the URDF spec defines it: an omitted `<origin>` is the identity.
-fn origin_or_identity(origin: Option<UrdfOrigin>) -> (Vector3, Vector3) {
-    origin.map_or((ZERO, ZERO), |o| (o.xyz, o.rpy))
+fn origin_parts(origin: UrdfOrigin) -> (Vector3, Vector3) {
+    (origin.xyz, origin.rpy)
 }
 
 fn mesh_filename(robot: &UrdfRobot) -> &str {
     match &robot.links[0].visuals[0].geometry {
-        Some(UrdfGeometry::Mesh(mesh)) => &mesh.filename,
+        UrdfGeometry::Mesh(mesh) => &mesh.filename,
         other => panic!("expected mesh geometry, got: {other:?}"),
     }
 }
@@ -91,37 +92,34 @@ fn reads_every_primitive_geometry() {
 
     assert_eq!(
         visuals[0].geometry,
-        Some(UrdfGeometry::Box {
+        UrdfGeometry::Box {
             size: v(1.0, 2.0, 3.0)
-        })
+        }
     );
-    assert_eq!(
-        visuals[1].geometry,
-        Some(UrdfGeometry::Sphere { radius: 0.5 })
-    );
+    assert_eq!(visuals[1].geometry, UrdfGeometry::Sphere { radius: 0.5 });
     assert_eq!(
         visuals[2].geometry,
-        Some(UrdfGeometry::Cylinder {
+        UrdfGeometry::Cylinder {
             radius: 0.25,
             length: 2.0
-        })
+        }
     );
     assert_eq!(
         visuals[3].geometry,
-        Some(UrdfGeometry::Capsule {
+        UrdfGeometry::Capsule {
             radius: 0.125,
             length: 1.5
-        })
+        }
     );
     match &visuals[4].geometry {
-        Some(UrdfGeometry::Mesh(mesh)) => {
+        UrdfGeometry::Mesh(mesh) => {
             assert_eq!(mesh.filename, "part.stl");
             assert_eq!(mesh.scale, Some(v(0.001, 0.002, 0.003)));
         }
         other => panic!("expected mesh, got {other:?}"),
     }
     match &visuals[5].geometry {
-        Some(UrdfGeometry::Mesh(mesh)) => {
+        UrdfGeometry::Mesh(mesh) => {
             assert_eq!(mesh.filename, "other.stl");
             // No scale given: either omitted or the identity scale.
             assert!(mesh.scale.is_none_or(|s| s == v(1.0, 1.0, 1.0)));
@@ -150,14 +148,11 @@ fn reads_visual_origin_and_defaults_missing_origin_to_identity() {
     .unwrap();
     let visuals = &robot.links[0].visuals;
     assert_eq!(
-        origin_or_identity(visuals[0].origin),
+        origin_parts(visuals[0].origin),
         (v(1.0, -2.0, 3.5), v(0.1, -0.2, 0.3))
     );
-    assert_eq!(origin_or_identity(visuals[1].origin), (ZERO, ZERO));
-    assert_eq!(
-        origin_or_identity(visuals[2].origin),
-        (v(4.0, 5.0, 6.0), ZERO)
-    );
+    assert_eq!(origin_parts(visuals[1].origin), (ZERO, ZERO));
+    assert_eq!(origin_parts(visuals[2].origin), (v(4.0, 5.0, 6.0), ZERO));
 }
 
 #[test]
@@ -259,16 +254,16 @@ fn material_references_take_the_first_color_defined_for_the_name() {
 #[test]
 fn maps_every_joint_type_to_its_urdf_name() {
     let types = [
-        "revolute",
-        "continuous",
-        "prismatic",
-        "fixed",
-        "floating",
-        "planar",
-        "spherical",
+        ("revolute", UrdfJointType::Revolute),
+        ("continuous", UrdfJointType::Continuous),
+        ("prismatic", UrdfJointType::Prismatic),
+        ("fixed", UrdfJointType::Fixed),
+        ("floating", UrdfJointType::Floating),
+        ("planar", UrdfJointType::Planar),
+        ("spherical", UrdfJointType::Spherical),
     ];
     let mut xml = String::from(r#"<robot name="joints"><link name="base"/>"#);
-    for (i, joint_type) in types.iter().enumerate() {
+    for (i, (joint_type, _)) in types.iter().enumerate() {
         xml += &format!(
             r#"<link name="l{i}"/>
             <joint name="j{i}" type="{joint_type}">
@@ -280,7 +275,7 @@ fn maps_every_joint_type_to_its_urdf_name() {
     xml += "</robot>";
     let robot = read_str(&xml).unwrap();
     assert_eq!(robot.joints.len(), types.len());
-    for (i, (joint, joint_type)) in robot.joints.iter().zip(types).enumerate() {
+    for (i, (joint, (_, joint_type))) in robot.joints.iter().zip(types).enumerate() {
         assert_eq!(joint.name, format!("j{i}"));
         assert_eq!(joint.joint_type, joint_type);
         assert_eq!(joint.parent, "base");
@@ -304,10 +299,10 @@ fn reads_joint_origin_axis_and_limits() {
     .unwrap();
     let joint = &robot.joints[0];
     assert_eq!(
-        origin_or_identity(joint.origin),
+        origin_parts(joint.origin),
         (v(0.1, 0.2, 0.3), v(0.0, 1.5, -0.5))
     );
-    assert_eq!(joint.axis, Some(v(0.0, 1.0, 0.0)));
+    assert_eq!(joint.axis, v(0.0, 1.0, 0.0));
     let limit = joint.limit.unwrap();
     assert_eq!(limit.lower, -2.5);
     assert_eq!(limit.upper, 1.25);
@@ -327,9 +322,43 @@ fn joint_without_origin_or_axis_uses_spec_defaults() {
     )
     .unwrap();
     let joint = &robot.joints[0];
-    assert_eq!(origin_or_identity(joint.origin), (ZERO, ZERO));
+    assert_eq!(origin_parts(joint.origin), (ZERO, ZERO));
     // URDF: the default axis is (1, 0, 0).
-    assert_eq!(joint.axis.unwrap_or(v(1.0, 0.0, 0.0)), v(1.0, 0.0, 0.0));
+    assert_eq!(joint.axis, v(1.0, 0.0, 0.0));
+    assert_eq!(joint.limit, None);
+}
+
+#[test]
+fn joint_limit_is_only_there_when_given() {
+    let robot = read_str(
+        r#"<robot name="arm">
+            <link name="base"/><link name="a"/><link name="b"/><link name="c"/>
+            <joint name="free" type="continuous">
+                <parent link="base"/><child link="a"/>
+            </joint>
+            <joint name="limited" type="revolute">
+                <parent link="a"/><child link="b"/>
+                <limit lower="0" upper="0" effort="0" velocity="0"/>
+            </joint>
+            <transmission name="t">
+                <joint name="free"><hardwareInterface>Effort</hardwareInterface></joint>
+            </transmission>
+            <joint name="fixed" type="fixed">
+                <parent link="b"/><child link="c"/>
+            </joint>
+        </robot>"#,
+    )
+    .unwrap();
+    let limits = robot
+        .joints
+        .iter()
+        .map(|joint| (joint.name.as_str(), joint.limit.is_some()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        limits,
+        [("free", false), ("limited", true), ("fixed", false)]
+    );
+    assert_eq!(robot.joints[1].limit.unwrap().upper, 0.0);
 }
 
 #[test]
@@ -504,4 +533,71 @@ fn material_defined_in_one_link_colors_references_in_others() {
     let material = robot.links[1].visuals[0].material.as_ref().unwrap();
     assert_eq!(material.name.as_deref(), Some("steel"));
     assert_eq!(material.color.as_ref().unwrap().rgba, [0.5, 0.5, 0.6, 1.0]);
+}
+
+#[test]
+fn materials_read_textures_and_inherit_them_by_name() {
+    let robot = read_str(
+        r#"<robot name="textures">
+            <material name="wood"><texture filename="textures/wood.png"/></material>
+            <link name="base">
+                <visual>
+                    <geometry><box size="1 1 1"/></geometry>
+                    <material name="wood"/>
+                </visual>
+                <visual>
+                    <geometry><box size="1 1 1"/></geometry>
+                    <material name="">
+                        <color rgba="1 0 0 1"/>
+                        <texture filename="package://pkg/stripes.png"/>
+                    </material>
+                </visual>
+                <visual>
+                    <geometry><box size="1 1 1"/></geometry>
+                    <material name="plain"><color rgba="0 0 1 1"/></material>
+                </visual>
+            </link>
+        </robot>"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        robot.materials[0].texture.as_deref(),
+        Some("textures/wood.png")
+    );
+    let textures = robot.links[0]
+        .visuals
+        .iter()
+        .map(|visual| visual.material.as_ref().unwrap().texture.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        textures,
+        [
+            Some("textures/wood.png"),
+            Some("package://pkg/stripes.png"),
+            None
+        ]
+    );
+    let red = robot.links[0].visuals[1].material.as_ref().unwrap();
+    assert_eq!(red.color.as_ref().unwrap().rgba, [1.0, 0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn read_file_resolves_package_texture_paths() {
+    let dir = TempDir::new("urdf");
+    let texture = dir.write("description/textures/wood.png", b"dummy");
+    let urdf = dir.write(
+        "description/urdf/robot.urdf",
+        r#"<robot name="demo"><link name="base"><visual>
+            <geometry><box size="1 1 1"/></geometry>
+            <material name="wood"><texture filename="package://description/textures/wood.png"/></material>
+        </visual></link></robot>"#,
+    );
+
+    let robot = read_file(&urdf).unwrap();
+    let material = robot.links[0].visuals[0].material.as_ref().unwrap();
+    assert_eq!(
+        material.texture.as_deref(),
+        Some(canonical(&texture).as_str())
+    );
 }

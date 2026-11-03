@@ -8,10 +8,15 @@ struct CameraUniform {
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
 
+@group(1) @binding(0)
+var asset_texture: texture_2d<f32>;
+@group(1) @binding(1)
+var asset_sampler: sampler;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
-    @location(2) normal: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
 };
 
 struct InstanceInput {
@@ -24,6 +29,7 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
 };
 
 fn rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
@@ -37,10 +43,11 @@ fn vs_main(
     instance: InstanceInput,
 ) -> VertexOutput {
     var out: VertexOutput;
-    out.color = model.color * instance.color;
+    out.color = instance.color;
     let world_position = rotate(instance.rotation, model.position) + instance.translation;
     out.clip_position = camera.view_proj * vec4<f32>(world_position, 1.0);
     out.normal = rotate(instance.rotation, model.normal);
+    out.uv = model.uv;
     return out;
 }
 
@@ -49,5 +56,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let smooth_normal = normalize(in.normal);
     var light_intensity = max(dot(smooth_normal, normalize(light_direction)), minimum_light_intensity);
     light_intensity = smoothstep(0.2, 1.0, light_intensity);
-    return vec4<f32>(in.color * light_intensity, 1.0);    
+    let texel = textureSample(asset_texture, asset_sampler, in.uv).rgb;
+    return vec4<f32>(in.color * texel * light_intensity, 1.0);
 }

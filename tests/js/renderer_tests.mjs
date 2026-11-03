@@ -179,8 +179,8 @@ function facingZ({ v0, v1, v2 }) {
 // ---------------------------------------------------------------- JS API
 
 const CLASSES = [
-    "CameraState", "CpuTesselator", "CpuTesselatorConfiguration", "GeometryDelta", "OrbitCamera", "PointI",
-    "RobotTransforms", "StlMesh", "Triangle", "Twist", "UrdfDescription", "UrdfRobot", "VoxelGroup", "WgpuRenderer",
+    "CameraState", "CpuTesselator", "CpuTesselatorConfiguration", "GeometryDelta", "Mesh", "OrbitCamera", "PointI",
+    "RobotTransforms", "Triangle", "Twist", "UrdfDescription", "UrdfRobot", "VoxelGroup", "WgpuRenderer",
     "WgpuRendererConfiguration",
 ];
 
@@ -291,7 +291,7 @@ async function freed_objects_can_not_be_used() {
     await throws(() => point.x, Error);
     const triangle = new rr.Triangle([0, 0, 0], [1, 0, 0], [0, 1, 0]);
     triangle[Symbol.dispose]();
-    await throws(() => new rr.StlMesh([triangle]), Error);
+    await throws(() => new rr.Mesh([triangle]), Error);
 }
 
 // ---------------------------------------------------------------- camera
@@ -380,7 +380,7 @@ function stl_read_ascii_bytes() {
         + "  vertex 0 1 0\n endloop\nendfacet\nendsolid t\n";
     const bytes = new TextEncoder().encode(ascii);
     for (const input of [bytes, bytes.buffer]) {
-        const triangles = rr.StlMesh.read_bytes(input).triangles;
+        const triangles = rr.Mesh.read_stl_bytes(input).triangles;
         check(triangles.length === 1);
         check(triangles[0] instanceof rr.Triangle);
         check(same([triangles[0].v0, triangles[0].v1, triangles[0].v2], [[0, 0, 0], [1, 0, 0], [0, 1, 0]]));
@@ -390,22 +390,22 @@ function stl_read_ascii_bytes() {
 function stl_read_binary_bytes() {
     // Declared to face -Z, so it is wound the other way round.
     const bytes = binaryStl([[[0, 0, -1], [0, 0, 0], [1, 0, 0], [0, 1, 0]], [[0, 0, 1], [0, 0, 0], [2, 0, 0], [0, 2, 0]]]);
-    const [down, up] = rr.StlMesh.read_bytes(bytes).triangles;
+    const [down, up] = rr.Mesh.read_stl_bytes(bytes).triangles;
     check(facingZ(down) < 0, `${fmt([down.v0, down.v1, down.v2])} does not face -Z`);
     check(facingZ(up) > 0, `${fmt([up.v0, up.v1, up.v2])} does not face +Z`);
 }
 
 async function stl_read_rejects_bad_input() {
-    await throws(() => rr.StlMesh.read_bytes(new Uint8Array(10)), Error, "STL");
+    await throws(() => rr.Mesh.read_stl_bytes(new Uint8Array(10)), Error, "STL");
     for (const input of ["solid", null, [1, 2, 3], new Float32Array(4)]) {
-        await throws(() => rr.StlMesh.read_bytes(input), TypeError, "Uint8Array");
+        await throws(() => rr.Mesh.read_stl_bytes(input), TypeError, "Uint8Array");
     }
 }
 
 async function stl_triangles_are_copies() {
     const other = new rr.Triangle([0, 0, 0], [1, 0, 0], [0, 0, 7]);
     // Triangles and plain objects alike.
-    const mesh = new rr.StlMesh([FRONT_TRIANGLE, { v0: [0, 0, 0], v1: [1, 0, 0], v2: [0, 0, 7] }]);
+    const mesh = new rr.Mesh([FRONT_TRIANGLE, { v0: [0, 0, 0], v1: [1, 0, 0], v2: [0, 0, 7] }]);
     const triangles = mesh.triangles;
     check(same(triangles.map((t) => [t.v0, t.v1, t.v2]), [FRONT_TRIANGLE, other].map((t) => [t.v0, t.v1, t.v2])));
     // Changing a copy does not change the mesh, assigning does.
@@ -413,9 +413,9 @@ async function stl_triangles_are_copies() {
     check(same(mesh.triangles[0].v0, FRONT_TRIANGLE.v0));
     mesh.triangles = triangles.map((t) => ({ v0: t.v0.map((c) => 3 * c), v1: t.v1.map((c) => 3 * c), v2: t.v2.map((c) => 3 * c) }));
     close(mesh.triangles[1].v2, [0, 0, 21]);
-    check(new rr.StlMesh([]).triangles.length === 0);
-    await throws(() => new rr.StlMesh([[0, 0, 0]]), TypeError, "triangles[0].v0");
-    await throws(() => new rr.StlMesh(FRONT_TRIANGLE), TypeError, "triangles is not an array");
+    check(new rr.Mesh([]).triangles.length === 0);
+    await throws(() => new rr.Mesh([[0, 0, 0]]), TypeError, "triangles[0].v0");
+    await throws(() => new rr.Mesh(FRONT_TRIANGLE), TypeError, "triangles is not an array");
 }
 
 // ------------------------------------------------------------ tesselator
@@ -793,7 +793,7 @@ async function renderer_render_checks_arguments() {
 
 async function renderer_writes_any_byte_array() {
     const renderer = await makeRenderer(4, 4);
-    renderer.upload_asset(new rr.StlMesh([FRONT_TRIANGLE]), 1);
+    renderer.upload_asset(new rr.Mesh([FRONT_TRIANGLE]), 1);
     const state = new rr.OrbitCamera().get_state(1.0);
     await renderer.render(state, new Uint8Array(64));
     // A view on a part of a larger buffer only writes that part.
@@ -900,7 +900,7 @@ async function renderer_update_geometry_takes_the_delta() {
 async function renderer_draws_assets() {
     const [w, h] = [32, 32];
     const renderer = await makeRenderer(w, h);
-    const mesh = new rr.StlMesh([FRONT_TRIANGLE]);
+    const mesh = new rr.Mesh([FRONT_TRIANGLE]);
     const ids = renderer.upload_asset(mesh, 2);
     check(Array.isArray(ids) && same(ids, [0, 1]));
     check(same(renderer.upload_asset(mesh, 1), [2]));
@@ -930,7 +930,7 @@ async function renderer_draws_assets() {
 async function renderer_colors_assets() {
     const [w, h] = [32, 32];
     const renderer = await makeRenderer(w, h);
-    const [instance] = renderer.upload_asset(new rr.StlMesh([FRONT_TRIANGLE]), 1);
+    const [instance] = renderer.upload_asset(new rr.Mesh([FRONT_TRIANGLE]), 1);
     const camera = new rr.OrbitCamera();
     const center = (h / 2 * w + w / 2) * 4;
     const rgb = (frame) => [frame[center + 2], frame[center + 1], frame[center]];
@@ -951,7 +951,7 @@ async function renderer_colors_assets() {
 async function renderer_rejects_unknown_instances() {
     const renderer = await makeRenderer(4, 4);
     await throws(() => renderer.set_asset_transform(0, IDENTITY), RangeError, "instance 0");
-    const [instance] = renderer.upload_asset(new rr.StlMesh([FRONT_TRIANGLE]), 1);
+    const [instance] = renderer.upload_asset(new rr.Mesh([FRONT_TRIANGLE]), 1);
     renderer.set_asset_transform(instance, IDENTITY);
     await throws(() => renderer.set_asset_transform(instance + 1, IDENTITY), RangeError, "instance 1");
     await throws(() => renderer.set_asset_visibility(instance + 1, false), RangeError, "instance 1");
@@ -966,7 +966,7 @@ async function renderer_rejects_unknown_instances() {
 
 async function renderer_upload_checks_arguments() {
     const renderer = await makeRenderer(4, 4);
-    const mesh = new rr.StlMesh([FRONT_TRIANGLE]);
+    const mesh = new rr.Mesh([FRONT_TRIANGLE]);
     check(same(renderer.upload_asset(mesh, 0), []));
     await throws(() => renderer.upload_asset(mesh, 2 ** 32), RangeError, "instances");
     await throws(() => renderer.upload_asset(mesh, -1), RangeError, "instances");
@@ -978,7 +978,7 @@ async function renderer_upload_checks_arguments() {
 
 async function renderer_resize_restarts_readback() {
     const renderer = await makeRenderer(32, 32);
-    renderer.upload_asset(new rr.StlMesh([FRONT_TRIANGLE]), 1);
+    renderer.upload_asset(new rr.Mesh([FRONT_TRIANGLE]), 1);
     const camera = new rr.OrbitCamera();
     check(lit(await renderNow(renderer, camera, 32, 32), 32, 16, 16));
     renderer.configure(new rr.WgpuRendererConfiguration(16, 8));
@@ -997,7 +997,7 @@ async function renderer_is_busy_while_rendering() {
     tesselator.update_input_geometry([new rr.PointI(0, 0, 0, 1)]);
     const delta = tesselator.get_output_geometry_delta();
     const chunks = delta.length;
-    const mesh = new rr.StlMesh([FRONT_TRIANGLE]);
+    const mesh = new rr.Mesh([FRONT_TRIANGLE]);
 
     // throws() calls each of them right away, before the render settles.
     const pending = renderer.render(state, new Uint8Array(64));

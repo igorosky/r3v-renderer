@@ -91,7 +91,7 @@ static void drop_null_is_ignored(void) {
     r3v_wgpu_renderer_drop(NULL);
     r3v_cpu_tesselator_drop(NULL);
     r3v_geometry_delta_drop(NULL);
-    r3v_stl_mesh_drop(NULL);
+    r3v_mesh_drop(NULL);
     r3v_urdf_description_drop(NULL);
     r3v_urdf_robot_drop(NULL);
     r3v_robot_transforms_drop(NULL);
@@ -99,8 +99,8 @@ static void drop_null_is_ignored(void) {
 }
 
 static void getters_of_null_are_empty(void) {
-    CHECK(r3v_stl_mesh_triangle_count(NULL) == 0);
-    CHECK(r3v_stl_mesh_triangles(NULL) == NULL);
+    CHECK(r3v_mesh_triangle_count(NULL) == 0);
+    CHECK(r3v_mesh_triangles(NULL) == NULL);
     CHECK(r3v_geometry_delta_chunk_count(NULL) == 0);
     CHECK(r3v_urdf_description_name(NULL) == NULL);
     CHECK(r3v_urdf_description_link_count(NULL) == 0);
@@ -221,17 +221,17 @@ static void stl_read_ascii_file(void) {
                "  endloop\n"
                "endfacet\n"
                "endsolid t\n");
-    R3vStlMesh *mesh = r3v_stl_read_file(path);
+    R3vMesh *mesh = r3v_stl_read_file(path);
     if (mesh == NULL) {
         fail(__FILE__, __LINE__, "STL not read: %s", r3v_renderer_last_error());
     }
-    CHECK(r3v_stl_mesh_triangle_count(mesh) == 1);
-    const R3vTriangle *triangle = r3v_stl_mesh_triangles(mesh);
+    CHECK(r3v_mesh_triangle_count(mesh) == 1);
+    const R3vTriangle *triangle = r3v_mesh_triangles(mesh);
     CHECK(triangle != NULL);
     CHECK_CLOSE(triangle->v0[0], 0.0f);
     CHECK_CLOSE(triangle->v1[0], 1.0f);
     CHECK_CLOSE(triangle->v2[1], 1.0f);
-    r3v_stl_mesh_drop(mesh);
+    r3v_mesh_drop(mesh);
 }
 
 static void stl_missing_file_fails(void) {
@@ -244,27 +244,27 @@ static void stl_missing_file_fails(void) {
 static void stl_from_triangles_is_writable(void) {
     R3vTriangle triangles[2] = {FRONT_TRIANGLE, FRONT_TRIANGLE};
     triangles[1].v2[2] = 7.0f;
-    R3vStlMesh *mesh = r3v_stl_mesh_from_triangles(triangles, ARRAY_LEN(triangles));
+    R3vMesh *mesh = r3v_mesh_from_triangles(triangles, ARRAY_LEN(triangles));
     CHECK(mesh != NULL);
-    CHECK(r3v_stl_mesh_triangle_count(mesh) == 2);
-    R3vTriangle *stored = r3v_stl_mesh_triangles(mesh);
+    CHECK(r3v_mesh_triangle_count(mesh) == 2);
+    R3vTriangle *stored = r3v_mesh_triangles(mesh);
     CHECK(memcmp(stored, triangles, sizeof triangles) == 0);
     /* A copy: changing the input does not change the mesh, but writing
      * through the pointer does. */
     triangles[0].v0[0] = 42.0f;
     CHECK_CLOSE(stored[0].v0[0], -1.0f);
     stored[0].v0[0] *= 3.0f;
-    CHECK_CLOSE(r3v_stl_mesh_triangles(mesh)[0].v0[0], -3.0f);
-    r3v_stl_mesh_drop(mesh);
+    CHECK_CLOSE(r3v_mesh_triangles(mesh)[0].v0[0], -3.0f);
+    r3v_mesh_drop(mesh);
 }
 
 static void stl_empty_mesh(void) {
-    R3vStlMesh *mesh = r3v_stl_mesh_from_triangles(NULL, 0);
+    R3vMesh *mesh = r3v_mesh_from_triangles(NULL, 0);
     CHECK(mesh != NULL);
-    CHECK(r3v_stl_mesh_triangle_count(mesh) == 0);
-    CHECK(r3v_stl_mesh_triangles(mesh) == NULL);
-    r3v_stl_mesh_drop(mesh);
-    CHECK(r3v_stl_mesh_from_triangles(NULL, 3) == NULL);
+    CHECK(r3v_mesh_triangle_count(mesh) == 0);
+    CHECK(r3v_mesh_triangles(mesh) == NULL);
+    r3v_mesh_drop(mesh);
+    CHECK(r3v_mesh_from_triangles(NULL, 3) == NULL);
     CHECK_ERROR_CONTAINS("`triangles` is NULL");
 }
 
@@ -973,7 +973,7 @@ static void renderer_update_geometry_checks_arguments(void) {
 static void renderer_draws_assets(void) {
     enum { W = 32, H = 32 };
     R3vWgpuRenderer *renderer = make_renderer(W, H);
-    R3vStlMesh *mesh = r3v_stl_mesh_from_triangles(&FRONT_TRIANGLE, 1);
+    R3vMesh *mesh = r3v_mesh_from_triangles(&FRONT_TRIANGLE, 1);
     CHECK(mesh != NULL);
     uint64_t ids[2] = {99, 99};
     CHECK_OK(r3v_wgpu_renderer_upload_asset(renderer, mesh, 2, ids));
@@ -982,7 +982,7 @@ static void renderer_draws_assets(void) {
     CHECK_OK(r3v_wgpu_renderer_upload_asset(renderer, mesh, 1, &more));
     CHECK(more == 2);
     /* The renderer copied the mesh. */
-    r3v_stl_mesh_drop(mesh);
+    r3v_mesh_drop(mesh);
     CHECK_OK(r3v_wgpu_renderer_set_asset_visibility(renderer, 2, false));
 
     R3vOrbitCamera camera = r3v_orbit_camera_default();
@@ -1021,10 +1021,10 @@ static void renderer_draws_assets(void) {
 static void renderer_colors_assets(void) {
     enum { W = 32, H = 32 };
     R3vWgpuRenderer *renderer = make_renderer(W, H);
-    R3vStlMesh *mesh = r3v_stl_mesh_from_triangles(&FRONT_TRIANGLE, 1);
+    R3vMesh *mesh = r3v_mesh_from_triangles(&FRONT_TRIANGLE, 1);
     uint64_t id;
     CHECK_OK(r3v_wgpu_renderer_upload_asset(renderer, mesh, 1, &id));
-    r3v_stl_mesh_drop(mesh);
+    r3v_mesh_drop(mesh);
     R3vOrbitCamera camera = r3v_orbit_camera_default();
     static uint8_t frame[W * H * 4];
     const uint8_t *center = frame + ((H / 2) * W + W / 2) * 4;
@@ -1057,7 +1057,7 @@ static void renderer_rejects_unknown_instances(void) {
     R3vTwist identity = {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
     CHECK_STATUS(r3v_wgpu_renderer_set_asset_transform(renderer, 0, identity), R3V_OUT_OF_RANGE);
     CHECK_ERROR_CONTAINS("instance 0");
-    R3vStlMesh *mesh = r3v_stl_mesh_from_triangles(&FRONT_TRIANGLE, 1);
+    R3vMesh *mesh = r3v_mesh_from_triangles(&FRONT_TRIANGLE, 1);
     uint64_t id;
     CHECK_OK(r3v_wgpu_renderer_upload_asset(renderer, mesh, 1, &id));
     CHECK_OK(r3v_wgpu_renderer_set_asset_transform(renderer, id, identity));
@@ -1067,13 +1067,13 @@ static void renderer_rejects_unknown_instances(void) {
                  R3V_OUT_OF_RANGE);
     CHECK_STATUS(r3v_wgpu_renderer_set_asset_visibility(renderer, UINT64_MAX, false),
                  R3V_OUT_OF_RANGE);
-    r3v_stl_mesh_drop(mesh);
+    r3v_mesh_drop(mesh);
     r3v_wgpu_renderer_drop(renderer);
 }
 
 static void renderer_upload_checks_arguments(void) {
     R3vWgpuRenderer *renderer = make_renderer(4, 4);
-    R3vStlMesh *mesh = r3v_stl_mesh_from_triangles(&FRONT_TRIANGLE, 1);
+    R3vMesh *mesh = r3v_mesh_from_triangles(&FRONT_TRIANGLE, 1);
     /* No instances need no ids. */
     CHECK_OK(r3v_wgpu_renderer_upload_asset(renderer, mesh, 0, NULL));
     CHECK_STATUS(r3v_wgpu_renderer_upload_asset(renderer, mesh, 2, NULL), R3V_INVALID_ARGUMENT);
@@ -1086,16 +1086,16 @@ static void renderer_upload_checks_arguments(void) {
     /* Failed uploads take no ids. */
     CHECK_OK(r3v_wgpu_renderer_upload_asset(renderer, mesh, 1, &id));
     CHECK(id == 0);
-    r3v_stl_mesh_drop(mesh);
+    r3v_mesh_drop(mesh);
     r3v_wgpu_renderer_drop(renderer);
 }
 
 static void renderer_resize_restarts_readback(void) {
     R3vWgpuRenderer *renderer = make_renderer(32, 32);
-    R3vStlMesh *mesh = r3v_stl_mesh_from_triangles(&FRONT_TRIANGLE, 1);
+    R3vMesh *mesh = r3v_mesh_from_triangles(&FRONT_TRIANGLE, 1);
     uint64_t id;
     CHECK_OK(r3v_wgpu_renderer_upload_asset(renderer, mesh, 1, &id));
-    r3v_stl_mesh_drop(mesh);
+    r3v_mesh_drop(mesh);
     R3vOrbitCamera camera = r3v_orbit_camera_default();
     static uint8_t frame[32 * 32 * 4];
     render_now(renderer, camera, 32, 32, frame);
@@ -1134,9 +1134,7 @@ static void urdf_description_reads_everything(void) {
     R3vUrdfVisual visual;
     CHECK_OK(r3v_urdf_description_visual(description, 0, 0, &visual));
     CHECK(strcmp(visual.name, "body") == 0);
-    CHECK(visual.has_origin);
     CHECK_VEC3(visual.origin.xyz, 0.0f, 0.0f, 0.5f);
-    CHECK(visual.has_geometry);
     CHECK(visual.geometry.kind == R3V_URDF_GEOMETRY_MESH);
     /* read_str has no directory to resolve against. */
     CHECK(strcmp(visual.geometry.mesh_filename, "meshes/base.stl") == 0);
@@ -1161,12 +1159,10 @@ static void urdf_description_reads_everything(void) {
     R3vUrdfJoint joint;
     CHECK_OK(r3v_urdf_description_joint(description, 0, &joint));
     CHECK(strcmp(joint.name, "shoulder") == 0);
-    CHECK(strcmp(joint.joint_type, "revolute") == 0);
+    CHECK(joint.joint_type == R3V_URDF_JOINT_REVOLUTE);
     CHECK(strcmp(joint.parent, "base") == 0);
     CHECK(strcmp(joint.child, "arm") == 0);
-    CHECK(joint.has_origin);
     CHECK_VEC3(joint.origin.xyz, 0.0f, 0.0f, 1.0f);
-    CHECK(joint.has_axis);
     CHECK_VEC3(joint.axis, 0.0f, 0.0f, 1.0f);
     CHECK(joint.has_limit);
     CHECK_CLOSE(joint.limit.lower, -1.5f);

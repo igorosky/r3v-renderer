@@ -1,16 +1,13 @@
-//! `stl::StlMesh` and `stl::read_bytes`.
+//! `mesh::Mesh` and `stl::read_bytes`.
 
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use wasm_bindgen::prelude::*;
 
-use crate::{
-    geometry::RealTriangle,
-    stl::{self, StlMesh},
-};
+use crate::{geometry::RealTriangle, mesh::Mesh, stl};
 
 use super::{JsTriangle, Result, array, error, triangle, type_error};
 
-/// `triangles` as `StlMesh` reads them: an array of `TriangleLike`s.
+/// `triangles` as `Mesh` reads them: an array of `TriangleLike`s.
 fn triangles(value: &JsValue) -> Result<Vec<RealTriangle>> {
     array(value, &|| "triangles".to_owned())?
         .iter()
@@ -19,28 +16,29 @@ fn triangles(value: &JsValue) -> Result<Vec<RealTriangle>> {
         .collect()
 }
 
-/// Triangle mesh for `WgpuRenderer.upload_asset` (`stl::StlMesh`).
-#[wasm_bindgen(js_name = StlMesh)]
-pub struct JsStlMesh(pub(super) StlMesh);
+/// Triangle mesh for `WgpuRenderer.upload_asset` (`mesh::Mesh`).
+#[wasm_bindgen(js_name = Mesh)]
+pub struct JsMesh(pub(super) Mesh);
 
-#[wasm_bindgen(js_class = StlMesh)]
-impl JsStlMesh {
+#[wasm_bindgen(js_class = Mesh)]
+impl JsMesh {
     /// A mesh of `triangles`.
     #[wasm_bindgen(constructor)]
     pub fn new(
         #[wasm_bindgen(unchecked_param_type = "TriangleLike[]")] triangles: JsValue,
-    ) -> Result<JsStlMesh> {
-        Ok(Self(StlMesh {
+    ) -> Result<JsMesh> {
+        Ok(Self(Mesh {
             triangles: self::triangles(&triangles)?,
+            uvs: None,
         }))
     }
 
     /// `stl::read_bytes`: reads the contents of an ASCII or binary STL file
     /// and winds every triangle to match the normal declared for it. `Error`
     /// when they are no STL.
-    pub fn read_bytes(
+    pub fn read_stl_bytes(
         #[wasm_bindgen(unchecked_param_type = "Uint8Array | ArrayBuffer")] bytes: JsValue,
-    ) -> Result<JsStlMesh> {
+    ) -> Result<JsMesh> {
         let bytes = if let Some(bytes) = bytes.dyn_ref::<Uint8Array>() {
             bytes.to_vec()
         } else if let Some(buffer) = bytes.dyn_ref::<ArrayBuffer>() {
@@ -67,6 +65,7 @@ impl JsStlMesh {
         #[wasm_bindgen(unchecked_param_type = "TriangleLike[]")] triangles: JsValue,
     ) -> Result<()> {
         self.0.triangles = self::triangles(&triangles)?;
+        self.0.uvs = None;
         Ok(())
     }
 }

@@ -8,11 +8,11 @@ use r3v_renderer::{
     Camera, Renderer, Tesselator,
     camera::OrbitCamera,
     geometry::{PointI, RealTriangle},
+    mesh::Mesh,
     renderer::{
         DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE, TerrainColoring, WgpuAccelerated,
         WgpuAcceleratedConfiguration,
     },
-    stl::StlMesh,
     tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext},
 };
 
@@ -280,8 +280,9 @@ fn assets_keep_their_color() {
         v2: [0.0, BLOCK_TOP, -20.0],
     };
     renderer.upload_asset(
-        StlMesh {
+        Mesh {
             triangles: vec![triangle],
+            uvs: None,
         },
         1,
     );

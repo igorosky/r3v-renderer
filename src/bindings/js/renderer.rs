@@ -13,9 +13,9 @@ use crate::{
 };
 
 use super::{
-    Result, U32_MAX, What, error, f32_property, flag_property, index, integer_property, number,
-    numbers, object, property, range_error, stl::JsStlMesh, tesselator::JsGeometryDelta, twist,
-    type_error, vector, vector_property,
+    Result, U32_MAX, What, error, f32_property, flag_property, index, integer_property,
+    mesh::JsMesh, number, numbers, object, property, range_error, tesselator::JsGeometryDelta,
+    twist, type_error, vector, vector_property,
 };
 
 fn terrain_coloring(value: &JsValue, what: What) -> Result<TerrainColoring> {
@@ -318,7 +318,7 @@ impl JsWgpuRenderer {
     #[wasm_bindgen(unchecked_return_type = "number[]")]
     pub fn upload_asset(
         &self,
-        mesh: &JsStlMesh,
+        mesh: &JsMesh,
         #[wasm_bindgen(unchecked_param_type = "number")] instances: JsValue,
     ) -> Result<Array> {
         let instances = index(&instances, &|| "instances".to_owned())?;

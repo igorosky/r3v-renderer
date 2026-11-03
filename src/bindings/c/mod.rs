@@ -20,9 +20,9 @@ use super::checked::{self, ErrorKind};
 use crate::geometry;
 
 mod camera;
+mod mesh;
 mod renderer;
 mod robot;
-mod stl;
 mod tesselator;
 
 /// Result of a function that can fail. Anything but `R3V_OK` comes with a
@@ -470,7 +470,7 @@ const _: () = {
     assert_send::<robot::R3vUrdfDescription>();
     assert_send::<robot::R3vUrdfRobot>();
     assert_send::<crate::robot::RobotTransforms>();
-    assert_send::<stl::R3vStlMesh>();
+    assert_send::<mesh::R3vMesh>();
     assert_send::<tesselator::R3vCpuTesselator>();
     assert_send::<tesselator::R3vGeometryDelta>();
 };

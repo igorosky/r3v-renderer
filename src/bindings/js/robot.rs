@@ -75,8 +75,8 @@ fn material(material: &urdf::UrdfMaterial) -> JsValue {
 fn visual(visual: &urdf::UrdfVisual) -> JsValue {
     object(&[
         ("name", optional_string(&visual.name)),
-        ("origin", nullable(visual.origin, origin)),
-        ("geometry", nullable(visual.geometry.as_ref(), geometry)),
+        ("origin", origin(visual.origin)),
+        ("geometry", geometry(&visual.geometry)),
         ("material", nullable(visual.material.as_ref(), material)),
     ])
     .into()
@@ -104,14 +104,26 @@ fn joint_limit(limit: urdf::UrdfJointLimit) -> JsValue {
     .into()
 }
 
+fn joint_type(joint_type: urdf::UrdfJointType) -> JsValue {
+    JsValue::from_str(match joint_type {
+        urdf::UrdfJointType::Revolute => "revolute",
+        urdf::UrdfJointType::Continuous => "continuous",
+        urdf::UrdfJointType::Prismatic => "prismatic",
+        urdf::UrdfJointType::Fixed => "fixed",
+        urdf::UrdfJointType::Floating => "floating",
+        urdf::UrdfJointType::Planar => "planar",
+        urdf::UrdfJointType::Spherical => "spherical",
+    })
+}
+
 fn joint(joint: &urdf::UrdfJoint) -> JsValue {
     object(&[
         ("name", JsValue::from_str(&joint.name)),
-        ("joint_type", JsValue::from_str(&joint.joint_type)),
+        ("joint_type", joint_type(joint.joint_type)),
         ("parent", JsValue::from_str(&joint.parent)),
         ("child", JsValue::from_str(&joint.child)),
-        ("origin", nullable(joint.origin, origin)),
-        ("axis", nullable(joint.axis, vec3)),
+        ("origin", origin(joint.origin)),
+        ("axis", vec3(joint.axis)),
         ("limit", nullable(joint.limit, joint_limit)),
     ])
     .into()

@@ -58,16 +58,14 @@ fn distance_from_camera(world_position: vec3<f32>) -> f32 {
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
-    @location(2) normal: vec3<f32>,
+    @location(1) normal: vec3<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) distance_from_camera: f32,
-    @location(3) height: f32,
+    @location(0) normal: vec3<f32>,
+    @location(1) distance_from_camera: f32,
+    @location(2) height: f32,
 };
 
 @vertex
@@ -76,7 +74,6 @@ fn vs_main(
     @builtin(vertex_index) v_idx: u32,
 ) -> VertexOutput {
     var out: VertexOutput;
-    out.color = model.color;
     out.clip_position = camera.view_proj * vec4<f32>(model.position, 1.0);
     out.normal = model.normal;
     out.distance_from_camera = distance_from_camera(model.position);

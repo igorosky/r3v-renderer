@@ -127,9 +127,7 @@ impl R3vUrdfMaterial {
 pub struct R3vUrdfVisual {
     /// NULL when the visual has no name.
     pub name: *const c_char,
-    pub has_origin: bool,
     pub origin: R3vUrdfOrigin,
-    pub has_geometry: bool,
     pub geometry: R3vUrdfGeometry,
     pub has_material: bool,
     pub material: R3vUrdfMaterial,
@@ -148,22 +146,45 @@ pub struct R3vUrdfJointLimit {
     pub jerk: f32,
 }
 
+#[repr(C)]
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum R3vUrdfJointType {
+    R3V_URDF_JOINT_REVOLUTE,
+    R3V_URDF_JOINT_CONTINUOUS,
+    R3V_URDF_JOINT_PRISMATIC,
+    R3V_URDF_JOINT_FIXED,
+    R3V_URDF_JOINT_FLOATING,
+    R3V_URDF_JOINT_PLANAR,
+    R3V_URDF_JOINT_SPHERICAL,
+}
+
+impl From<urdf::UrdfJointType> for R3vUrdfJointType {
+    fn from(joint_type: urdf::UrdfJointType) -> Self {
+        match joint_type {
+            urdf::UrdfJointType::Revolute => Self::R3V_URDF_JOINT_REVOLUTE,
+            urdf::UrdfJointType::Continuous => Self::R3V_URDF_JOINT_CONTINUOUS,
+            urdf::UrdfJointType::Prismatic => Self::R3V_URDF_JOINT_PRISMATIC,
+            urdf::UrdfJointType::Fixed => Self::R3V_URDF_JOINT_FIXED,
+            urdf::UrdfJointType::Floating => Self::R3V_URDF_JOINT_FLOATING,
+            urdf::UrdfJointType::Planar => Self::R3V_URDF_JOINT_PLANAR,
+            urdf::UrdfJointType::Spherical => Self::R3V_URDF_JOINT_SPHERICAL,
+        }
+    }
+}
+
 /// Joint of a robot description (`urdf::UrdfJoint`). The `has_*` flags tell
 /// which optional parts are there.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct R3vUrdfJoint {
     pub name: *const c_char,
-    /// "revolute", "continuous", "prismatic", "fixed", "floating", "planar"
-    /// or "spherical".
-    pub joint_type: *const c_char,
+    pub joint_type: R3vUrdfJointType,
     /// Parent link name.
     pub parent: *const c_char,
     /// Child link name.
     pub child: *const c_char,
-    pub has_origin: bool,
     pub origin: R3vUrdfOrigin,
-    pub has_axis: bool,
     pub axis: R3vVec3,
     pub has_limit: bool,
     pub limit: R3vUrdfJointLimit,
@@ -270,13 +291,8 @@ impl Strings {
     fn visual(&mut self, visual: &urdf::UrdfVisual) -> super::Result<R3vUrdfVisual> {
         Ok(R3vUrdfVisual {
             name: self.add_optional(visual.name.as_deref())?,
-            has_origin: visual.origin.is_some(),
-            origin: visual.origin.map(Into::into).unwrap_or_default(),
-            has_geometry: visual.geometry.is_some(),
-            geometry: match &visual.geometry {
-                Some(geometry) => self.geometry(geometry)?,
-                None => R3vUrdfGeometry::ZERO,
-            },
+            origin: visual.origin.into(),
+            geometry: self.geometry(&visual.geometry)?,
             has_material: visual.material.is_some(),
             material: match &visual.material {
                 Some(material) => self.material(material)?,
@@ -288,13 +304,11 @@ impl Strings {
     fn joint(&mut self, joint: &urdf::UrdfJoint) -> super::Result<R3vUrdfJoint> {
         Ok(R3vUrdfJoint {
             name: self.add(&joint.name)?,
-            joint_type: self.add(&joint.joint_type)?,
+            joint_type: joint.joint_type.into(),
             parent: self.add(&joint.parent)?,
             child: self.add(&joint.child)?,
-            has_origin: joint.origin.is_some(),
-            origin: joint.origin.map(Into::into).unwrap_or_default(),
-            has_axis: joint.axis.is_some(),
-            axis: joint.axis.map(Into::into).unwrap_or_default(),
+            origin: joint.origin.into(),
+            axis: joint.axis.into(),
             has_limit: joint.limit.is_some(),
             limit: joint.limit.map(Into::into).unwrap_or_default(),
         })

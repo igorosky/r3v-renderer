@@ -4,9 +4,10 @@ use r3v_renderer::{
     Camera, Renderer, Robot, Tesselator,
     camera::OrbitCamera,
     geometry::{self, PointI, RealTwist},
+    mesh,
     renderer::{self, TerrainColoring, WgpuAccelerated},
     robot::UrdfRobot,
-    shapes, stl,
+    shapes,
     tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext},
     urdf,
 };
@@ -775,21 +776,21 @@ impl RobotScene {
         let description = urdf::read_file(urdf_path)?;
         let urdf_dir = urdf_path.parent().unwrap_or(Path::new("."));
 
-        type Visuals = Vec<((String, usize), Option<[f32; 3]>)>;
-        let mut groups: Vec<(&urdf::UrdfGeometry, Visuals)> = Vec::new();
-        let mut skipped = 0;
+        type Visuals<'a> = Vec<((String, usize), Option<[f32; 3]>, Option<&'a str>)>;
+        let mut groups: Vec<(&urdf::UrdfGeometry, Visuals<'_>)> = Vec::new();
         for link in &description.links {
             for (visual_index, visual) in link.visuals.iter().enumerate() {
-                let Some(geometry) = &visual.geometry else {
-                    skipped += 1;
-                    continue;
-                };
+                let geometry = &visual.geometry;
                 let color = visual
                     .material
                     .as_ref()
                     .and_then(|material| material.color.as_ref())
                     .map(|color| [color.rgba[0], color.rgba[1], color.rgba[2]]);
-                let visual_key = ((link.name.clone(), visual_index), color);
+                let texture = visual
+                    .material
+                    .as_ref()
+                    .and_then(|material| material.texture.as_deref());
+                let visual_key = ((link.name.clone(), visual_index), color, texture);
                 match groups.iter_mut().find(|(group, _)| *group == geometry) {
                     Some((_, visuals)) => visuals.push(visual_key),
                     None => groups.push((geometry, vec![visual_key])),
@@ -798,17 +799,30 @@ impl RobotScene {
         }
 
         let mut instances = Vec::new();
+        let mut textures: HashMap<&str, Option<usize>> = HashMap::new();
         let mut triangle_count = 0;
+        let mut unloaded = 0;
         for (geometry, visuals) in groups {
             let mut mesh = match geometry {
                 urdf::UrdfGeometry::Mesh(mesh) => {
                     let path = resolve_mesh_file(&mesh.filename, urdf_dir);
-                    let mut stl_mesh = stl::read_file(&path)?;
+                    let mut file_mesh = match mesh::read_file(&path) {
+                        Ok(file_mesh) => file_mesh,
+                        Err(err) => {
+                            eprintln!(
+                                "Skipping {} visual(s) using '{}': {err}",
+                                visuals.len(),
+                                mesh.filename
+                            );
+                            unloaded += visuals.len();
+                            continue;
+                        }
+                    };
                     let scale = mesh
                         .scale
                         .map_or([1.0; 3], |scale| [scale.x, scale.y, scale.z]);
-                    scale_mesh(&mut stl_mesh, scale);
-                    stl_mesh
+                    scale_mesh(&mut file_mesh, scale);
+                    file_mesh
                 }
                 primitive => shapes::tessellate(primitive).expect("only meshes are files"),
             };
@@ -816,9 +830,17 @@ impl RobotScene {
             triangle_count += mesh.triangles.len();
             let is_shape = !matches!(geometry, urdf::UrdfGeometry::Mesh(_));
             let ids = renderer.upload_asset(mesh, visuals.len());
-            for ((visual_key, color), id) in visuals.into_iter().zip(ids) {
+            for ((visual_key, color, texture), id) in visuals.into_iter().zip(ids) {
                 if let Some(color) = color {
                     renderer.set_asset_color(id, color);
+                }
+                if let Some(filename) = texture {
+                    let texture = *textures.entry(filename).or_insert_with(|| {
+                        load_texture(&resolve_mesh_file(filename, urdf_dir), renderer)
+                            .inspect_err(|err| eprintln!("Skipping texture '{filename}': {err}"))
+                            .ok()
+                    });
+                    renderer.set_asset_texture(id, texture);
                 }
                 if is_shape && !ROBOT_SHOW_SHAPES {
                     renderer.set_asset_visibility(id, false);
@@ -838,21 +860,25 @@ impl RobotScene {
             .enumerate()
             .filter_map(|(index, joint)| {
                 let phase = index as f32 * 0.7;
-                let motion = match (joint.joint_type.as_str(), joint.limit) {
+                let motion = match (joint.joint_type, joint.limit) {
                     // Only leaf links (wheels) spin freely; spinning a rocker would lift its wheels off the ground.
-                    ("continuous", _) if !parent_links.contains(joint.child.as_str()) => {
+                    (urdf::UrdfJointType::Continuous, _)
+                        if !parent_links.contains(joint.child.as_str()) =>
+                    {
                         JointMotion::Spin { phase }
                     }
-                    ("continuous", _) => JointMotion::Sweep {
+                    (urdf::UrdfJointType::Continuous, _) => JointMotion::Sweep {
                         phase,
                         center: 0.0,
                         amplitude: ROBOT_CONTINUOUS_SWEEP,
                     },
-                    ("revolute", Some(limit)) if limit.upper > limit.lower => JointMotion::Sweep {
-                        phase,
-                        center: (limit.upper + limit.lower) * 0.5,
-                        amplitude: (limit.upper - limit.lower) * 0.5,
-                    },
+                    (urdf::UrdfJointType::Revolute, Some(limit)) if limit.upper > limit.lower => {
+                        JointMotion::Sweep {
+                            phase,
+                            center: (limit.upper + limit.lower) * 0.5,
+                            amplitude: (limit.upper - limit.lower) * 0.5,
+                        }
+                    }
                     _ => return None,
                 };
                 Some((joint.name.clone(), motion))
@@ -872,11 +898,11 @@ impl RobotScene {
             .find(|link| !link.visuals.is_empty())
             .map(|link| link.name.clone());
         println!(
-            "Loaded robot '{}' in {:.0} ms: {} visuals ({} without geometry skipped), {} triangles, {} animated joints",
+            "Loaded robot '{}' in {:.0} ms: {} visuals ({} with unloadable meshes skipped), {} triangles, {} animated joints",
             description.name,
             load_start.elapsed().as_secs_f32() * 1000.0,
             instances.len(),
-            skipped,
+            unloaded,
             triangle_count,
             joints.len(),
         );
@@ -977,7 +1003,14 @@ fn resolve_mesh_file(filename: &str, urdf_dir: &Path) -> std::path::PathBuf {
     }
 }
 
-fn scale_mesh(mesh: &mut stl::StlMesh, scale: [f32; 3]) {
+fn load_texture(path: &Path, renderer: &mut WgpuAccelerated) -> Result<usize, String> {
+    let image = image::open(path)
+        .map_err(|err| format!("failed to read '{}': {err}", path.display()))?
+        .to_rgba8();
+    Ok(renderer.upload_texture(image.width(), image.height(), image.as_raw()))
+}
+
+fn scale_mesh(mesh: &mut mesh::Mesh, scale: [f32; 3]) {
     let mirrored = scale[0] * scale[1] * scale[2] < 0.0;
     for triangle in &mut mesh.triangles {
         for vertex in [&mut triangle.v0, &mut triangle.v1, &mut triangle.v2] {
@@ -988,6 +1021,11 @@ fn scale_mesh(mesh: &mut stl::StlMesh, scale: [f32; 3]) {
         // A mirroring scale flips the winding, which would get the triangle back-face culled.
         if mirrored {
             *triangle = triangle.reverse();
+        }
+    }
+    if mirrored && let Some(uvs) = &mut mesh.uvs {
+        for uv in uvs {
+            uv.swap(1, 2);
         }
     }
 }
