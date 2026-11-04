@@ -75,6 +75,18 @@ int main() {
     CHECK_OK(r3v_wgpu_renderer_set_asset_visibility(renderer, id, false));
     r3v_mesh_drop(mesh);
 
+    R3vGridDescription grid = r3v_grid_description_default();
+    grid.frame = "base";
+    uint64_t grid_id = 99;
+    CHECK_OK(r3v_wgpu_renderer_create_grid(renderer, grid, &grid_id));
+    CHECK(grid_id == 0);
+    grid.size = R3vVec3{4.0f, 2.0f, 4.0f};
+    CHECK_OK(r3v_wgpu_renderer_update_grid(renderer, grid_id, grid));
+    CHECK_OK(r3v_wgpu_renderer_set_frame_transform(
+        renderer, "base", R3vTwist{{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 1.0f}}));
+    CHECK_OK(r3v_wgpu_renderer_remove_frame(renderer, "base"));
+    CHECK_OK(r3v_wgpu_renderer_remove_grid(renderer, grid_id));
+
     R3vOrbitCamera camera = r3v_orbit_camera_default();
     CHECK_OK(r3v_orbit_camera_look_at(&camera, R3vVec3{6, 6, 3}, 10, 0, 0));
     R3vCameraState state{};

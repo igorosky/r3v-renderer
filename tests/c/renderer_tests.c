@@ -1304,6 +1304,215 @@ static void urdf_robot_feed_checks_arguments(void) {
     r3v_urdf_robot_drop(robot);
 }
 
+/* ------------------------------------------------------------- grids */
+
+static R3vOrbitCamera top_down(void) {
+    return r3v_orbit_camera_new(vec3(0.0f, 0.0f, 0.0f), 10.0f, 0.0f, 89.0f);
+}
+
+static size_t count_pixels(const uint8_t *frame, uint32_t width, uint32_t height, uint8_t b,
+                           uint8_t g, uint8_t r) {
+    size_t count = 0;
+    for (uint32_t y = 0; y < height; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            count += pixel_is(frame, width, x, y, b, g, r);
+        }
+    }
+    return count;
+}
+
+static size_t count_lit(const uint8_t *frame, uint32_t width, uint32_t height) {
+    size_t count = 0;
+    for (uint32_t y = 0; y < height; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            count += lit(frame, width, x, y);
+        }
+    }
+    return count;
+}
+
+/* A 4 by 4 orange plane on the ground, BGR {0, 128, 255} in a frame. */
+static R3vGridDescription orange_floor(void) {
+    R3vGridDescription grid = r3v_grid_description_default();
+    grid.size = vec3(4.0f, 0.0f, 4.0f);
+    grid.color = vec3(1.0f, 0.5f, 0.0f);
+    return grid;
+}
+
+static void renderer_draws_grids(void) {
+    enum { W = 32, H = 32 };
+    R3vWgpuRenderer *renderer = make_renderer(W, H);
+    R3vGridDescription defaults = r3v_grid_description_default();
+    CHECK_VEC3(defaults.size, 10.0f, 0.0f, 10.0f);
+    CHECK_VEC3(defaults.resolution, 1.0f, 1.0f, 1.0f);
+    CHECK_VEC3(defaults.color, 0.5f, 0.5f, 0.5f);
+    CHECK(defaults.frame == NULL);
+    CHECK_VEC3(defaults.pose.linear, 0.0f, 0.0f, 0.0f);
+    CHECK_CLOSE(defaults.pose.rotational.w, 1.0f);
+
+    uint64_t first = 99;
+    CHECK_OK(r3v_wgpu_renderer_create_grid(renderer, orange_floor(), &first));
+    CHECK(first == 0);
+    static uint8_t frame[W * H * 4];
+    render_now(renderer, top_down(), W, H, frame);
+    size_t orange = count_pixels(frame, W, H, 0, 128, 255);
+    CHECK(orange > 20);
+    CHECK(count_lit(frame, W, H) == orange);
+    CHECK(!lit(frame, W, 0, 0));
+
+    R3vGridDescription green = orange_floor();
+    green.color = vec3(0.0f, 1.0f, 0.0f);
+    CHECK_OK(r3v_wgpu_renderer_update_grid(renderer, first, green));
+    render_now(renderer, top_down(), W, H, frame);
+    CHECK(count_pixels(frame, W, H, 0, 128, 255) == 0);
+    CHECK(count_pixels(frame, W, H, 0, 255, 0) == orange);
+
+    R3vGridDescription fine = orange_floor();
+    fine.resolution = vec3(0.5f, 0.5f, 0.5f);
+    CHECK_OK(r3v_wgpu_renderer_update_grid(renderer, first, fine));
+    render_now(renderer, top_down(), W, H, frame);
+    CHECK(count_pixels(frame, W, H, 0, 128, 255) > orange);
+
+    uint64_t second = 99;
+    CHECK_OK(r3v_wgpu_renderer_create_grid(renderer, orange_floor(), &second));
+    CHECK(second == 1);
+    CHECK_OK(r3v_wgpu_renderer_remove_grid(renderer, first));
+    CHECK_OK(r3v_wgpu_renderer_remove_grid(renderer, second));
+    render_now(renderer, top_down(), W, H, frame);
+    CHECK(count_lit(frame, W, H) == 0);
+    CHECK_STATUS(r3v_wgpu_renderer_remove_grid(renderer, second), R3V_OUT_OF_RANGE);
+    CHECK_ERROR_CONTAINS("grid 1");
+    CHECK_STATUS(r3v_wgpu_renderer_update_grid(renderer, first, green), R3V_OUT_OF_RANGE);
+    /* Ids are not reused. */
+    uint64_t third = 99;
+    CHECK_OK(r3v_wgpu_renderer_create_grid(renderer, orange_floor(), &third));
+    CHECK(third == 2);
+
+    r3v_wgpu_renderer_drop(renderer);
+}
+
+static void renderer_grid_follows_frames(void) {
+    enum { W = 32, H = 32 };
+    R3vWgpuRenderer *renderer = make_renderer(W, H);
+    static uint8_t frame[W * H * 4];
+    char name[] = "base_link";
+    R3vGridDescription grid = orange_floor();
+    grid.frame = name;
+    uint64_t id;
+    CHECK_OK(r3v_wgpu_renderer_create_grid(renderer, grid, &id));
+    /* The renderer copied the name. */
+    name[0] = 'X';
+    render_now(renderer, top_down(), W, H, frame);
+    CHECK(count_lit(frame, W, H) == 0);
+
+    R3vTwist identity = {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
+    CHECK_OK(r3v_wgpu_renderer_set_frame_transform(renderer, "base_link", identity));
+    render_now(renderer, top_down(), W, H, frame);
+    size_t in_view = count_pixels(frame, W, H, 0, 128, 255);
+    CHECK(in_view > 20);
+
+    R3vTwist away = {{100.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
+    CHECK_OK(r3v_wgpu_renderer_set_frame_transform(renderer, "base_link", away));
+    render_now(renderer, top_down(), W, H, frame);
+    CHECK(count_lit(frame, W, H) == 0);
+
+    /* The pose is relative to the frame. */
+    grid.frame = "base_link";
+    grid.pose.linear = vec3(-100.0f, 0.0f, 0.0f);
+    CHECK_OK(r3v_wgpu_renderer_update_grid(renderer, id, grid));
+    render_now(renderer, top_down(), W, H, frame);
+    CHECK(count_pixels(frame, W, H, 0, 128, 255) == in_view);
+
+    CHECK_OK(r3v_wgpu_renderer_remove_frame(renderer, "base_link"));
+    render_now(renderer, top_down(), W, H, frame);
+    CHECK(count_lit(frame, W, H) == 0);
+    CHECK_OK(r3v_wgpu_renderer_remove_frame(renderer, "never_set"));
+
+    /* A robot link as the frame. */
+    R3vUrdfDescription *description = robot_description();
+    R3vUrdfRobot *robot = r3v_urdf_robot_from_description(description);
+    r3v_urdf_description_drop(description);
+    R3vRobotTransforms *transforms = r3v_urdf_robot_feed_sensor_input(robot, NULL, NULL, 0);
+    CHECK(transforms != NULL);
+    R3vTwist arm;
+    CHECK_OK(r3v_robot_transforms_link(transforms, "arm", &arm));
+    grid.frame = "arm";
+    grid.pose = identity;
+    CHECK_OK(r3v_wgpu_renderer_update_grid(renderer, id, grid));
+    CHECK_OK(r3v_wgpu_renderer_set_frame_transform(renderer, "arm", arm));
+    render_now(renderer, top_down(), W, H, frame);
+    CHECK(count_pixels(frame, W, H, 0, 128, 255) > 20);
+    r3v_robot_transforms_drop(transforms);
+    r3v_urdf_robot_drop(robot);
+
+    r3v_wgpu_renderer_drop(renderer);
+}
+
+static void renderer_grid_checks_arguments(void) {
+    R3vWgpuRenderer *renderer = make_renderer(4, 4);
+    const R3vGridDescription grid = r3v_grid_description_default();
+    uint64_t id = 99;
+    CHECK_STATUS(r3v_wgpu_renderer_create_grid(NULL, grid, &id), R3V_INVALID_ARGUMENT);
+    CHECK_ERROR_CONTAINS("`renderer` is NULL");
+    CHECK_STATUS(r3v_wgpu_renderer_create_grid(renderer, grid, NULL), R3V_INVALID_ARGUMENT);
+    CHECK_ERROR_CONTAINS("`out_id` is NULL");
+
+    R3vGridDescription bad = grid;
+    bad.size = vec3(-1.0f, 0.0f, 1.0f);
+    CHECK_STATUS(r3v_wgpu_renderer_create_grid(renderer, bad, &id), R3V_INVALID_ARGUMENT);
+    CHECK_ERROR_CONTAINS("grid size");
+    bad.size = vec3(NAN, 0.0f, 1.0f);
+    CHECK_STATUS(r3v_wgpu_renderer_create_grid(renderer, bad, &id), R3V_INVALID_ARGUMENT);
+    bad = grid;
+    bad.resolution = vec3(1.0f, 0.0f, 1.0f);
+    CHECK_STATUS(r3v_wgpu_renderer_create_grid(renderer, bad, &id), R3V_INVALID_ARGUMENT);
+    CHECK_ERROR_CONTAINS("grid resolution");
+    bad.resolution = vec3(1.0f, INFINITY, 1.0f);
+    CHECK_STATUS(r3v_wgpu_renderer_create_grid(renderer, bad, &id), R3V_INVALID_ARGUMENT);
+    bad = grid;
+    bad.color = vec3(1.5f, 0.0f, 0.0f);
+    CHECK_STATUS(r3v_wgpu_renderer_create_grid(renderer, bad, &id), R3V_INVALID_ARGUMENT);
+    CHECK_ERROR_CONTAINS("between 0 and 1");
+    bad = grid;
+    bad.frame = "";
+    CHECK_STATUS(r3v_wgpu_renderer_create_grid(renderer, bad, &id), R3V_INVALID_ARGUMENT);
+    CHECK_ERROR_CONTAINS("must not be empty");
+    static const char not_utf8[] = {(char)0xff, 0};
+    bad.frame = not_utf8;
+    CHECK_STATUS(r3v_wgpu_renderer_create_grid(renderer, bad, &id), R3V_INVALID_ARGUMENT);
+    CHECK_ERROR_CONTAINS("`description.frame` is not valid UTF-8");
+    bad = grid;
+    bad.size = vec3(10000.0f, 10000.0f, 10000.0f);
+    CHECK_STATUS(r3v_wgpu_renderer_create_grid(renderer, bad, &id), R3V_INVALID_ARGUMENT);
+    CHECK_ERROR_CONTAINS("lines");
+    CHECK(id == 99);
+
+    /* Failed calls take no ids and leave the grid as it was. */
+    CHECK_OK(r3v_wgpu_renderer_create_grid(renderer, grid, &id));
+    CHECK(id == 0);
+    CHECK_STATUS(r3v_wgpu_renderer_update_grid(renderer, id, bad), R3V_INVALID_ARGUMENT);
+    CHECK_OK(r3v_wgpu_renderer_update_grid(renderer, id, grid));
+    CHECK_STATUS(r3v_wgpu_renderer_update_grid(NULL, id, grid), R3V_INVALID_ARGUMENT);
+    CHECK_STATUS(r3v_wgpu_renderer_remove_grid(NULL, id), R3V_INVALID_ARGUMENT);
+    CHECK_STATUS(r3v_wgpu_renderer_remove_grid(renderer, id + 1), R3V_OUT_OF_RANGE);
+    CHECK_STATUS(r3v_wgpu_renderer_remove_grid(renderer, UINT64_MAX), R3V_OUT_OF_RANGE);
+    CHECK_OK(r3v_wgpu_renderer_remove_grid(renderer, id));
+
+    R3vTwist identity = {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
+    CHECK_STATUS(r3v_wgpu_renderer_set_frame_transform(NULL, "a", identity),
+                 R3V_INVALID_ARGUMENT);
+    CHECK_STATUS(r3v_wgpu_renderer_set_frame_transform(renderer, NULL, identity),
+                 R3V_INVALID_ARGUMENT);
+    CHECK_ERROR_CONTAINS("`frame` is NULL");
+    CHECK_STATUS(r3v_wgpu_renderer_set_frame_transform(renderer, "", identity),
+                 R3V_INVALID_ARGUMENT);
+    CHECK_STATUS(r3v_wgpu_renderer_remove_frame(NULL, "a"), R3V_INVALID_ARGUMENT);
+    CHECK_STATUS(r3v_wgpu_renderer_remove_frame(renderer, NULL), R3V_INVALID_ARGUMENT);
+    CHECK_STATUS(r3v_wgpu_renderer_remove_frame(renderer, ""), R3V_INVALID_ARGUMENT);
+
+    r3v_wgpu_renderer_drop(renderer);
+}
+
 #define TEST(fn) {#fn, fn}
 
 const TestCase TEST_CASES[] = {
@@ -1350,6 +1559,9 @@ const TestCase TEST_CASES[] = {
     TEST(renderer_rejects_unknown_instances),
     TEST(renderer_upload_checks_arguments),
     TEST(renderer_resize_restarts_readback),
+    TEST(renderer_draws_grids),
+    TEST(renderer_grid_follows_frames),
+    TEST(renderer_grid_checks_arguments),
     TEST(urdf_description_reads_everything),
     TEST(urdf_description_checks_indices),
     TEST(urdf_read_rejects_bad_input),

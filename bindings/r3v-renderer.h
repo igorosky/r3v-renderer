@@ -184,6 +184,55 @@ typedef struct R3vTerrainColoring {
 } R3vTerrainColoring;
 
 /**
+ * Rotation quaternion.
+ */
+typedef struct R3vQuat {
+  float x;
+  float y;
+  float z;
+  float w;
+} R3vQuat;
+
+/**
+ * Rigid transform (`geometry::RealTwist`): rotation by `rotational`, then
+ * translation by `linear`.
+ */
+typedef struct R3vTwist {
+  struct R3vVec3 linear;
+  struct R3vQuat rotational;
+} R3vTwist;
+
+/**
+ * `grid::GridDescription`: lines `resolution` apart along the x, y and z
+ * axes of `pose`, spanning `size` centered on its origin. Lines go through
+ * the origin and along the boundary.
+ */
+typedef struct R3vGridDescription {
+  /**
+   * Extent along x, y and z, each at least 0. There are no lines along an
+   * axis of size 0: `{10, 0, 10}` is a plane on the ground (Y is up).
+   */
+  struct R3vVec3 size;
+  /**
+   * Distance between neighbouring lines (the cell size) along x, y and z,
+   * each positive.
+   */
+  struct R3vVec3 resolution;
+  /**
+   * sRGB: `x`, `y`, `z` are red, green and blue between 0 and 1.
+   */
+  struct R3vVec3 color;
+  /**
+   * NUL terminated UTF-8 name of the frame `pose` is relative to, set
+   * with `r3v_wgpu_renderer_set_frame_transform`, or NULL for the world.
+   * The renderer copies it. The grid is drawn only while its frame is
+   * known.
+   */
+  const char *frame;
+  struct R3vTwist pose;
+} R3vGridDescription;
+
+/**
  * `renderer::WgpuAcceleratedConfiguration`.
  */
 typedef struct R3vWgpuRendererConfiguration {
@@ -207,25 +256,6 @@ typedef struct R3vWgpuRendererConfiguration {
   float color_depth_range;
   struct R3vTerrainColoring terrain_coloring;
 } R3vWgpuRendererConfiguration;
-
-/**
- * Rotation quaternion.
- */
-typedef struct R3vQuat {
-  float x;
-  float y;
-  float z;
-  float w;
-} R3vQuat;
-
-/**
- * Rigid transform (`geometry::RealTwist`): rotation by `rotational`, then
- * translation by `linear`.
- */
-typedef struct R3vTwist {
-  struct R3vVec3 linear;
-  struct R3vQuat rotational;
-} R3vTwist;
 
 /**
  * Link of a robot description (`urdf::UrdfLink`).
@@ -515,6 +545,11 @@ void r3v_mesh_drop(struct R3vMesh *mesh);
 struct R3vTerrainColoring r3v_terrain_coloring_default(void);
 
 /**
+ * A 10 by 10 plane on the ground with lines 1 apart, gray, in the world.
+ */
+struct R3vGridDescription r3v_grid_description_default(void);
+
+/**
  * `WgpuAccelerated::new`: blocks until a device of the default GPU adapter
  * is ready. NULL when there is no adapter or no device. Configure it before
  * rendering.
@@ -567,6 +602,46 @@ enum R3vStatus r3v_wgpu_renderer_set_asset_visibility(struct R3vWgpuRenderer *re
 enum R3vStatus r3v_wgpu_renderer_set_asset_color(struct R3vWgpuRenderer *renderer,
                                                  uint64_t instance_id,
                                                  struct R3vVec3 color);
+
+/**
+ * `Renderer::create_grid`: adds a grid and writes its id to `out_id`. Ids
+ * count up from 0 and are not reused. `R3V_INVALID_ARGUMENT` for a negative
+ * or non finite size, a resolution that is not positive, color components
+ * outside 0..1, an empty frame name or more than 2^20 lines.
+ */
+enum R3vStatus r3v_wgpu_renderer_create_grid(struct R3vWgpuRenderer *renderer,
+                                             struct R3vGridDescription description,
+                                             uint64_t *out_id);
+
+/**
+ * `Renderer::update_grid`: replaces the description of a grid, as checked
+ * by `r3v_wgpu_renderer_create_grid`. `R3V_OUT_OF_RANGE` for an id that is
+ * not a grid (any more).
+ */
+enum R3vStatus r3v_wgpu_renderer_update_grid(struct R3vWgpuRenderer *renderer,
+                                             uint64_t grid_id,
+                                             struct R3vGridDescription description);
+
+/**
+ * `Renderer::remove_grid`. `R3V_OUT_OF_RANGE` for an id that is not a grid
+ * (any more).
+ */
+enum R3vStatus r3v_wgpu_renderer_remove_grid(struct R3vWgpuRenderer *renderer, uint64_t grid_id);
+
+/**
+ * `Renderer::set_frame_transform`: sets the world pose of the frame named
+ * `frame` (e.g. a robot link), which the grids placed relative to it
+ * follow. `R3V_INVALID_ARGUMENT` for an empty name.
+ */
+enum R3vStatus r3v_wgpu_renderer_set_frame_transform(struct R3vWgpuRenderer *renderer,
+                                                     const char *frame,
+                                                     struct R3vTwist transform);
+
+/**
+ * `Renderer::remove_frame`: forgets a frame, its grids are not drawn until
+ * it is set again. Nothing happens for an unknown frame.
+ */
+enum R3vStatus r3v_wgpu_renderer_remove_frame(struct R3vWgpuRenderer *renderer, const char *frame);
 
 /**
  * `Renderer::render`: renders a frame seen by `camera_state` and writes the

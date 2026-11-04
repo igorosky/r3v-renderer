@@ -4,6 +4,8 @@ use pyo3::{buffer::PyBuffer, exceptions::PyValueError, prelude::*};
 
 use crate::{
     bindings::checked::CheckedRenderer,
+    geometry::RealTwist,
+    grid::{DEFAULT_GRID_COLOR, DEFAULT_GRID_RESOLUTION, DEFAULT_GRID_SIZE, GridDescription},
     renderer::{
         DEFAULT_BACKGROUND_COLOR, DEFAULT_COLOR_DEPTH_RANGE, DEFAULT_HEIGHT_GAIN,
         DEFAULT_HEIGHT_KNEE, TerrainColoring,
@@ -166,6 +168,91 @@ impl PyWgpuRendererConfiguration {
     }
 }
 
+/// `grid::GridDescription`: lines `resolution` apart (the cell size) along
+/// the x, y and z axes of `pose`, spanning `size` centered on its origin.
+/// Lines go through the origin and along the boundary; there are none along
+/// an axis of size 0, so the default is a plane on the ground (Y is up).
+/// `color` is sRGB, components between 0 and 1. `pose` is relative to the
+/// frame named `frame`, set with `WgpuRenderer.set_frame_transform`, or to
+/// the world when `frame` is `None`. The grid is drawn only while its frame
+/// is known.
+#[pyclass(
+    module = "r3v_renderer",
+    name = "GridDescription",
+    from_py_object,
+    eq,
+    get_all,
+    set_all
+)]
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct PyGridDescription {
+    size: Vec3,
+    resolution: Vec3,
+    color: Vec3,
+    frame: Option<String>,
+    pose: PyTwist,
+}
+
+fn tuple([x, y, z]: [f32; 3]) -> Vec3 {
+    (x, y, z)
+}
+
+fn array((x, y, z): Vec3) -> [f32; 3] {
+    [x, y, z]
+}
+
+impl From<PyGridDescription> for GridDescription {
+    fn from(description: PyGridDescription) -> Self {
+        Self {
+            size: array(description.size),
+            resolution: array(description.resolution),
+            color: array(description.color),
+            frame: description.frame,
+            pose: description.pose.into(),
+        }
+    }
+}
+
+#[pymethods]
+impl PyGridDescription {
+    #[new]
+    #[pyo3(signature = (
+        size = tuple(DEFAULT_GRID_SIZE),
+        resolution = tuple(DEFAULT_GRID_RESOLUTION),
+        color = tuple(DEFAULT_GRID_COLOR),
+        frame = None,
+        pose = PyTwist::from(RealTwist::identity()),
+    ))]
+    fn new(
+        size: Vec3,
+        resolution: Vec3,
+        color: Vec3,
+        frame: Option<String>,
+        pose: PyTwist,
+    ) -> Self {
+        Self {
+            size,
+            resolution,
+            color,
+            frame,
+            pose,
+        }
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "GridDescription(size={:?}, resolution={:?}, color={:?}, frame={}, pose={})",
+            self.size,
+            self.resolution,
+            self.color,
+            match &self.frame {
+                Some(frame) => format!("{frame:?}"),
+                None => "None".to_owned(),
+            },
+            self.pose.__repr__(),
+        )
+    }
+}
+
 /// Renders voxel geometry and mesh instances on the GPU
 /// (`renderer::WgpuAccelerated`). Configure it before rendering.
 #[pyclass(module = "r3v_renderer", name = "WgpuRenderer")]
@@ -246,6 +333,45 @@ impl PyWgpuRenderer {
     fn set_asset_color(&mut self, instance_id: u64, color: Vec3) -> PyResult<()> {
         let (r, g, b) = color;
         Ok(self.renderer.set_asset_color(instance_id, [r, g, b])?)
+    }
+
+    /// `Renderer::create_grid`: adds a grid and returns its id. Ids count up
+    /// from 0 and are not reused. `ValueError` for a negative or non finite
+    /// size, a resolution that is not positive, color components outside
+    /// 0..1, an empty frame name or more than 2**20 lines.
+    fn create_grid(&mut self, py: Python<'_>, description: PyGridDescription) -> PyResult<u64> {
+        Ok(py.detach(|| self.renderer.create_grid(description.into()))?)
+    }
+
+    /// `Renderer::update_grid`: replaces the description of a grid, checked
+    /// as by `create_grid`. `IndexError` for an id that is not a grid (any
+    /// more).
+    fn update_grid(
+        &mut self,
+        py: Python<'_>,
+        grid_id: u64,
+        description: PyGridDescription,
+    ) -> PyResult<()> {
+        Ok(py.detach(|| self.renderer.update_grid(grid_id, description.into()))?)
+    }
+
+    /// `Renderer::remove_grid`. `IndexError` for an id that is not a grid
+    /// (any more).
+    fn remove_grid(&mut self, grid_id: u64) -> PyResult<()> {
+        Ok(self.renderer.remove_grid(grid_id)?)
+    }
+
+    /// `Renderer::set_frame_transform`: sets the world pose of the frame
+    /// named `frame` (e.g. a robot link), which the grids placed relative to
+    /// it follow. `ValueError` for an empty name.
+    fn set_frame_transform(&mut self, frame: &str, transform: PyTwist) -> PyResult<()> {
+        Ok(self.renderer.set_frame_transform(frame, transform.into())?)
+    }
+
+    /// `Renderer::remove_frame`: forgets a frame, its grids are not drawn
+    /// until it is set again. Nothing happens for an unknown frame.
+    fn remove_frame(&mut self, frame: &str) -> PyResult<()> {
+        Ok(self.renderer.remove_frame(frame)?)
     }
 
     /// `Renderer::render`: renders a frame seen by `camera_state` and writes

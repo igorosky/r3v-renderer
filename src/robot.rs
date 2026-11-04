@@ -176,7 +176,7 @@ fn origin_transform(origin: urdf::UrdfOrigin) -> RealTwist {
     }
 }
 
-fn compose_twists(parent: RealTwist, child: RealTwist) -> RealTwist {
+pub(crate) fn compose_twists(parent: RealTwist, child: RealTwist) -> RealTwist {
     let rotated = rotate_vector(parent.rotational, child.linear);
     let rotational = normalize_quaternion(multiply_quaternions(
         quaternion_to_tuple(parent.rotational),

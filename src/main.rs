@@ -4,6 +4,7 @@ use r3v_renderer::{
     Camera, Renderer, Robot, Tesselator,
     camera::OrbitCamera,
     geometry::{self, PointI, RealTwist},
+    grid::GridDescription,
     mesh,
     renderer::{self, TerrainColoring, WgpuAccelerated},
     robot::UrdfRobot,
@@ -125,6 +126,14 @@ const HEIGHT_GAIN_MIN: f32 = 0.05;
 const HEIGHT_GAIN_MAX: f32 = 2.0;
 const HEIGHT_BANDS: [u32; 4] = [0, 8, 16, 32];
 
+/// Cell of the lattice over the whole world, in metres: 16 x 4 x 16 cells.
+const WORLD_GRID_CELL: [f32; 3] = [6.4, 3.2, 6.4];
+const WORLD_GRID_COLOR: [f32; 3] = [0.55, 0.6, 0.7];
+/// Grid around the robot's root link, in URDF metres (Z up), from its origin up.
+const ROBOT_GRID_SIZE: [f32; 3] = [4.0, 4.0, 2.0];
+const ROBOT_GRID_CELL: f32 = 0.5;
+const ROBOT_GRID_COLOR: [f32; 3] = [1.0, 0.8, 0.2];
+
 const STATS_INTERVAL_SECS: f32 = 0.25;
 const OVERLAY_SCALE: usize = 4;
 
@@ -150,6 +159,7 @@ Controls:
   J / K             shorten/lengthen the height knee
   U / I             lower/raise the height gain
   T                 cycle height color bands
+  L                 cycle grids: none, world lattice, around the robot
   P                 save snapshot
   Esc               quit";
 
@@ -197,6 +207,8 @@ struct Demo {
     background_index: usize,
     color_depth_range: f32,
     terrain_coloring: TerrainColoring,
+    grid_mode: GridMode,
+    grid: Option<u64>,
 
     width: u32,
     height: u32,
@@ -211,6 +223,62 @@ struct Demo {
     quad_count: usize,
     chunk_count: usize,
     snapshot_index: u32,
+}
+
+/// Cycled with L.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GridMode {
+    Off,
+    /// A lattice over the whole voxel world.
+    World,
+    /// A grid on the robot's root link, moving with it.
+    Robot,
+}
+
+impl GridMode {
+    fn name(self) -> &'static str {
+        match self {
+            GridMode::Off => "no",
+            GridMode::World => "world",
+            GridMode::Robot => "robot",
+        }
+    }
+}
+
+fn world_grid() -> GridDescription {
+    let size = [WORLD_X, WORLD_Y, WORLD_Z].map(|extent| extent as f32 * VOXEL_SIZE);
+    GridDescription {
+        size,
+        resolution: WORLD_GRID_CELL,
+        color: WORLD_GRID_COLOR,
+        frame: None,
+        pose: RealTwist {
+            linear: geometry::Vector3D {
+                x: size[0] / 2.0,
+                y: size[1] / 2.0,
+                z: size[2] / 2.0,
+            },
+            ..RealTwist::identity()
+        },
+    }
+}
+
+/// Sits on the link's origin, so the robot's root link carries it along.
+fn robot_grid(link: &str) -> GridDescription {
+    GridDescription {
+        size: ROBOT_GRID_SIZE,
+        resolution: [ROBOT_GRID_CELL; 3],
+        color: ROBOT_GRID_COLOR,
+        frame: Some(link.to_owned()),
+        pose: RealTwist {
+            linear: geometry::Vector3D {
+                x: 0.0,
+                y: 0.0,
+                z: ROBOT_GRID_SIZE[2] / 2.0,
+            },
+            ..RealTwist::identity()
+        },
+    }
 }
 
 fn initial_camera() -> OrbitCamera {
@@ -272,6 +340,8 @@ impl Demo {
             background_index: 0,
             color_depth_range: renderer::DEFAULT_COLOR_DEPTH_RANGE,
             terrain_coloring: TerrainColoring::default(),
+            grid_mode: GridMode::Off,
+            grid: None,
             width: 0,
             height: 0,
             pixel_buffer: Vec::new(),
@@ -345,6 +415,28 @@ impl Demo {
         change(&mut self.terrain_coloring);
         self.configure_renderer();
         println!("Terrain coloring: {}", self.terrain_coloring_summary());
+    }
+
+    fn cycle_grid(&mut self) {
+        if let Some(grid) = self.grid.take() {
+            self.renderer.remove_grid(grid);
+        }
+        let root_link = self
+            .robot
+            .as_ref()
+            .and_then(|robot| robot.root_link.as_deref());
+        self.grid_mode = match (self.grid_mode, root_link) {
+            (GridMode::Off, _) => GridMode::World,
+            (GridMode::World, Some(_)) => GridMode::Robot,
+            _ => GridMode::Off,
+        };
+        let description = match (self.grid_mode, root_link) {
+            (GridMode::World, _) => Some(world_grid()),
+            (GridMode::Robot, Some(link)) => Some(robot_grid(link)),
+            _ => None,
+        };
+        self.grid = description.map(|description| self.renderer.create_grid(description));
+        println!("Grid: {}", self.grid_mode.name());
     }
 
     fn terrain_coloring_summary(&self) -> String {
@@ -516,6 +608,7 @@ impl Demo {
                 coloring.height_bands =
                     HEIGHT_BANDS[index.map_or(0, |index| (index + 1) % HEIGHT_BANDS.len())];
             }),
+            KeyCode::KeyL => self.cycle_grid(),
             KeyCode::Escape => event_loop.exit(),
             KeyCode::KeyP => self.save_snapshot(),
             KeyCode::KeyO => self.auto_orbit = !self.auto_orbit,
@@ -572,7 +665,7 @@ impl Demo {
         self.overlay_text = format!("{:.0} FPS {:.1}MS {} {}", fps, frame_ms, smoothing, culling);
         if let Some(window) = &self.window {
             window.set_title(&format!(
-                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated, {} of {} chunks drawn - {} background, colormap depth {:.1} m, {} coloring",
+                "r3v-renderer demo - {:.0} FPS ({:.1} ms) - {} quads re-meshed, {} chunks updated, {} of {} chunks drawn - {} background, colormap depth {:.1} m, {} coloring, {} grid",
                 fps,
                 frame_ms,
                 self.quad_count,
@@ -582,6 +675,7 @@ impl Demo {
                 BACKGROUNDS[self.background_index].0,
                 self.color_depth_range,
                 self.terrain_coloring_summary(),
+                self.grid_mode.name(),
             ));
         }
         self.quad_count = 0;
@@ -764,6 +858,8 @@ struct RobotScene {
     arm_instances: Vec<u64>,
     arm_attached: bool,
     focus_link: Option<String>,
+    /// The link no joint moves, e.g. `base_link`.
+    root_link: Option<String>,
 }
 
 impl RobotScene {
@@ -897,6 +993,16 @@ impl RobotScene {
             .iter()
             .find(|link| !link.visuals.is_empty())
             .map(|link| link.name.clone());
+        let child_links = description
+            .joints
+            .iter()
+            .map(|joint| joint.child.as_str())
+            .collect::<HashSet<_>>();
+        let root_link = description
+            .links
+            .iter()
+            .find(|link| !child_links.contains(link.name.as_str()))
+            .map(|link| link.name.clone());
         println!(
             "Loaded robot '{}' in {:.0} ms: {} visuals ({} with unloadable meshes skipped), {} triangles, {} animated joints",
             description.name,
@@ -916,6 +1022,7 @@ impl RobotScene {
             arm_instances,
             arm_attached: true,
             focus_link,
+            root_link,
         })
     }
 
@@ -948,6 +1055,10 @@ impl RobotScene {
             if let Some(&twist) = transforms.visuals.get(visual) {
                 renderer.set_asset_transform(*instance, self.placement.twist(twist));
             }
+        }
+        // Grids can be placed on any link
+        for (link, &twist) in &transforms.links {
+            renderer.set_frame_transform(link, self.placement.twist(twist));
         }
     }
 

@@ -1,10 +1,12 @@
 //! `renderer::WgpuAccelerated` (trait `Renderer`).
 
-use crate::{bindings::checked::CheckedRenderer, renderer::TerrainColoring};
+use std::{ffi::c_char, ptr};
+
+use crate::{bindings::checked::CheckedRenderer, grid::GridDescription, renderer::TerrainColoring};
 
 use super::{
-    R3vCameraState, R3vStatus, R3vTwist, R3vVec3, arg, arg_mut, drop_handle, mesh::R3vMesh,
-    new_handle, slice_arg_mut, status, take_handle, tesselator::R3vGeometryDelta,
+    R3vCameraState, R3vStatus, R3vTwist, R3vVec3, Result, arg, arg_mut, drop_handle, mesh::R3vMesh,
+    new_handle, slice_arg_mut, status, str_arg, take_handle, tesselator::R3vGeometryDelta,
 };
 
 /// Renders voxel geometry and mesh instances on the GPU
@@ -71,6 +73,66 @@ pub struct R3vWgpuRendererConfiguration {
 #[unsafe(no_mangle)]
 pub extern "C" fn r3v_terrain_coloring_default() -> R3vTerrainColoring {
     TerrainColoring::default().into()
+}
+
+/// `grid::GridDescription`: lines `resolution` apart along the x, y and z
+/// axes of `pose`, spanning `size` centered on its origin. Lines go through
+/// the origin and along the boundary.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct R3vGridDescription {
+    /// Extent along x, y and z, each at least 0. There are no lines along an
+    /// axis of size 0: `{10, 0, 10}` is a plane on the ground (Y is up).
+    pub size: R3vVec3,
+    /// Distance between neighbouring lines (the cell size) along x, y and z,
+    /// each positive.
+    pub resolution: R3vVec3,
+    /// sRGB: `x`, `y`, `z` are red, green and blue between 0 and 1.
+    pub color: R3vVec3,
+    /// NUL terminated UTF-8 name of the frame `pose` is relative to, set
+    /// with `r3v_wgpu_renderer_set_frame_transform`, or NULL for the world.
+    /// The renderer copies it. The grid is drawn only while its frame is
+    /// known.
+    pub frame: *const c_char,
+    pub pose: R3vTwist,
+}
+
+fn vec3([x, y, z]: [f32; 3]) -> R3vVec3 {
+    R3vVec3 { x, y, z }
+}
+
+fn array(R3vVec3 { x, y, z }: R3vVec3) -> [f32; 3] {
+    [x, y, z]
+}
+
+/// # Safety
+/// A non NULL `description.frame` is a NUL terminated string.
+unsafe fn grid_description(description: &R3vGridDescription) -> Result<GridDescription> {
+    let frame = if description.frame.is_null() {
+        None
+    } else {
+        Some(unsafe { str_arg(description.frame, "description.frame") }?.to_owned())
+    };
+    Ok(GridDescription {
+        size: array(description.size),
+        resolution: array(description.resolution),
+        color: array(description.color),
+        frame,
+        pose: description.pose.into(),
+    })
+}
+
+/// A 10 by 10 plane on the ground with lines 1 apart, gray, in the world.
+#[unsafe(no_mangle)]
+pub extern "C" fn r3v_grid_description_default() -> R3vGridDescription {
+    let description = GridDescription::default();
+    R3vGridDescription {
+        size: vec3(description.size),
+        resolution: vec3(description.resolution),
+        color: vec3(description.color),
+        frame: ptr::null(),
+        pose: description.pose.into(),
+    }
 }
 
 /// `WgpuAccelerated::new`: blocks until a device of the default GPU adapter
@@ -181,6 +243,84 @@ pub extern "C" fn r3v_wgpu_renderer_set_asset_color(
         let renderer = unsafe { arg_mut(renderer, "renderer") }?;
         let R3vVec3 { x, y, z } = color;
         Ok(renderer.0.set_asset_color(instance_id, [x, y, z])?)
+    })
+}
+
+/// `Renderer::create_grid`: adds a grid and writes its id to `out_id`. Ids
+/// count up from 0 and are not reused. `R3V_INVALID_ARGUMENT` for a negative
+/// or non finite size, a resolution that is not positive, color components
+/// outside 0..1, an empty frame name or more than 2^20 lines.
+#[unsafe(no_mangle)]
+pub extern "C" fn r3v_wgpu_renderer_create_grid(
+    renderer: *mut R3vWgpuRenderer,
+    description: R3vGridDescription,
+    out_id: *mut u64,
+) -> R3vStatus {
+    status(|| {
+        let renderer = unsafe { arg_mut(renderer, "renderer") }?;
+        let out_id = unsafe { arg_mut(out_id, "out_id") }?;
+        let description = unsafe { grid_description(&description) }?;
+        *out_id = renderer.0.create_grid(description)?;
+        Ok(())
+    })
+}
+
+/// `Renderer::update_grid`: replaces the description of a grid, as checked
+/// by `r3v_wgpu_renderer_create_grid`. `R3V_OUT_OF_RANGE` for an id that is
+/// not a grid (any more).
+#[unsafe(no_mangle)]
+pub extern "C" fn r3v_wgpu_renderer_update_grid(
+    renderer: *mut R3vWgpuRenderer,
+    grid_id: u64,
+    description: R3vGridDescription,
+) -> R3vStatus {
+    status(|| {
+        let renderer = unsafe { arg_mut(renderer, "renderer") }?;
+        let description = unsafe { grid_description(&description) }?;
+        Ok(renderer.0.update_grid(grid_id, description)?)
+    })
+}
+
+/// `Renderer::remove_grid`. `R3V_OUT_OF_RANGE` for an id that is not a grid
+/// (any more).
+#[unsafe(no_mangle)]
+pub extern "C" fn r3v_wgpu_renderer_remove_grid(
+    renderer: *mut R3vWgpuRenderer,
+    grid_id: u64,
+) -> R3vStatus {
+    status(|| {
+        let renderer = unsafe { arg_mut(renderer, "renderer") }?;
+        Ok(renderer.0.remove_grid(grid_id)?)
+    })
+}
+
+/// `Renderer::set_frame_transform`: sets the world pose of the frame named
+/// `frame` (e.g. a robot link), which the grids placed relative to it
+/// follow. `R3V_INVALID_ARGUMENT` for an empty name.
+#[unsafe(no_mangle)]
+pub extern "C" fn r3v_wgpu_renderer_set_frame_transform(
+    renderer: *mut R3vWgpuRenderer,
+    frame: *const c_char,
+    transform: R3vTwist,
+) -> R3vStatus {
+    status(|| {
+        let renderer = unsafe { arg_mut(renderer, "renderer") }?;
+        let frame = unsafe { str_arg(frame, "frame") }?;
+        Ok(renderer.0.set_frame_transform(frame, transform.into())?)
+    })
+}
+
+/// `Renderer::remove_frame`: forgets a frame, its grids are not drawn until
+/// it is set again. Nothing happens for an unknown frame.
+#[unsafe(no_mangle)]
+pub extern "C" fn r3v_wgpu_renderer_remove_frame(
+    renderer: *mut R3vWgpuRenderer,
+    frame: *const c_char,
+) -> R3vStatus {
+    status(|| {
+        let renderer = unsafe { arg_mut(renderer, "renderer") }?;
+        let frame = unsafe { str_arg(frame, "frame") }?;
+        Ok(renderer.0.remove_frame(frame)?)
     })
 }
 

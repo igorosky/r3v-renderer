@@ -1,5 +1,6 @@
 pub mod camera;
 pub mod geometry;
+pub mod grid;
 pub mod mesh;
 pub mod obj;
 pub mod renderer;
@@ -63,6 +64,9 @@ pub trait Renderer {
     type AssetTransform;
     type TextureId;
 
+    type GridId;
+    type GridDescription;
+
     type CameraState;
 
     fn configure(&mut self, configuration: Self::Configuration);
@@ -85,5 +89,14 @@ pub trait Renderer {
         instance_id: Self::AssetInstanceId,
         texture: Option<Self::TextureId>,
     );
+    fn create_grid(&mut self, description: Self::GridDescription) -> Self::GridId;
+    /// Replaces the description of a grid made by `create_grid`.
+    fn update_grid(&mut self, grid_id: Self::GridId, description: Self::GridDescription);
+    fn remove_grid(&mut self, grid_id: Self::GridId);
+    /// Sets the pose in the world of a named frame, such as a robot link,
+    /// for the grids placed relative to it.
+    fn set_frame_transform(&mut self, frame: &str, transform: Self::AssetTransform);
+    /// Forgets a frame: its grids are not drawn until it is set again.
+    fn remove_frame(&mut self, frame: &str);
     fn render(&mut self, camera_state: &Self::CameraState, output: &mut [u8]);
 }
