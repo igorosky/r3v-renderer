@@ -405,12 +405,16 @@ impl PyWgpuRenderer {
         self.frame.resize(frame_len, 0);
         let camera_state = camera_state.into();
         py.detach(|| self.renderer.render(&camera_state, &mut self.frame))?;
-        let cells = out
-            .as_mut_slice(py)
-            .expect("checked to be writable and contiguous");
-        for (cell, &byte) in cells.iter().zip(&self.frame) {
-            cell.set(byte);
-        }
+        let dst = out
+            .as_slice_ptr()
+            .expect("checked to be contiguous")
+            .cast::<u8>();
+        // SAFETY: `out` is writable, C contiguous and has room for
+        // `frame_len` bytes (checked above), and it stays alive while `out`
+        // is held. The copy goes through a raw pointer, so no Rust reference
+        // to the Python owned memory exists, and `self.frame` is our own
+        // allocation, so the two cannot overlap.
+        unsafe { std::ptr::copy_nonoverlapping(self.frame.as_ptr(), dst.as_ptr(), frame_len) };
         Ok(())
     }
 }
