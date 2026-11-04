@@ -25,14 +25,7 @@ fn vec3(v: urdf::Vector3) -> Vec3 {
 
 /// Position and orientation (`urdf::UrdfOrigin`): `rpy` is roll, pitch and
 /// yaw in radians.
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfOrigin",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfOrigin", frozen, eq, get_all)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PyUrdfOrigin {
     xyz: Vec3,
@@ -42,14 +35,7 @@ pub(super) struct PyUrdfOrigin {
 /// Mesh geometry (`urdf::UrdfMesh`). `filename` is resolved against the URDF
 /// file's directory and `package://` ancestors when read with
 /// `UrdfDescription.read_file`.
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfMesh",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfMesh", frozen, eq, get_all)]
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PyUrdfMesh {
     filename: String,
@@ -57,42 +43,21 @@ pub(super) struct PyUrdfMesh {
 }
 
 /// Box geometry (`urdf::UrdfGeometry::Box`): `size` holds the edge lengths.
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfBox",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfBox", frozen, eq, get_all)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PyUrdfBox {
     size: Vec3,
 }
 
 /// Sphere geometry (`urdf::UrdfGeometry::Sphere`).
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfSphere",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfSphere", frozen, eq, get_all)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PyUrdfSphere {
     radius: f32,
 }
 
 /// Cylinder geometry (`urdf::UrdfGeometry::Cylinder`).
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfCylinder",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfCylinder", frozen, eq, get_all)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PyUrdfCylinder {
     radius: f32,
@@ -100,14 +65,7 @@ pub(super) struct PyUrdfCylinder {
 }
 
 /// Capsule geometry (`urdf::UrdfGeometry::Capsule`).
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfCapsule",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfCapsule", frozen, eq, get_all)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PyUrdfCapsule {
     radius: f32,
@@ -125,28 +83,14 @@ enum PyUrdfGeometry {
 }
 
 /// Color (`urdf::UrdfColor`): `rgba` from 0 to 1.
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfColor",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfColor", frozen, eq, get_all)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PyUrdfColor {
     rgba: Vec4,
 }
 
 /// Material (`urdf::UrdfMaterial`).
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfMaterial",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfMaterial", frozen, eq, get_all)]
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PyUrdfMaterial {
     name: Option<String>,
@@ -155,14 +99,7 @@ pub(super) struct PyUrdfMaterial {
 
 /// Visual of a link (`urdf::UrdfVisual`). `geometry` is a `UrdfMesh`,
 /// `UrdfBox`, `UrdfSphere`, `UrdfCylinder` or `UrdfCapsule`.
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfVisual",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfVisual", frozen, eq, get_all)]
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PyUrdfVisual {
     name: Option<String>,
@@ -172,14 +109,7 @@ pub(super) struct PyUrdfVisual {
 }
 
 /// Link of a robot description (`urdf::UrdfLink`).
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfLink",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfLink", frozen, eq, get_all)]
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PyUrdfLink {
     name: String,
@@ -187,14 +117,7 @@ pub(super) struct PyUrdfLink {
 }
 
 /// Limits of a joint (`urdf::UrdfJointLimit`).
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfJointLimit",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfJointLimit", frozen, eq, get_all)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PyUrdfJointLimit {
     lower: f32,
@@ -210,7 +133,6 @@ pub(super) struct PyUrdfJointLimit {
     module = "r3v_renderer",
     name = "UrdfJointType",
     frozen,
-    skip_from_py_object,
     eq,
     eq_int,
     hash,
@@ -243,14 +165,7 @@ impl From<urdf::UrdfJointType> for PyUrdfJointType {
 
 /// Joint of a robot description (`urdf::UrdfJoint`). `parent` and `child`
 /// are link names.
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfJoint",
-    frozen,
-    skip_from_py_object,
-    eq,
-    get_all
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfJoint", frozen, eq, get_all)]
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PyUrdfJoint {
     name: String,
@@ -352,13 +267,7 @@ impl From<&urdf::UrdfJoint> for PyUrdfJoint {
 }
 
 /// Robot description read from URDF (`urdf::UrdfRobot`).
-#[pyclass(
-    module = "r3v_renderer",
-    name = "UrdfDescription",
-    frozen,
-    skip_from_py_object,
-    eq
-)]
+#[pyclass(module = "r3v_renderer", name = "UrdfDescription", frozen, eq)]
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PyUrdfDescription(urdf::UrdfRobot);
 
