@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/igorosky/r3v-renderer/actions/workflows/ci.yml"><img src="https://github.com/igorosky/r3v-renderer/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://igorosky.github.io/r3v-renderer/"><img src="https://github.com/igorosky/r3v-renderer/actions/workflows/coverage.yml/badge.svg" alt="Coverage"></a>
 </p>
 
 ---
@@ -248,6 +249,7 @@ and grids. See [docs/demo.md](docs/demo.md) for every control.
 ./test.sh                 # clippy (warnings are errors) and tests, every group
 ./test.sh core            # one group: core, c, python or js
 cargo fmt --all --check
+./coverage.sh             # line coverage, lcov files in target/coverage
 cargo bench --bench frustum_culling
 ```
 
@@ -260,6 +262,13 @@ cargo bench --bench frustum_culling
   CI checks they are up to date.
 - `c`/`cpp`, `python` and `js` cannot be combined in one build, and `js` does
   not work with `multi-threaded`.
+- `coverage.sh` needs
+  [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov). It runs the
+  tests and the C, C++ and Python binding suites (`./coverage.sh core` for one
+  group). The JS suite is not measured, wasm can not be instrumented.
+- The coverage report for master is at https://igorosky.github.io/r3v-renderer/.
+  Pull requests with the `coverage` label get a summary comment and the
+  report as a run artifact, plus a report of the changed lines.
 
 ## Part of r3v
 
