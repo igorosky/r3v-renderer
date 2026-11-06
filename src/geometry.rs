@@ -27,6 +27,8 @@ impl PointI {
 
 /// Bits of a page coordinate inside a [`VoxelGroup`], which is 16x16x16 pages.
 const VOXEL_GROUP_EDGE_BITS: u32 = 4;
+// [`ZOrder`] covers 4 bits per axis
+const _: () = assert!(VOXEL_GROUP_EDGE_BITS == 4);
 /// Edge length of a page of a [`VoxelGroup`] in voxels.
 const PAGE_EDGE: DiscreteUnit = 4;
 /// Layers of a page in one 4x4x2 block: its word holds 16 bits per layer.
@@ -58,20 +60,127 @@ impl VoxelGroup {
     }
 }
 
-/// Offset of page `index` of a [`VoxelGroup`] in the group, in pages.
-const fn page_offset(index: usize) -> Point<DiscreteUnit> {
-    let mut offset = [0; 3];
-    let mut bit = 0;
-    while bit < 3 * VOXEL_GROUP_EDGE_BITS as usize {
-        offset[bit % 3] |= (index >> bit & 1) << (bit / 3);
-        bit += 1;
+mod zorder_mod {
+    /// Bits of one coordinate in a z-order index: bit k of x goes to bit 3k,
+    /// y and z sit 1 and 2 above (`AXIS_MASK << 1`, `AXIS_MASK << 2`).
+    const AXIS_MASK: usize = 0x249;
+
+    /// Spreads the 4 low bits of `v` 3 apart (bit k to bit 3k).
+    const fn spread(v: u16) -> u16 {
+        let mut result = 0;
+        let mut bit = 0;
+        while bit < 4 {
+            result |= ((v >> bit) & 1) << (3 * bit);
+            bit += 1;
+        }
+        result
     }
-    Point {
-        x: offset[0] as DiscreteUnit,
-        y: offset[1] as DiscreteUnit,
-        z: offset[2] as DiscreteUnit,
+
+    const fn spread_table(shift: u32) -> [u16; 16] {
+        let mut table = [0; 16];
+        let mut v = 0;
+        while v < 16 {
+            table[v] = spread(v as u16) << shift;
+            v += 1;
+        }
+        table
+    }
+
+    /// Inverse of [`spread`], indexed by the bits of one axis
+    /// (`index & AXIS_MASK`). Only 16 entries are used.
+    const fn compact_table() -> [u8; AXIS_MASK + 1] {
+        let mut table = [0; AXIS_MASK + 1];
+        let mut v = 0;
+        while v < 16 {
+            table[spread(v) as usize] = v as u8;
+            v += 1;
+        }
+        table
+    }
+
+    static SPREAD_X: [u16; 16] = spread_table(0);
+    static SPREAD_Y: [u16; 16] = spread_table(1);
+    static SPREAD_Z: [u16; 16] = spread_table(2);
+    static COMPACT: [u8; AXIS_MASK + 1] = compact_table();
+
+    /// Z-order (Morton) index of 3 coordinates of up to 4 bits each: x in bit
+    /// 0, y in bit 1, z in bit 2, then the next bit of each. The same layout
+    /// as the words of [`super::VoxelGroup`] (r3v-voxelizer's `ZOrder`).
+    ///
+    /// Lookup tables instead of BMI2 `pdep`/`pext`: those are behind
+    /// `#[target_feature]`, which is never inlined, and a call costs more
+    /// than a few loads.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct ZOrder {
+        _private: (),
+    }
+
+    impl ZOrder {
+        /// Coordinates of a z-order index below 4096.
+        #[inline]
+        pub fn coord_of(&self, index: u64) -> [u16; 3] {
+            debug_assert!(index < 4096, "z-order index {index} has more than 12 bits");
+            let index = index as usize;
+            [
+                COMPACT[index & AXIS_MASK] as u16,
+                COMPACT[(index >> 1) & AXIS_MASK] as u16,
+                COMPACT[(index >> 2) & AXIS_MASK] as u16,
+            ]
+        }
+        /// Z-order index of coordinates below 16.
+        #[inline]
+        pub fn index_of(&self, [x, y, z]: [u16; 3]) -> u64 {
+            debug_assert!(
+                x < 16 && y < 16 && z < 16,
+                "z-order coordinates {x}, {y}, {z} have more than 4 bits"
+            );
+            (SPREAD_X[(x & 15) as usize]
+                | SPREAD_Y[(y & 15) as usize]
+                | SPREAD_Z[(z & 15) as usize]) as u64
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use super::ZOrder;
+
+        /// Bit by bit reference of the layout.
+        fn reference([x, y, z]: [u16; 3]) -> u64 {
+            (0..4).fold(0, |index, bit| {
+                index
+                    | (((x >> bit) & 1) as u64) << (3 * bit)
+                    | (((y >> bit) & 1) as u64) << (3 * bit + 1)
+                    | (((z >> bit) & 1) as u64) << (3 * bit + 2)
+            })
+        }
+
+        #[test]
+        fn zorder_matches_reference_on_every_input() {
+            let zorder = ZOrder::default();
+            for x in 0..16 {
+                for y in 0..16 {
+                    for z in 0..16 {
+                        let index = zorder.index_of([x, y, z]);
+                        assert_eq!(index, reference([x, y, z]), "index_of {x} {y} {z}");
+                        assert_eq!(zorder.coord_of(index), [x, y, z], "coord_of {index}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn zorder_axis_order() {
+            let zorder = ZOrder::default();
+            assert_eq!(zorder.index_of([1, 0, 0]), 1);
+            assert_eq!(zorder.index_of([0, 1, 0]), 2);
+            assert_eq!(zorder.index_of([0, 0, 1]), 4);
+            assert_eq!(zorder.index_of([2, 0, 0]), 8);
+            assert_eq!(zorder.index_of([15, 15, 15]), 4095);
+            assert_eq!(zorder.coord_of(63), [3, 3, 3]);
+        }
     }
 }
+pub use zorder_mod::ZOrder;
 
 /// [`VoxelGroup::blocks`] of the group with key `key` and words `values`.
 pub(crate) fn group_blocks<'a>(
@@ -81,12 +190,15 @@ pub(crate) fn group_blocks<'a>(
     // Below 2^31 - 64 even for a wrapped key, so adding the offsets can not
     // overflow
     let origin = Point::from_array([key.x, key.y, key.z]).map(|c| c << VOXEL_GROUP_SHIFT);
+    let zorder = ZOrder::default();
     values
         .iter()
         .enumerate()
         .filter(|(_, word)| **word != 0)
         .flat_map(move |(index, &word)| {
-            let page = origin + page_offset(index).map(|offset| offset * PAGE_EDGE);
+            let page = origin
+                + Point::from_array(zorder.coord_of(index as u64))
+                    .map(|offset| DiscreteUnit::from(offset) * PAGE_EDGE);
             [(word as u32, 0), ((word >> u32::BITS) as u32, BLOCK_DEPTH)]
                 .into_iter()
                 .filter(|(mask, _)| *mask != 0)
