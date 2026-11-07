@@ -75,6 +75,9 @@ struct WgpuAcceleratedState {
     pub camera_bind_group: wgpu::BindGroup,
     pub colormap_buffer: wgpu::Buffer,
     pub colormap_bind_group: wgpu::BindGroup,
+    /// What every pipeline draws into: `OFFSCREEN_FORMAT` for `render`, the
+    /// surface's sRGB view format for `present`
+    pub color_format: wgpu::TextureFormat,
 }
 
 struct RenderTargets {
@@ -775,7 +778,7 @@ impl WgpuAccelerated {
         });
         let vertex_arena = VertexArena::new(&device);
         let assets = Assets::new(&device, &queue);
-        let grids = grid::Grids::new(&device, &camera_bind_group_layout);
+        let grids = grid::Grids::new(&device, &camera_bind_group_layout, color_format);
         let asset_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Asset Pipeline Layout"),
@@ -862,6 +865,7 @@ impl WgpuAccelerated {
             camera_bind_group,
             colormap_buffer,
             colormap_bind_group,
+            color_format,
         };
 
         Some(Self {
@@ -899,7 +903,7 @@ impl WgpuAccelerated {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: OFFSCREEN_FORMAT,
+            format: self.state.color_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         };
@@ -1604,5 +1608,55 @@ mod tests {
         assert!(0 < drawn && drawn < total / 2, "{drawn} of {total} drawn");
         assert!(culled.iter().any(|&byte| byte != 0), "nothing was drawn");
         assert!(culled == all, "culling changed the image");
+    }
+
+    /// A canvas can take an RGBA format rather than the offscreen BGRA one:
+    /// every pipeline, grids included, has to draw into it.
+    #[test]
+    fn grid_draws_into_an_rgba_target() {
+        use super::{WgpuAccelerated, WgpuAcceleratedConfiguration};
+        use crate::{
+            Camera, Renderer, camera::OrbitCamera, grid::GridDescription,
+            wgpu_utils::test_support::TestGpu,
+        };
+
+        let _lock = TestGpu::new();
+        let instance = wgpu::Instance::default();
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .expect("no wgpu adapter available");
+        let mut renderer = pollster::block_on(WgpuAccelerated::from_adapter(
+            &adapter,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        ))
+        .expect("no GPU device");
+        let size = 32;
+        renderer.configure(WgpuAcceleratedConfiguration {
+            width: size,
+            height: size,
+            background_color: super::DEFAULT_BACKGROUND_COLOR,
+            color_depth_range: super::DEFAULT_COLOR_DEPTH_RANGE,
+            terrain_coloring: super::TerrainColoring::default(),
+        });
+        renderer.create_grid(GridDescription {
+            size: [4.0, 0.0, 4.0],
+            resolution: [1.0; 3],
+            color: [1.0, 0.5, 0.0],
+            ..GridDescription::default()
+        });
+
+        let camera =
+            OrbitCamera::new(cgmath::Point3::new(0.0, 0.0, 0.0), 10.0, 0.0, 89.0).get_state(1.0);
+        let mut output = vec![0; (size * size * 4) as usize];
+        renderer.render(&camera, &mut output);
+        renderer.render(&camera, &mut output);
+        // RGBA order this time: sRGB orange is [255, 128, 0]
+        let orange = output
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|&&[r, g, b, _]| r == 255 && g.abs_diff(128) <= 1 && b == 0)
+            .count();
+        assert!(orange > 10, "{orange} grid pixels");
     }
 }

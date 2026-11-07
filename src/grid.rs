@@ -202,7 +202,13 @@ pub(crate) struct Grids {
 }
 
 impl Grids {
-    pub(crate) fn new(device: &wgpu::Device, camera_layout: &wgpu::BindGroupLayout) -> Self {
+    /// Grids drawn into `color_format`, the format of the renderer's other
+    /// pipelines.
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        camera_layout: &wgpu::BindGroupLayout,
+        color_format: wgpu::TextureFormat,
+    ) -> Self {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Grid Pipeline Layout"),
             bind_group_layouts: &[Some(camera_layout)],
@@ -241,7 +247,7 @@ impl Grids {
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    format: color_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
