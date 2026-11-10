@@ -8,7 +8,7 @@
  * usage: renderer_tests.mjs list | run <test>
  */
 
-import "./webgpu.mjs";
+import { gpuIdle } from "./webgpu.mjs";
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -135,7 +135,12 @@ export async function main(testCases) {
             console.error(`unknown test ${args[1]}`);
             return 2;
         }
-        await fn();
+        try {
+            await fn();
+        } finally {
+            // The process ends right after: not while the GPU still works.
+            await gpuIdle();
+        }
         return 0;
     }
     console.error(`usage: ${process.argv[1]} list | run <test>`);
