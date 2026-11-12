@@ -2,7 +2,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 #[path = "marching_cubes.rs"]
 mod marching_cubes;
-use marching_cubes::{MC_CUBE_CORNERS, MC_GRID_SIZE, polygonize_cube};
+use marching_cubes::{MC_CUBE_CORNERS, MC_GRID_SIZE, MC_PADDED_GRID_SIZE, polygonize_cube};
 
 #[cfg(feature = "multi-threaded")]
 use rayon::prelude::*;
@@ -148,6 +148,44 @@ impl Chunk {
     }
 }
 
+/// How [`CpuTesselator`] turns voxels into triangles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MeshingAlgorithm {
+    /// Merges the exposed voxel faces into as few quads as it can.
+    #[default]
+    GreedyMeshing,
+    /// Marching cubes over the voxel centres: the surface runs halfway
+    /// between solid and empty voxel centres, so it cuts into the voxels.
+    MarchingCubes,
+    /// Marching cubes over the voxel corners, each weighted by the solid
+    /// voxels around it: the surface only ever adds to the voxels, it never
+    /// cuts into them.
+    DilatedMarchingCubes,
+}
+
+impl MeshingAlgorithm {
+    pub const ALL: [Self; 3] = [
+        Self::GreedyMeshing,
+        Self::MarchingCubes,
+        Self::DilatedMarchingCubes,
+    ];
+
+    pub fn is_marching_cubes(self) -> bool {
+        self != Self::GreedyMeshing
+    }
+
+    /// The chunk offsets, along each axis, whose triangles a voxel on the
+    /// chunk's boundary shapes: past the low corner of its chunk in
+    /// [`Self::MarchingCubes`], past both in [`Self::DilatedMarchingCubes`].
+    fn reach(self) -> (DiscreteUnit, DiscreteUnit) {
+        match self {
+            Self::GreedyMeshing => (0, 0),
+            Self::MarchingCubes => (-1, 0),
+            Self::DilatedMarchingCubes => (-1, 1),
+        }
+    }
+}
+
 pub struct CpuTesselatorConfiguration {
     pub voxel_size: f32,
     pub marching_cubes_enabled: bool,
@@ -161,7 +199,7 @@ pub struct CpuTesselator {
     config: Option<CpuTesselatorConfiguration>,
     chunks: FxHashMap<DiscretePoint, Box<Chunk>>,
     dirty_set: FxHashSet<DiscretePoint>,
-    marching_cubes_enabled: bool,
+    meshing_algorithm: MeshingAlgorithm,
 }
 
 impl Default for CpuTesselator {
@@ -176,25 +214,49 @@ impl CpuTesselator {
             config: None,
             chunks: FxHashMap::default(),
             dirty_set: FxHashSet::default(),
-            marching_cubes_enabled: false,
+            meshing_algorithm: MeshingAlgorithm::GreedyMeshing,
         }
     }
 
-    pub fn marching_cubes_enabled(&self) -> bool {
-        self.marching_cubes_enabled
+    pub fn meshing_algorithm(&self) -> MeshingAlgorithm {
+        self.meshing_algorithm
     }
 
+    /// Whether either marching cubes algorithm is in use.
+    pub fn marching_cubes_enabled(&self) -> bool {
+        self.meshing_algorithm.is_marching_cubes()
+    }
+
+    /// Switches between greedy meshing and [`MeshingAlgorithm::MarchingCubes`].
+    /// Enabling keeps [`MeshingAlgorithm::DilatedMarchingCubes`] when it is
+    /// already in use.
     pub fn set_marching_cubes_enabled(&mut self, enabled: bool) {
-        if self.marching_cubes_enabled == enabled {
+        if self.marching_cubes_enabled() == enabled {
             return;
         }
-        self.marching_cubes_enabled = enabled;
+        self.set_meshing_algorithm(if enabled {
+            MeshingAlgorithm::MarchingCubes
+        } else {
+            MeshingAlgorithm::GreedyMeshing
+        });
+    }
+
+    /// Switches the meshing algorithm: a change re-tesselates every chunk
+    /// that either algorithm puts triangles in.
+    pub fn set_meshing_algorithm(&mut self, algorithm: MeshingAlgorithm) {
+        let previous = std::mem::replace(&mut self.meshing_algorithm, algorithm);
+        if previous == algorithm {
+            return;
+        }
+        let (previous_low, previous_high) = previous.reach();
+        let (low, high) = algorithm.reach();
+        let reach = previous_low.min(low)..=previous_high.max(high);
         let mut dirty = Vec::new();
         for (&chunk, stored) in &self.chunks {
             dirty.push(chunk);
-            for z in -1..=0 {
-                for y in -1..=0 {
-                    for x in -1..=0 {
+            for z in reach.clone() {
+                for y in reach.clone() {
+                    for x in reach.clone() {
                         if x == 0 && y == 0 && z == 0 {
                             continue;
                         }
@@ -279,6 +341,7 @@ impl CpuTesselator {
 
     fn mark_subchunk_dirty(&mut self, chunk: DiscretePoint, subchunk: Point<usize>, changed: u32) {
         self.mark_dirty(chunk);
+        let algorithm = self.meshing_algorithm;
         let mut directions = [[0; 3]; 3];
         let mut counts = [1; 3];
         for axis in Axis::ALL {
@@ -287,7 +350,7 @@ impl CpuTesselator {
                 directions[axis as usize][counts[axis as usize]] = -1;
                 counts[axis as usize] += 1;
             }
-            if !self.marching_cubes_enabled
+            if algorithm != MeshingAlgorithm::MarchingCubes
                 && subchunk[axis] == CHUNK_SUBCHUNKS[axis] - 1
                 && changed & high_layer != 0
             {
@@ -302,7 +365,7 @@ impl CpuTesselator {
                         continue;
                     }
                     let changed_axes = (x != 0) as u8 + (y != 0) as u8 + (z != 0) as u8;
-                    if self.marching_cubes_enabled || changed_axes == 1 {
+                    if algorithm.is_marching_cubes() || changed_axes == 1 {
                         self.mark_dirty(DiscretePoint {
                             x: chunk.x + x * CHUNK_WIDTH as DiscreteUnit,
                             y: chunk.y + y * CHUNK_WIDTH as DiscreteUnit,
@@ -411,13 +474,17 @@ impl CpuTesselator {
             .as_ref()
             .expect("Tesselator must be configured before generating output geometry")
             .voxel_size;
-        if self.marching_cubes_enabled {
-            return self.marching_cubes_chunk(chunk, voxel_size);
+        match self.meshing_algorithm {
+            MeshingAlgorithm::GreedyMeshing => self
+                .chunk_quads(chunk)
+                .map(|quad| quad.to_real(voxel_size))
+                .flat_map(|quad| quad.triangles())
+                .collect(),
+            MeshingAlgorithm::MarchingCubes => self.marching_cubes_chunk(chunk, voxel_size),
+            MeshingAlgorithm::DilatedMarchingCubes => {
+                self.dilated_marching_cubes_chunk(chunk, voxel_size)
+            }
         }
-        self.chunk_quads(chunk)
-            .map(|quad| quad.to_real(voxel_size))
-            .flat_map(|quad| quad.triangles())
-            .collect()
     }
 
     fn marching_cubes_chunk(
@@ -491,6 +558,113 @@ impl CpuTesselator {
             }
         }
         rows
+    }
+
+    /// Marching cubes over the corners of the voxels, each corner weighted
+    /// by how many of the 8 voxels around it are solid. A solid voxel lifts
+    /// all its corners over the iso level, so the surface wraps the voxels
+    /// instead of cutting through them.
+    fn dilated_marching_cubes_chunk(
+        &self,
+        chunk: DiscretePoint,
+        voxel_size: RealUnit,
+    ) -> Vec<RealTriangle> {
+        let Some(field) = self.dilated_marching_cubes_field(chunk) else {
+            return Vec::new();
+        };
+        let mut triangles = Vec::new();
+        for z in 0..CHUNK_WIDTH {
+            for y in 0..CHUNK_WIDTH {
+                for x in 0..CHUNK_WIDTH {
+                    let values = MC_CUBE_CORNERS
+                        .map(|offset| field[z + offset[2]][y + offset[1]][x + offset[0]]);
+                    let case_index = values.iter().enumerate().fold(0, |case, (corner, &value)| {
+                        case | ((value != 0) as usize) << corner
+                    });
+                    if case_index == 0 || case_index == u8::MAX as usize {
+                        continue;
+                    }
+                    let corners = MC_CUBE_CORNERS.map(|offset| {
+                        [
+                            (chunk.x + (x + offset[0]) as DiscreteUnit) as RealUnit,
+                            (chunk.y + (y + offset[1]) as DiscreteUnit) as RealUnit,
+                            (chunk.z + (z + offset[2]) as DiscreteUnit) as RealUnit,
+                        ]
+                    });
+                    let values = values.map(|value| value as RealUnit);
+                    polygonize_cube(case_index, &corners, values, voxel_size, &mut triangles);
+                }
+            }
+        }
+        triangles
+    }
+
+    /// Solid voxels around each corner of the chunk: the corner at
+    /// `[x, y, z]` counts the voxels from `[x - 1, y - 1, z - 1]` to
+    /// `[x, y, z]`. None when no voxel reaches the chunk's corners.
+    #[allow(clippy::type_complexity)]
+    fn dilated_marching_cubes_field(
+        &self,
+        chunk: DiscretePoint,
+    ) -> Option<Box<[[[u8; MC_GRID_SIZE]; MC_GRID_SIZE]; MC_GRID_SIZE]>> {
+        // Bit `x` of `rows[z][y]` is the voxel at `[x - 1, y - 1, z - 1]`
+        let mut rows = [[0u32; MC_PADDED_GRID_SIZE]; MC_PADDED_GRID_SIZE];
+        // Where the voxels of the neighbour at `offset` (-1, 0 or 1) start in
+        // the padded grid, and which of them land in it
+        let span = |offset: DiscreteUnit| match offset {
+            -1 => (0, CHUNK_WIDTH - 1..CHUNK_WIDTH),
+            0 => (1, 0..CHUNK_WIDTH),
+            _ => (CHUNK_WIDTH + 1, 0..1),
+        };
+        for source_index in 0..27 {
+            let offset = Point {
+                x: (source_index % 3) as DiscreteUnit - 1,
+                y: (source_index / 3 % 3) as DiscreteUnit - 1,
+                z: (source_index / 9) as DiscreteUnit - 1,
+            };
+            let Some(source) = self.chunks.get(&DiscretePoint {
+                x: chunk.x + offset.x * CHUNK_WIDTH as DiscreteUnit,
+                y: chunk.y + offset.y * CHUNK_WIDTH as DiscreteUnit,
+                z: chunk.z + offset.z * CHUNK_WIDTH as DiscreteUnit,
+            }) else {
+                continue;
+            };
+            let columns = &source.columns[Axis::X as usize];
+            let (y_start, y_range) = span(offset.y);
+            let (z_start, z_range) = span(offset.z);
+            for (pz, z) in z_range.enumerate() {
+                for (py, y) in y_range.clone().enumerate() {
+                    let bits = columns[z][y];
+                    rows[z_start + pz][y_start + py] |= match offset.x {
+                        -1 => bits >> (CHUNK_WIDTH - 1) & 1,
+                        0 => bits << 1,
+                        _ => (bits & 1) << (CHUNK_WIDTH + 1),
+                    };
+                }
+            }
+        }
+        if rows.iter().flatten().all(|&row| row == 0) {
+            return None;
+        }
+
+        let mut field = Box::new([[[0u8; MC_GRID_SIZE]; MC_GRID_SIZE]; MC_GRID_SIZE]);
+        for (z, plane) in field.iter_mut().enumerate() {
+            for (y, line) in plane.iter_mut().enumerate() {
+                let block = [
+                    rows[z][y],
+                    rows[z][y + 1],
+                    rows[z + 1][y],
+                    rows[z + 1][y + 1],
+                ];
+                for (x, value) in line.iter_mut().enumerate() {
+                    *value = block
+                        .iter()
+                        .map(|&row| (row >> x & 0b11).count_ones() as u8)
+                        .sum();
+                }
+            }
+        }
+        Some(field)
     }
 }
 

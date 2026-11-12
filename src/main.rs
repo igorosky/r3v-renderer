@@ -9,7 +9,9 @@ use r3v_renderer::{
     renderer::{self, TerrainColoring, WgpuAccelerated},
     robot::UrdfRobot,
     shapes,
-    tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext},
+    tesselator::{
+        CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext, MeshingAlgorithm,
+    },
     urdf,
 };
 use rayon::prelude::*;
@@ -147,7 +149,7 @@ Controls:
   Arrow keys        orbit
   Shift             move faster
   O                 toggle auto-orbit
-  C                 toggle marching-cubes terrain smoothing
+  C                 cycle terrain meshing: greedy, marching cubes, old (dilated) marching cubes
   V                 toggle frustum culling of terrain chunks
   R                 reset camera
   F                 toggle following the robot
@@ -612,9 +614,16 @@ impl Demo {
             KeyCode::Escape => event_loop.exit(),
             KeyCode::KeyP => self.save_snapshot(),
             KeyCode::KeyO => self.auto_orbit = !self.auto_orbit,
-            KeyCode::KeyC => self
-                .tesselator
-                .set_marching_cubes_enabled(!self.tesselator.marching_cubes_enabled()),
+            KeyCode::KeyC => {
+                let current = self.tesselator.meshing_algorithm();
+                let index = MeshingAlgorithm::ALL
+                    .iter()
+                    .position(|&algorithm| algorithm == current)
+                    .unwrap_or(0);
+                self.tesselator.set_meshing_algorithm(
+                    MeshingAlgorithm::ALL[(index + 1) % MeshingAlgorithm::ALL.len()],
+                );
+            }
             KeyCode::KeyV => self
                 .renderer
                 .set_frustum_culling(!self.renderer.frustum_culling()),
@@ -651,10 +660,10 @@ impl Demo {
         }
         let fps = self.stats_frames as f32 / elapsed;
         let frame_ms = 1000.0 / fps;
-        let smoothing = if self.tesselator.marching_cubes_enabled() {
-            "MC ON"
-        } else {
-            "MC OFF"
+        let smoothing = match self.tesselator.meshing_algorithm() {
+            MeshingAlgorithm::GreedyMeshing => "MC OFF",
+            MeshingAlgorithm::MarchingCubes => "MC ON",
+            MeshingAlgorithm::DilatedMarchingCubes => "MC OLD",
         };
         let (drawn, chunks) = self.renderer.drawn_chunks();
         let culling = if self.renderer.frustum_culling() {
@@ -1967,6 +1976,7 @@ fn glyph(c: char) -> [u8; 5] {
         'P' => [0b111, 0b101, 0b111, 0b100, 0b100],
         'M' => [0b101, 0b111, 0b111, 0b101, 0b101],
         'C' => [0b111, 0b100, 0b100, 0b100, 0b111],
+        'D' => [0b110, 0b101, 0b101, 0b101, 0b110],
         'O' => [0b111, 0b101, 0b101, 0b101, 0b111],
         'N' => [0b110, 0b101, 0b101, 0b101, 0b101],
         'U' => [0b101, 0b101, 0b101, 0b101, 0b111],

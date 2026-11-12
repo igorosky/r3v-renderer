@@ -7,7 +7,9 @@ use r3v_renderer::{
     Camera, Tesselator,
     camera::OrbitCamera,
     geometry::{DiscretePoint, PointI, RealQuad, RealTriangle, TriangleChunk, VoxelGroup},
-    tesselator::{CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext},
+    tesselator::{
+        CpuTesselator, CpuTesselatorConfiguration, CpuTesselatorContext, MeshingAlgorithm,
+    },
 };
 
 const BRICK: [i32; 3] = [4, 4, 2];
@@ -1355,6 +1357,244 @@ fn enabling_marching_cubes_redraws_the_neighbours_a_voxel_scan_finds() {
             chunks_redrawn_by_enabling_marching_cubes(&voxels),
             expected_redrawn_chunks(&voxels),
             "{voxels:?}"
+        );
+    }
+}
+
+fn configured_with(algorithm: MeshingAlgorithm) -> CpuTesselator {
+    let mut tesselator = configured(false);
+    tesselator.set_meshing_algorithm(algorithm);
+    tesselator
+}
+
+fn fresh_triangles_with(bricks: &[PointI], algorithm: MeshingAlgorithm) -> ChunkTriangles {
+    let mut tesselator = configured_with(algorithm);
+    tesselator.update_input_geometry(&bricks.to_vec());
+    let mut chunks = ChunkTriangles::new();
+    apply_triangles(
+        &mut chunks,
+        tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+    );
+    chunks
+}
+
+fn dilated_triangles(bricks: Vec<PointI>) -> Vec<RealTriangle> {
+    let mut tesselator = configured_with(MeshingAlgorithm::DilatedMarchingCubes);
+    tesselator.update_input_geometry(&bricks);
+    tesselator
+        .get_output_geometry_delta(&ALL_CHUNKS)
+        .unwrap()
+        .into_iter()
+        .flat_map(|chunk| chunk.triangles)
+        .collect()
+}
+
+#[test]
+fn meshing_algorithm_is_greedy_by_default_and_round_trips() {
+    let mut tesselator = configured(false);
+    assert_eq!(
+        tesselator.meshing_algorithm(),
+        MeshingAlgorithm::GreedyMeshing
+    );
+    for algorithm in MeshingAlgorithm::ALL {
+        tesselator.set_meshing_algorithm(algorithm);
+        assert_eq!(tesselator.meshing_algorithm(), algorithm);
+        assert_eq!(
+            tesselator.marching_cubes_enabled(),
+            algorithm != MeshingAlgorithm::GreedyMeshing
+        );
+    }
+    // Enabling marching cubes keeps the dilated variant
+    tesselator.set_marching_cubes_enabled(true);
+    assert_eq!(
+        tesselator.meshing_algorithm(),
+        MeshingAlgorithm::DilatedMarchingCubes
+    );
+    tesselator.set_marching_cubes_enabled(false);
+    assert_eq!(
+        tesselator.meshing_algorithm(),
+        MeshingAlgorithm::GreedyMeshing
+    );
+    tesselator.set_marching_cubes_enabled(true);
+    assert_eq!(
+        tesselator.meshing_algorithm(),
+        MeshingAlgorithm::MarchingCubes
+    );
+}
+
+#[test]
+fn dilated_marching_cubes_differs_from_both_other_algorithms() {
+    let bricks = vec![brick([0, 0, 0], bit([1, 1, 0]))];
+    let results = MeshingAlgorithm::ALL.map(|algorithm| fresh_triangles_with(&bricks, algorithm));
+    assert!(!results[2].is_empty());
+    assert_ne!(results[2], results[0]);
+    assert_ne!(results[2], results[1]);
+}
+
+#[test]
+fn dilated_marching_cubes_wraps_the_voxels() {
+    let voxel_size = 0.2;
+    let mut tesselator = configured_with(MeshingAlgorithm::DilatedMarchingCubes);
+    // Reconfiguring with marching cubes on keeps the dilated variant
+    tesselator.configure(CpuTesselatorConfiguration {
+        voxel_size,
+        marching_cubes_enabled: true,
+    });
+    assert_eq!(
+        tesselator.meshing_algorithm(),
+        MeshingAlgorithm::DilatedMarchingCubes
+    );
+    tesselator.update_input_geometry(&vec![brick([4, -8, 2], FULL)]);
+    let geometry = tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap();
+
+    let mut min = [f32::MAX; 3];
+    let mut max = [f32::MIN; 3];
+    for triangle in geometry.iter().flat_map(|chunk| &chunk.triangles) {
+        for v in [triangle.v0, triangle.v1, triangle.v2] {
+            for a in 0..3 {
+                min[a] = min[a].min(v[a]);
+                max[a] = max[a].max(v[a]);
+            }
+        }
+    }
+    // The surface sits outside the brick, but within a voxel of it
+    let lower = [4.0, -8.0, 2.0].map(|c| c * voxel_size);
+    let upper = [8.0, -4.0, 4.0].map(|c| c * voxel_size);
+    for a in 0..3 {
+        assert!(min[a] < lower[a] - 1.0e-4, "{min:?}");
+        assert!(min[a] >= lower[a] - voxel_size - 1.0e-4, "{min:?}");
+        assert!(max[a] > upper[a] + 1.0e-4, "{max:?}");
+        assert!(max[a] <= upper[a] + voxel_size + 1.0e-4, "{max:?}");
+    }
+}
+
+#[test]
+fn dilated_marching_cubes_surface_is_closed_and_faces_out() {
+    let key = |v: [f32; 3]| v.map(|c| (c * 1.0e4).round() as i64);
+    for (name, bricks, center) in smoothed_solids() {
+        let triangles = dilated_triangles(bricks);
+        assert!(!triangles.is_empty(), "{name}: no geometry");
+        let mut edges: HashMap<([i64; 3], [i64; 3]), i32> = HashMap::new();
+        for triangle in &triangles {
+            let [a, b, c] = [triangle.v0, triangle.v1, triangle.v2].map(key);
+            if a == b || b == c || c == a {
+                continue;
+            }
+            for (from, to) in [(a, b), (b, c), (c, a)] {
+                *edges.entry((from, to)).or_default() += 1;
+                *edges.entry((to, from)).or_default() -= 1;
+            }
+            let normal = triangle.normal();
+            if normal.dot(normal) == 0.0 {
+                continue;
+            }
+            let centroid: [f32; 3] =
+                std::array::from_fn(|a| (triangle.v0[a] + triangle.v1[a] + triangle.v2[a]) / 3.0);
+            let facing: f32 = (0..3)
+                .map(|a| [normal.x, normal.y, normal.z][a] * (centroid[a] - center[a]))
+                .sum();
+            assert!(facing > 0.0, "{name}: {triangle:?} faces inwards");
+        }
+        let open = edges.values().filter(|&&balance| balance != 0).count();
+        assert_eq!(
+            open, 0,
+            "{name}: {open} edges are not matched by a reversed edge"
+        );
+    }
+}
+
+#[test]
+fn dilated_marching_cubes_updates_chunks_past_the_high_boundary() {
+    let mut tesselator = configured_with(MeshingAlgorithm::DilatedMarchingCubes);
+    tesselator.update_input_geometry(&vec![brick([4, 4, 2], FULL)]);
+    tesselator.get_output_geometry_delta(&ALL_CHUNKS).unwrap();
+
+    // The voxel at [15, 15, 15] wraps into the 7 chunks above it
+    tesselator.update_input_geometry(&vec![brick([12, 12, 14], bit([3, 3, 1]))]);
+    let redrawn: HashSet<Cell> = tesselator
+        .get_output_geometry_delta(&ALL_CHUNKS)
+        .unwrap()
+        .iter()
+        .map(|chunk| [chunk.index.x, chunk.index.y, chunk.index.z])
+        .collect();
+    let expected: HashSet<Cell> = (0..8)
+        .map(|i| std::array::from_fn(|a| ((i >> a) & 1) * CHUNK_WIDTH))
+        .collect();
+    assert_eq!(redrawn, expected);
+}
+
+#[test]
+fn randomized_dilated_marching_cubes_updates_match_a_fresh_tesselator() {
+    for seed in 0..6 {
+        let mut rng = Lcg::new(seed);
+        let mut world = World::default();
+        let mut tesselator = configured_with(MeshingAlgorithm::DilatedMarchingCubes);
+        let mut chunks = ChunkTriangles::new();
+        for _ in 0..20 {
+            let delta: Vec<PointI> = (0..rng.range(1, 30))
+                .map(|_| {
+                    let origin = [
+                        rng.range(-6, 6) * BRICK[0],
+                        rng.range(-6, 6) * BRICK[1],
+                        rng.range(-12, 12) * BRICK[2],
+                    ];
+                    let mask = match rng.range(0, 4) {
+                        0 => 0,
+                        1 => FULL,
+                        _ => rng.next_u32() & rng.next_u32(),
+                    };
+                    brick(origin, mask)
+                })
+                .collect();
+            world.apply(&delta);
+            tesselator.update_input_geometry(&delta);
+            apply_triangles(
+                &mut chunks,
+                tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+            );
+            let bricks: Vec<PointI> = world
+                .bricks
+                .iter()
+                .map(|(&origin, &mask)| brick(origin, mask))
+                .collect();
+            assert_eq!(
+                chunks,
+                fresh_triangles_with(&bricks, MeshingAlgorithm::DilatedMarchingCubes),
+                "seed {seed}"
+            );
+        }
+    }
+}
+
+#[test]
+fn switching_between_all_meshing_algorithms_keeps_the_mesh_in_sync() {
+    let bricks = [
+        box_bricks([-8, -8, -4], [8, 8, 4], FULL),
+        vec![
+            brick([12, 12, 14], bit([3, 3, 1])),
+            brick([-16, 0, 0], bit([0, 0, 0])),
+        ],
+    ]
+    .concat();
+    let mut tesselator = configured(false);
+    tesselator.update_input_geometry(&bricks);
+    let mut chunks = ChunkTriangles::new();
+    apply_triangles(
+        &mut chunks,
+        tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+    );
+    for (from, to) in [(0, 1), (1, 2), (2, 0), (0, 2), (2, 1), (1, 0)] {
+        let [from, to] = [from, to].map(|i| MeshingAlgorithm::ALL[i]);
+        assert_eq!(tesselator.meshing_algorithm(), from);
+        tesselator.set_meshing_algorithm(to);
+        apply_triangles(
+            &mut chunks,
+            tesselator.get_output_geometry_delta(&ALL_CHUNKS),
+        );
+        assert_eq!(
+            chunks,
+            fresh_triangles_with(&bricks, to),
+            "{from:?} -> {to:?}"
         );
     }
 }
