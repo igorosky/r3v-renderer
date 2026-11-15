@@ -7,6 +7,7 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     process::Command,
+    sync::OnceLock,
 };
 
 /// Variable the dynamic loader searches before the paths baked into a binary.
@@ -33,21 +34,84 @@ pub fn temp_exe(name: &str) -> PathBuf {
     path.into()
 }
 
-/// The cdylib rustc wrote for this test run, in `target/<profile>/deps`. The
-/// copy in `target/<profile>` is only refreshed by `cargo build`.
-pub fn lib_path() -> PathBuf {
+/// The features of the crate this test run was built with, all of them, so
+/// that the library is built with the same ones.
+const FEATURES: [(&str, bool); 6] = [
+    ("c", cfg!(feature = "c")),
+    ("cpp", cfg!(feature = "cpp")),
+    ("demo", cfg!(feature = "demo")),
+    ("js", cfg!(feature = "js")),
+    ("multi-threaded", cfg!(feature = "multi-threaded")),
+    ("python", cfg!(feature = "python")),
+];
+
+/// The cdylib built with this test run's features.
+///
+/// Where cargo keeps the one it built for the test run is not a stable
+/// interface: up to Rust 1.99 it was next to the test binary, in
+/// `target/<profile>/deps`; since 1.100 (build-dir layout v2) every unit has
+/// a directory of its own and nothing in the test run points to the
+/// library's. Cargo's JSON messages are stable, so cargo is asked: building
+/// the library again with the same features, profile and target directory
+/// finds it fresh and reports the cdylib, copied to `target/<profile>`
+/// (`cargo test` alone leaves that copy stale). The build inherits the
+/// environment, so `RUSTFLAGS` (`./test.sh`) and the instrumentation of
+/// cargo-llvm-cov match too. Should anything else differ (another profile, a
+/// `--target`), cargo builds the library once more with the same features.
+pub fn lib_path() -> &'static Path {
+    static LIB: OnceLock<PathBuf> = OnceLock::new();
+    LIB.get_or_init(build_lib)
+}
+
+fn build_lib() -> PathBuf {
     let lib_name = format!("{}r3v_renderer{}", consts::DLL_PREFIX, consts::DLL_SUFFIX);
-    let exe = env::current_exe().expect("test binary path");
-    let lib = exe
+    let features: Vec<_> = FEATURES
+        .iter()
+        .filter(|(_, enabled)| *enabled)
+        .map(|(name, _)| *name)
+        .collect();
+    // `cargo test` builds with the test profile, `--release` with release
+    let profile = if cfg!(debug_assertions) {
+        "test"
+    } else {
+        "release"
+    };
+    // `<target dir>/tmp`. cargo-llvm-cov passes its own target directory on
+    // the command line only, the environment does not have it.
+    let target_dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .parent()
-        .expect("test binary has a parent directory")
-        .join(&lib_name);
+        .expect("the target tmp directory is inside the target directory");
+    let output = Command::new(env!("CARGO"))
+        .args(["build", "--lib", "--frozen", "--no-default-features"])
+        .args([
+            "--message-format=json-render-diagnostics",
+            "--profile",
+            profile,
+        ])
+        .arg("--features")
+        .arg(features.join(","))
+        .arg("--manifest-path")
+        .arg(root().join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(target_dir)
+        .output()
+        .expect("failed to run cargo");
     assert!(
-        lib.is_file(),
-        "{lib_name} not found next to {}; build with a binding feature",
-        exe.display()
+        output.status.success(),
+        "building {lib_name} failed ({}):\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
     );
-    lib
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|message| {
+            message["reason"] == "compiler-artifact" && message["target"]["name"] == "r3v_renderer"
+        })
+        .flat_map(|message| message["filenames"].as_array().cloned().unwrap_or_default())
+        .filter_map(|file| file.as_str().map(PathBuf::from))
+        .find(|file| file.file_name() == Some(lib_name.as_ref()))
+        .unwrap_or_else(|| panic!("cargo built no {lib_name}; build with a binding feature"))
 }
 
 fn lib_dir() -> PathBuf {
@@ -87,13 +151,12 @@ pub fn compile(
     );
 }
 
-/// A command running `exe` against the cdylib of this test run.
+/// A command running `exe` against [`lib_path`].
 ///
-/// `cargo test` puts `target/<profile>` before `target/<profile>/deps` in the
-/// library path, and `target/<profile>/libr3v_renderer.so` is only refreshed
-/// by `cargo build`. Without putting `deps` first the program could load a
-/// stale copy (an rpath cannot help: the environment variable takes
-/// precedence over it).
+/// Its directory goes first in the library path: the one `cargo test` set
+/// can hold other copies of the library, e.g. the stale one in
+/// `target/<profile>` when [`lib_path`] is in another profile's directory (an
+/// rpath cannot help: the environment variable takes precedence over it).
 pub fn command(exe: &Path) -> Command {
     let mut paths = vec![lib_dir()];
     if let Some(existing) = env::var_os(LIB_PATH_VAR) {

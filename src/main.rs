@@ -688,7 +688,7 @@ impl Demo {
             return;
         };
         let mut buffer = surface.buffer_mut().expect("Failed to get surface buffer");
-        for (dst, bgra) in buffer.iter_mut().zip(self.pixel_buffer.chunks_exact(4)) {
+        for (dst, bgra) in buffer.iter_mut().zip(self.pixel_buffer.as_chunks::<4>().0) {
             *dst = u32::from_le_bytes([bgra[0], bgra[1], bgra[2], 0]);
         }
         buffer.present().expect("Failed to present surface buffer");
@@ -2021,7 +2021,7 @@ fn draw_text(bgra_pixels: &mut [u8], width: usize, height: usize, x: usize, y: u
 
 fn save_frame(filename: &str, width: u32, height: u32, bgra_pixels: &[u8]) {
     let mut rgba_pixels = bgra_pixels.to_vec();
-    for chunk in rgba_pixels.chunks_exact_mut(4) {
+    for chunk in rgba_pixels.as_chunks_mut::<4>().0 {
         chunk.swap(0, 2);
     }
     let img: ImageBuffer<Rgba<u8>, _> =
