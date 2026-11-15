@@ -83,7 +83,11 @@ fn build_lib() -> PathBuf {
         .expect("the target tmp directory is inside the target directory");
     let output = Command::new(env!("CARGO"))
         .args(["build", "--lib", "--frozen", "--no-default-features"])
-        .args(["--message-format=json-render-diagnostics", "--profile", profile])
+        .args([
+            "--message-format=json-render-diagnostics",
+            "--profile",
+            profile,
+        ])
         .arg("--features")
         .arg(features.join(","))
         .arg("--manifest-path")

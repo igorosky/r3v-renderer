@@ -8,7 +8,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 anyhow = "1.0.104"
-bytemuck = "1.25.2"
+bytemuck = { version = "1.25.2", features = ["derive"] }
 cgmath = "0.18.0"
 futures-channel = "0.3.34"
 image = { version = "0.25.10", optional = true }
@@ -23,9 +23,12 @@ stl_io = { version = "0.11.0" }
 urdf-rs = { version = "0.10.0" }
 wasm-bindgen = { version = "0.2.130", optional = true }
 wasm-bindgen-futures = { version = "0.4.80", optional = true }
-web-sys = { version = "0.3.107", optional = true, features = ["HtmlCanvasElement", "OffscreenCanvas"] }
 wgpu = "30.0.1"
 winit = { version = "0.30", optional = true }
+
+# Canvases exist only in the browser build (src/bindings/js/renderer.rs)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3.107", optional = true, features = ["HtmlCanvasElement", "OffscreenCanvas"] }
 
 [dev-dependencies]
 libtest-mimic = "0.8"

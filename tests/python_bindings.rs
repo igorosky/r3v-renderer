@@ -50,7 +50,7 @@ impl PythonTests {
         }
         let lib = native::lib_path();
         let module = module_dir.join(format!("{MODULE}{MODULE_SUFFIX}"));
-        fs::copy(&lib, &module).unwrap_or_else(|e| {
+        fs::copy(lib, &module).unwrap_or_else(|e| {
             panic!(
                 "failed to copy {} to {}: {e}",
                 lib.display(),
