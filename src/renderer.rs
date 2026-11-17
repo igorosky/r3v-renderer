@@ -11,6 +11,23 @@ pub const DEFAULT_HEIGHT_GAIN: f32 = 0.35;
 /// Format of the frames `render` returns: BGRA, 8 bit sRGB.
 const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 
+/// The format a surface is configured with, out of the ones it takes:
+/// 8 bit RGBA, else 8 bit BGRA, else none. The shaders write linear colors
+/// and are drawn through an sRGB view, which the web only allows of these
+/// plain formats. RGBA comes first although Firefox prefers BGRA for a
+/// canvas: Firefox 159 (Zen) shows a BGRA canvas with red and blue swapped
+/// whenever the page is repainted between two frames, and every WebGPU
+/// canvas takes RGBA.
+fn surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
+    let find = |wanted: wgpu::TextureFormat| {
+        formats
+            .iter()
+            .copied()
+            .find(|format| format.remove_srgb_suffix() == wanted)
+    };
+    find(wgpu::TextureFormat::Rgba8Unorm).or_else(|| find(wgpu::TextureFormat::Bgra8Unorm))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WgpuAcceleratedConfiguration {
     pub width: u32,
@@ -597,24 +614,12 @@ impl WgpuAccelerated {
             })
             .await?;
         let capabilities = surface.get_capabilities(&adapter);
-        // The shaders write linear colors: they are drawn through an sRGB
-        // view, which the web only allows of its plain formats
-        let format = capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(|format| {
-                matches!(
-                    format.remove_srgb_suffix(),
-                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
-                )
-            })
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "the surface takes no 8 bit RGBA or BGRA format, only {:?}",
-                    capabilities.formats
-                )
-            })?;
+        let format = surface_format(&capabilities.formats).ok_or_else(|| {
+            anyhow::anyhow!(
+                "the surface takes no 8 bit RGBA or BGRA format, only {:?}",
+                capabilities.formats
+            )
+        })?;
         let view_format = format.add_srgb_suffix();
         let alpha_mode = if capabilities
             .alpha_modes
@@ -1303,7 +1308,22 @@ impl Renderer for WgpuAccelerated {
 
 #[cfg(test)]
 mod tests {
-    use super::draw_runs;
+    use super::{draw_runs, surface_format};
+
+    #[test]
+    fn surfaces_take_rgba_before_bgra() {
+        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba16Float};
+        // A canvas in Firefox: its preferred format first
+        assert_eq!(
+            surface_format(&[Bgra8Unorm, Rgba8Unorm, Rgba16Float]),
+            Some(Rgba8Unorm)
+        );
+        assert_eq!(
+            surface_format(&[Bgra8UnormSrgb, Bgra8Unorm]),
+            Some(Bgra8UnormSrgb)
+        );
+        assert_eq!(surface_format(&[Rgba16Float]), None);
+    }
 
     fn runs(visible: &[bool], first: u32) -> Vec<(u32, u32)> {
         draw_runs(visible, &vec![0; visible.len()], first)

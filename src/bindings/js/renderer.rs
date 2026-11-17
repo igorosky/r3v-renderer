@@ -316,7 +316,9 @@ impl JsWgpuRenderer {
     /// `canvas` (an `OffscreenCanvas`, e.g. in a worker, or an
     /// `HTMLCanvasElement`) on a device of a WebGPU adapter that can. Its
     /// frames go to the canvas with `present`; `render` and `render_rgba`
-    /// reject. `configure` sets the canvas size too. Rejects with a
+    /// reject. `configure` sets the canvas size too. The canvas is
+    /// configured `rgba8unorm`, not the browser's preferred format (Firefox
+    /// swaps red and blue of a `bgra8unorm` one). Rejects with a
     /// `TypeError` for anything else than a canvas, with an `Error` when there
     /// is no such adapter or device.
     pub async fn create_for_canvas(
