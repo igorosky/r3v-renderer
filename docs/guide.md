@@ -33,6 +33,10 @@ A frame is made like this:
    (`set_asset_transform`).
 4. `render(camera_state, buffer)` draws the frame.
 
+Geometry, meshes and settings can change any number of times between frames,
+or without frames at all: every call hands its GPU writes over at once
+instead of holding them for the next frame.
+
 The world is Y up. Coordinates are in meters if you set the voxel size and
 mesh sizes in meters.
 
