@@ -888,6 +888,16 @@ impl WgpuAccelerated {
         })
     }
 
+    /// Hands the queue writes made since the last submission to the GPU.
+    /// wgpu keeps the staging copy of every `write_buffer` until the next
+    /// submission and only then frees it, once the GPU is done with it.
+    /// Frames submit, but geometry and settings also change while no frame
+    /// is rendered (a lazy renderer nobody watches, a hidden browser tab),
+    /// and without this the copies would pile up for as long as that lasts.
+    fn submit_writes(&self) {
+        self.state.queue.submit([]);
+    }
+
     fn rebuild_targets(&mut self) {
         assert!(
             self.active_configuration.is_some(),
@@ -1221,6 +1231,7 @@ impl Renderer for WgpuAccelerated {
         );
         self.active_configuration = Some(configuration);
         self.configure_surface(false);
+        self.submit_writes();
     }
 
     fn render(&mut self, camera_state: &Self::CameraState, output: &mut [u8]) {
@@ -1241,6 +1252,7 @@ impl Renderer for WgpuAccelerated {
             self.vertex_arena.set_chunk(device, queue, index, &vertices);
         }
         self.vertex_arena.finish_update(device, queue);
+        self.submit_writes();
     }
 
     fn upload_asset(
@@ -1253,6 +1265,7 @@ impl Renderer for WgpuAccelerated {
             self.assets
                 .upload(&self.state.device, &self.state.queue, &vertices, instances)
                 as u64;
+        self.submit_writes();
         (first_instance..first_instance + instances as u64).collect()
     }
 
@@ -1273,8 +1286,11 @@ impl Renderer for WgpuAccelerated {
     }
 
     fn upload_texture(&mut self, width: u32, height: u32, rgba: &[u8]) -> Self::TextureId {
-        self.assets
-            .upload_texture(&self.state.device, &self.state.queue, width, height, rgba)
+        let texture =
+            self.assets
+                .upload_texture(&self.state.device, &self.state.queue, width, height, rgba);
+        self.submit_writes();
+        texture
     }
 
     fn set_asset_texture(
@@ -1628,6 +1644,81 @@ mod tests {
         assert!(0 < drawn && drawn < total / 2, "{drawn} of {total} drawn");
         assert!(culled.iter().any(|&byte| byte != 0), "nothing was drawn");
         assert!(culled == all, "culling changed the image");
+    }
+
+    /// Geometry keeps changing while no frame is rendered (r3v_ros renders
+    /// only while someone watches): the memory each update stages has to be
+    /// freed all the same, or it piles up for good.
+    #[test]
+    fn geometry_updates_without_frames_free_their_staging() {
+        use super::{WgpuAccelerated, WgpuAcceleratedConfiguration};
+        use crate::{
+            Renderer,
+            geometry::{DiscretePoint, RealTriangle, TriangleChunk},
+            wgpu_utils::{VERTEX_STRIDE, test_support::TestGpu},
+        };
+
+        const CHUNKS: i32 = 64;
+        const TRIANGLES: usize = 1000;
+        const UPDATES: usize = 40;
+
+        let _lock = TestGpu::new();
+        let mut renderer = WgpuAccelerated::new().expect("no wgpu adapter available");
+        renderer.configure(WgpuAcceleratedConfiguration {
+            width: 16,
+            height: 16,
+            background_color: super::DEFAULT_BACKGROUND_COLOR,
+            color_depth_range: super::DEFAULT_COLOR_DEPTH_RANGE,
+            terrain_coloring: super::TerrainColoring::default(),
+        });
+        // Every chunk with the same number of triangles each time, so the
+        // updates overwrite their vertices in place
+        let update = |version: usize| -> Vec<TriangleChunk> {
+            (0..CHUNKS)
+                .map(|i| TriangleChunk {
+                    index: DiscretePoint {
+                        x: i * 16,
+                        y: 0,
+                        z: 0,
+                    },
+                    triangles: (0..TRIANGLES)
+                        .map(|t| {
+                            let x = i as f32 + t as f32 * 1.0e-3;
+                            let y = version as f32;
+                            RealTriangle {
+                                v0: [x, y, 0.0],
+                                v1: [x + 1.0, y, 0.0],
+                                v2: [x, y + 1.0, 0.0],
+                            }
+                        })
+                        .collect(),
+                })
+                .collect()
+        };
+        let update_bytes = (CHUNKS as usize * TRIANGLES * 3) as isize * VERTEX_STRIDE as isize;
+        let device = renderer.state.device.clone();
+        // Buffer memory once the GPU is done with everything submitted
+        let buffer_memory = || {
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
+                .expect("waiting for the GPU failed");
+            device.get_internal_counters().hal.buffer_memory.read()
+        };
+
+        renderer.update_geometry(update(0));
+        let before = buffer_memory();
+        assert!(before > 0, "wgpu counts no buffer memory");
+        for version in 1..=UPDATES {
+            renderer.update_geometry(update(version));
+        }
+        let grown = buffer_memory() - before;
+        assert!(
+            grown < update_bytes,
+            "{UPDATES} updates of {update_bytes} bytes without a frame left {grown} bytes behind"
+        );
     }
 
     /// A canvas can take an RGBA format rather than the offscreen BGRA one:
